@@ -190,6 +190,8 @@ export interface Deck {
   deckTemplateId?: string;
   createdAt: string;
   updatedAt: string;
+  /** Free-text labels (e.g. client names) for organizing/filtering documents. */
+  tags?: string[];
 }
 
 /* ------------------------------------------------------------------ */

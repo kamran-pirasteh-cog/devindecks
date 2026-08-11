@@ -59,6 +59,39 @@ export function renameDoc(id: string, title: string): void {
   }
 }
 
+export function setDocTags(id: string, tags: string[]): void {
+  const map = read();
+  if (map[id]) {
+    map[id] = { ...map[id], tags, updatedAt: now() };
+    write(map);
+  }
+}
+
+export function addDocTag(id: string, tag: string): void {
+  const trimmed = tag.trim();
+  if (!trimmed) return;
+  const doc = getDoc(id);
+  if (!doc) return;
+  const existing = doc.tags ?? [];
+  if (existing.some((t) => t.toLowerCase() === trimmed.toLowerCase())) return;
+  setDocTags(id, [...existing, trimmed]);
+}
+
+export function removeDocTag(id: string, tag: string): void {
+  const doc = getDoc(id);
+  if (!doc) return;
+  setDocTags(id, (doc.tags ?? []).filter((t) => t !== tag));
+}
+
+/** All distinct tags across every document, for building filter chips. */
+export function listAllTags(): string[] {
+  const set = new Set<string>();
+  for (const doc of Object.values(read())) {
+    for (const t of doc.tags ?? []) set.add(t);
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
 function newDeck(title: string, slides: Deck['slides'], templateId?: string): Deck {
   const ts = now();
   return {
@@ -86,15 +119,35 @@ function untitledName(templateName: string): string {
   return templateName === 'Blank' ? 'Untitled presentation' : templateName;
 }
 
+/** Is `title` free to use (case-insensitive), ignoring `excludeId` itself? */
+export function isTitleAvailable(title: string, excludeId?: string): boolean {
+  const t = title.trim().toLowerCase();
+  if (!t) return false;
+  return !Object.values(read()).some(
+    (d) => d.id !== excludeId && d.title.trim().toLowerCase() === t,
+  );
+}
+
+/** A default "Copy of X" / "Copy of X (2)" name that doesn't collide. */
+export function suggestCopyTitle(baseTitle: string): string {
+  let candidate = `Copy of ${baseTitle}`;
+  let n = 2;
+  while (!isTitleAvailable(candidate)) {
+    candidate = `Copy of ${baseTitle} (${n})`;
+    n += 1;
+  }
+  return candidate;
+}
+
 /** Duplicate an existing document into a fresh one ("start from a prior doc"). */
-export function duplicateDoc(id: string): Deck | null {
+export function duplicateDoc(id: string, title?: string): Deck | null {
   const src = getDoc(id);
   if (!src) return null;
   const clone = structuredClone(src) as Deck;
   const deck: Deck = {
     ...clone,
     id: `doc-${nanoid(10)}`,
-    title: `Copy of ${src.title}`,
+    title: title?.trim() || suggestCopyTitle(src.title),
     createdAt: now(),
     updatedAt: now(),
     slides: clone.slides.map((s) => ({
