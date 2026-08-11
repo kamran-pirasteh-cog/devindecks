@@ -11,12 +11,25 @@ import { listAllTags, listDocs, seedIfFirstRun } from '@/docs/repository';
 import { DocCard } from './DocCard';
 import { NewDocModal } from './NewDocModal';
 
+type SortBy = 'updated' | 'created' | 'client';
+
+const SORT_OPTIONS: { value: SortBy; label: string }[] = [
+  { value: 'updated', label: 'Last updated' },
+  { value: 'created', label: 'Date created' },
+  { value: 'client', label: 'Client' },
+];
+
+function firstClient(deck: Deck): string {
+  return (deck.tags ?? [])[0]?.toLowerCase() ?? '';
+}
+
 export function Home() {
   const [docs, setDocs] = useState<Deck[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [modal, setModal] = useState(false);
   const [query, setQuery] = useState('');
   const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [sortBy, setSortBy] = useState<SortBy>('updated');
 
   useEffect(() => {
     seedIfFirstRun();
@@ -32,16 +45,28 @@ export function Home() {
   const toggleTag = (tag: string) =>
     setActiveTags((cur) => (cur.includes(tag) ? cur.filter((t) => t !== tag) : [...cur, tag]));
 
-  const filteredDocs = docs.filter((deck) => {
-    const q = query.trim().toLowerCase();
-    if (q) {
-      const titleMatch = deck.title.toLowerCase().includes(q);
-      const tagMatch = (deck.tags ?? []).some((t) => t.toLowerCase().includes(q));
-      if (!titleMatch && !tagMatch) return false;
-    }
-    if (activeTags.length && !activeTags.every((t) => (deck.tags ?? []).includes(t))) return false;
-    return true;
-  });
+  const filteredDocs = docs
+    .filter((deck) => {
+      const q = query.trim().toLowerCase();
+      if (q) {
+        const titleMatch = deck.title.toLowerCase().includes(q);
+        const tagMatch = (deck.tags ?? []).some((t) => t.toLowerCase().includes(q));
+        if (!titleMatch && !tagMatch) return false;
+      }
+      if (activeTags.length && !activeTags.every((t) => (deck.tags ?? []).includes(t))) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'created') return b.createdAt.localeCompare(a.createdAt);
+      if (sortBy === 'client') {
+        const ca = firstClient(a);
+        const cb = firstClient(b);
+        if (!ca && cb) return 1;
+        if (ca && !cb) return -1;
+        return ca.localeCompare(cb) || a.title.localeCompare(b.title);
+      }
+      return b.updatedAt.localeCompare(a.updatedAt);
+    });
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -76,15 +101,40 @@ export function Home() {
             <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
               Your documents
             </h2>
+            <label className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+              Sort by
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortBy)}
+                className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-600 outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+              >
+                {SORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search documents…"
-              className="w-full max-w-xs rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
-            />
+            <div className="relative w-full max-w-xs">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search documents…"
+                className="w-full rounded-md border border-zinc-200 bg-white px-3 py-1.5 pr-7 text-xs outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
+              />
+              {query ? (
+                <button
+                  onClick={() => setQuery('')}
+                  title="Clear search"
+                  className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
             {allTags.length ? (
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[10px] uppercase tracking-wide text-zinc-400">
