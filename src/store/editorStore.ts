@@ -51,6 +51,7 @@ interface EditorState {
   clearSelection: () => void;
   setEditing: (id: string | null) => void;
   setCurrentSlide: (id: string) => void;
+  setTitle: (title: string) => void;
 
   // element mutations (all commit unless transient)
   addElement: (el: SlideElement) => void;
@@ -139,6 +140,12 @@ export const useEditor = create<EditorState>()(
         s.currentSlideId = id;
         s.selectedIds = [];
         s.editingId = null;
+      });
+    },
+
+    setTitle(title) {
+      set((s) => {
+        s.deck.title = title;
       });
     },
 
