@@ -125,19 +125,24 @@ export function ElementVisual({
   el,
   ds,
   scale,
+  hideBody,
+  sizeOverridePx,
 }: {
   el: SlideElement;
   ds: DesignSystem;
   scale: number;
+  hideBody?: boolean;
+  /** Live px size during an active resize drag, before the store commit lands. */
+  sizeOverridePx?: { w: number; h: number };
 }) {
-  const w = el.rect.w * scale;
-  const h = el.rect.h * scale;
+  const w = sizeOverridePx?.w ?? el.rect.w * scale;
+  const h = sizeOverridePx?.h ?? el.rect.h * scale;
 
   switch (el.type) {
     case 'text':
       return (
         <div style={{ position: 'absolute', inset: 0, background: fillToCss(el.fill, ds) }}>
-          <TextBodyView body={el.body} ds={ds} scale={scale} />
+          {hideBody ? null : <TextBodyView body={el.body} ds={ds} scale={scale} />}
         </div>
       );
 
@@ -161,7 +166,7 @@ export function ElementVisual({
               dash={el.outline ? dashArray(el.outline.dash, strokeW) : undefined}
             />
           </svg>
-          {el.body ? <TextBodyView body={el.body} ds={ds} scale={scale} /> : null}
+          {el.body && !hideBody ? <TextBodyView body={el.body} ds={ds} scale={scale} /> : null}
         </div>
       );
     }

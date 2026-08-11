@@ -23,9 +23,11 @@ import {
   type Paragraph,
   type Rect,
   type Slide,
+  type SlideChartConfig,
   type SlideElement,
   type TextRun,
 } from '@/model';
+import { buildChartElements } from '@/templates/charts';
 
 export type AlignMode =
   | 'left'
@@ -58,6 +60,7 @@ interface EditorState {
   updateElement: (id: string, patch: Partial<SlideElement>, transient?: boolean) => void;
   setRect: (id: string, rect: Rect, transient?: boolean) => void;
   moveBy: (ids: string[], dx: EMU, dy: EMU, transient?: boolean) => void;
+  duplicateBy: (ids: string[], dx: EMU, dy: EMU) => void;
   setFill: (ids: string[], fill: Fill) => void;
   setOutline: (ids: string[], outline: Outline | undefined) => void;
   patchRuns: (ids: string[], patch: Partial<TextRun>) => void;
@@ -71,8 +74,10 @@ interface EditorState {
 
   // slides
   addSlide: () => void;
+  insertSlides: (slides: Slide[]) => void;
   duplicateSlide: (id: string) => void;
   deleteSlide: (id: string) => void;
+  updateSlideChart: (id: string, config: SlideChartConfig) => void;
 
   // history
   commit: () => void;
@@ -161,6 +166,27 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    insertSlides(slides) {
+      get().commit();
+      set((s) => {
+        const idx = s.deck.slides.findIndex((sl) => sl.id === s.currentSlideId);
+        s.deck.slides.splice(idx + 1, 0, ...slides);
+        s.currentSlideId = slides[0]?.id ?? s.currentSlideId;
+        s.selectedIds = [];
+      });
+    },
+
+    updateSlideChart(id, config) {
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, id);
+        if (!slide) return;
+        slide.chart = config;
+        slide.elements = buildChartElements(config);
+        s.selectedIds = [];
+      });
+    },
+
     duplicateSlide(id) {
       get().commit();
       const newSlideId = `s-${nanoid(8)}`;
@@ -236,6 +262,25 @@ export const useEditor = create<EditorState>()(
             el.rect.y += dy;
           }
         }
+      });
+    },
+
+    duplicateBy(ids, dx, dy) {
+      const slide = slideById(get().deck, get().currentSlideId);
+      if (!slide?.elements.some((e) => ids.includes(e.id))) return;
+      get().commit();
+      const newIds: string[] = [];
+      set((s) => {
+        const sl = slideById(s.deck, s.currentSlideId);
+        if (!sl) return;
+        for (const el of sl.elements.filter((e) => ids.includes(e.id))) {
+          const copy: SlideElement = JSON.parse(JSON.stringify(el));
+          copy.id = `${el.id}-${nanoid(4)}`;
+          copy.rect = { ...copy.rect, x: copy.rect.x + dx, y: copy.rect.y + dy };
+          sl.elements.push(copy);
+          newIds.push(copy.id);
+        }
+        s.selectedIds = newIds;
       });
     },
 

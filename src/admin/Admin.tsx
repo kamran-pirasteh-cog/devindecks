@@ -9,12 +9,21 @@
  *
  * In Playground this route gets gated to a template-admin Okta group.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ALLOWED_FONTS, type ColorToken, type DesignSystem, type FontFamily, type TypeRole } from '@/model';
 import { SlideView } from '@/render/SlideView';
 import { TEMPLATES } from '@/templates/registry';
+import {
+  createTemplate,
+  createTemplateFromImage,
+  listTemplates,
+  seedIfFirstRun,
+  type StoredTemplate,
+} from '@/templates/repository';
 import { getActiveDesignSystem, resetDesignSystem, saveDesignSystem } from '@/design/repository';
+import { TemplateCard } from './TemplateCard';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
@@ -28,11 +37,42 @@ const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
 
 type Tab = 'design' | 'templates';
 
+function stripExt(filename: string): string {
+  return filename.replace(/\.[^./]+$/, '');
+}
+
 export function Admin() {
+  const router = useRouter();
   const [tab, setTab] = useState<Tab>('design');
   const [ds, setDs] = useState<DesignSystem>(() => getActiveDesignSystem());
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<StoredTemplate[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    seedIfFirstRun();
+    setTemplates(listTemplates());
+  }, []);
+
+  const refreshTemplates = () => setTemplates(listTemplates());
+
+  const buildTemplate = () => {
+    const t = createTemplate({ name: 'Untitled template', category: 'Blank' });
+    router.push(`/admin/templates/${t.id}`);
+  };
+
+  const uploadTemplate = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const t = createTemplateFromImage(reader.result as string, stripExt(file.name));
+      router.push(`/admin/templates/${t.id}`);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const patch = (next: Partial<DesignSystem>) => {
     setDs((cur) => ({ ...cur, ...next }));
@@ -83,23 +123,24 @@ export function Admin() {
             <span>
               {ds.name} · v{ds.version}
             </span>
-            {tab === 'design' ? (
-              <>
-                <button
-                  onClick={reset}
-                  className="rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                >
-                  Reset
-                </button>
-                <button
-                  onClick={save}
-                  disabled={!dirty}
-                  className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black"
-                >
-                  {dirty ? 'Save changes' : savedAt ? 'Saved' : 'Saved'}
-                </button>
-              </>
-            ) : null}
+            <button
+              onClick={reset}
+              disabled={tab !== 'design'}
+              className={`rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 ${
+                tab === 'design' ? '' : 'invisible'
+              }`}
+            >
+              Reset
+            </button>
+            <button
+              onClick={save}
+              disabled={!dirty || tab !== 'design'}
+              className={`rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black ${
+                tab === 'design' ? '' : 'invisible'
+              }`}
+            >
+              {dirty ? 'Save changes' : savedAt ? 'Saved' : 'Saved'}
+            </button>
           </div>
         </div>
         <div className="mx-auto flex max-w-6xl gap-1 px-5">
@@ -254,33 +295,44 @@ export function Admin() {
           </div>
         ) : (
           <div>
-            <p className="mb-4 text-xs text-zinc-500">
-              Deck templates. Authoring (save a document as a template, edit, version) lands here
-              next; today this is the built-in library.
-            </p>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {TEMPLATES.filter((t) => t.id !== 'blank').map((t) => (
-                <div
-                  key={t.id}
-                  className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+            <div className="mb-4 flex items-center justify-between">
+              <p className="text-xs text-zinc-500">
+                Deck templates. Click one to open and edit it, or create a new one from scratch or
+                from an uploaded reference.
+              </p>
+              <div className="flex shrink-0 gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={uploadTemplate}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
-                  <div className="border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-                    <SlideView
-                      slide={t.buildSlides()[0]}
-                      slideSize={SLIDE_SIZE}
-                      designSystem={ds}
-                      width={320}
-                    />
-                  </div>
-                  <div className="px-3 py-2">
-                    <div className="truncate text-xs font-medium">{t.name}</div>
-                    <div className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
-                      {t.category}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                  Upload to create template
+                </button>
+                <button
+                  onClick={buildTemplate}
+                  className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
+                >
+                  + Build template
+                </button>
+              </div>
             </div>
+            {templates.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
+                No templates yet.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                {templates.map((t) => (
+                  <TemplateCard key={t.id} template={t} designSystem={ds} onChange={refreshTemplates} />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>

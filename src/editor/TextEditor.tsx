@@ -93,7 +93,6 @@ export function TextEditor({
         flexDirection: 'column',
         justifyContent: justify,
         outline: '2px solid #4F46E5',
-        background: 'rgba(255,255,255,0.6)',
         fontFamily: font.cssStack,
         fontSize: (firstRun.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale,
         fontWeight: firstRun.bold ? 700 : 400,
