@@ -9,6 +9,7 @@ import { useEffect } from 'react';
 import { useEditor, loadDeck } from '@/store/editorStore';
 import { SAMPLE_DECK } from '@/model/sample';
 import type { Deck, DesignSystem } from '@/model';
+import { downloadDeckPptx } from '@/export/pptx';
 import { ChatColumn } from './ChatColumn';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
@@ -70,11 +71,14 @@ export function Editor({ deck = SAMPLE_DECK, designSystem }: { deck?: Deck; desi
             {ds.name} · v{ds.version}
           </span>
           <button
+            onClick={() => {
+              const s = useEditor.getState();
+              downloadDeckPptx(s.deck, s.designSystem);
+            }}
             className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
-            title="Export to .pptx (Phase 3)"
-            disabled
+            title="Export to .pptx"
           >
-            Export
+            Export .pptx
           </button>
         </div>
       </header>
