@@ -8,9 +8,13 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { type Deck } from '@/model';
-import { deleteDoc, listDocs, seedIfFirstRun } from '@/docs/repository';
+import { createDoc, deleteDoc, listDocs, seedIfFirstRun } from '@/docs/repository';
+import { TEMPLATES } from '@/templates/registry';
 import { Thumb } from './Thumb';
 import { NewDocModal } from './NewDocModal';
+
+const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
+const COLLAPSED_COUNT = 4;
 
 function timeAgo(iso: string): string {
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -27,6 +31,7 @@ export function Home() {
   const router = useRouter();
   const [docs, setDocs] = useState<Deck[]>([]);
   const [modal, setModal] = useState(false);
+  const [showAllTemplates, setShowAllTemplates] = useState(false);
 
   useEffect(() => {
     seedIfFirstRun();
@@ -38,6 +43,16 @@ export function Home() {
     e.preventDefault();
     deleteDoc(id);
     setDocs(listDocs());
+  };
+
+  const namedTemplates = TEMPLATES.filter((t) => t.id !== 'blank');
+  const visibleTemplates = showAllTemplates
+    ? namedTemplates
+    : namedTemplates.slice(0, COLLAPSED_COUNT);
+
+  const createFromTemplate = (templateId: string) => {
+    const deck = createDoc(templateId);
+    router.push(`/edit/${deck.id}`);
   };
 
   return (
@@ -68,6 +83,43 @@ export function Home() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
+        <section className="mb-10">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">Templates</h2>
+            {namedTemplates.length > COLLAPSED_COUNT ? (
+              <button
+                onClick={() => setShowAllTemplates((v) => !v)}
+                className="text-xs font-medium text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-100"
+              >
+                {showAllTemplates ? 'See less' : 'See more'}
+              </button>
+            ) : null}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            {visibleTemplates.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => createFromTemplate(t.id)}
+                className="group overflow-hidden rounded-lg border border-zinc-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
+                title={t.description}
+              >
+                <div className="overflow-hidden border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
+                  <Thumb deck={{ slides: t.buildSlides(), slideSize: SLIDE_SIZE }} />
+                </div>
+                <div className="px-3 py-2">
+                  <div className="truncate text-xs font-medium text-zinc-800 dark:text-zinc-100">
+                    {t.name}
+                  </div>
+                  <div className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+                    {t.category}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
