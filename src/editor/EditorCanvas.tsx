@@ -56,10 +56,11 @@ export function EditorCanvas() {
   const scale = width / deck.slideSize.w;
   const height = deck.slideSize.h * scale;
 
-  // Keep moveable in sync when selection changes elsewhere (inspector, undo…).
+  // Keep the overlay glued to the element after ANY model change — inspector
+  // edits, undo/redo, a drag commit — so handles never drift from the object.
   useEffect(() => {
     moveableRef.current?.updateRect();
-  }, [selectedIds, width]);
+  }, [selectedIds, width, deck]);
 
   const selectedNodes = selectedIds
     .map((id) => nodeMap.current.get(id))
@@ -100,16 +101,18 @@ export function EditorCanvas() {
                 if (node) nodeMap.current.set(el.id, node);
                 else nodeMap.current.delete(el.id);
               }}
-              className="dd-el absolute"
+              className="dd-el absolute left-0 top-0"
               style={{
-                left: el.rect.x * scale,
-                top: el.rect.y * scale,
                 width: el.rect.w * scale,
                 height: el.rect.h * scale,
-                transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+                // Position via transform ONLY. React owns the transform string, so
+                // it always overwrites anything Moveable applies mid-drag — no
+                // leftover translate, no post-drag jump, overlay stays aligned.
+                transform: `translate(${el.rect.x * scale}px, ${el.rect.y * scale}px)${
+                  el.rotation ? ` rotate(${el.rotation}deg)` : ''
+                }`,
                 transformOrigin: 'center center',
                 cursor: 'move',
-                outline: selectedIds.includes(el.id) ? undefined : 'none',
               }}
               onMouseDown={(e) => {
                 if (isEditing) return;
@@ -146,6 +149,9 @@ export function EditorCanvas() {
             rotatable
             keepRatio={false}
             origin={false}
+            throttleDrag={0}
+            throttleResize={0}
+            throttleRotate={0}
             snappable
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
@@ -153,14 +159,17 @@ export function EditorCanvas() {
             elementGuidelines={guidelineNodes}
             verticalGuidelines={[0, width / 2, width]}
             horizontalGuidelines={[0, height / 2, height]}
+            // During interaction we only paint the transform for smoothness; the
+            // model is written once on end from the delta (dist), then React
+            // re-renders the authoritative transform. No baking, no leftover.
             onDrag={(e) => {
               e.target.style.transform = e.transform;
             }}
             onDragEnd={(e) => {
-              const t = e.lastEvent?.translate;
-              if (!t) return;
+              const d = e.lastEvent?.dist;
+              if (!d) return;
               const id = (e.target as HTMLElement).dataset.id!;
-              store().moveBy([id], pxToEmu(t[0], scale), pxToEmu(t[1], scale));
+              store().moveBy([id], pxToEmu(d[0], scale), pxToEmu(d[1], scale));
             }}
             onDragGroup={(e) => {
               e.events.forEach((ev) => {
@@ -168,9 +177,9 @@ export function EditorCanvas() {
               });
             }}
             onDragGroupEnd={(e) => {
-              const t = e.lastEvent?.translate ?? e.events[0]?.lastEvent?.translate;
-              if (!t) return;
-              store().moveBy(selectedIds, pxToEmu(t[0], scale), pxToEmu(t[1], scale));
+              const d = e.events[0]?.lastEvent?.dist;
+              if (!d) return;
+              store().moveBy(selectedIds, pxToEmu(d[0], scale), pxToEmu(d[1], scale));
             }}
             onResize={(e) => {
               e.target.style.width = `${e.width}px`;
@@ -181,12 +190,14 @@ export function EditorCanvas() {
               const last = e.lastEvent;
               if (!last) return;
               const id = (e.target as HTMLElement).dataset.id!;
-              const el = store().deck.slides.find((s) => s.id === currentSlideId)?.elements.find((x) => x.id === id);
+              const el = store()
+                .deck.slides.find((s) => s.id === currentSlideId)
+                ?.elements.find((x) => x.id === id);
               if (!el) return;
-              const [tx, ty] = last.drag.translate as [number, number];
+              const [dx, dy] = last.drag.dist as [number, number];
               const rect: Rect = {
-                x: el.rect.x + pxToEmu(tx, scale),
-                y: el.rect.y + pxToEmu(ty, scale),
+                x: el.rect.x + pxToEmu(dx, scale),
+                y: el.rect.y + pxToEmu(dy, scale),
                 w: pxToEmu(last.width, scale),
                 h: pxToEmu(last.height, scale),
               };
