@@ -8,24 +8,14 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { type Deck } from '@/model';
-import { createDoc, deleteDoc, listDocs, seedIfFirstRun } from '@/docs/repository';
+import { createDoc, listDocs, seedIfFirstRun } from '@/docs/repository';
 import { TEMPLATES } from '@/templates/registry';
 import { Thumb } from './Thumb';
+import { DocCard } from './DocCard';
 import { NewDocModal } from './NewDocModal';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 const COLLAPSED_COUNT = 4;
-
-function timeAgo(iso: string): string {
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
 
 export function Home() {
   const router = useRouter();
@@ -38,12 +28,7 @@ export function Home() {
     setDocs(listDocs());
   }, []);
 
-  const remove = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    deleteDoc(id);
-    setDocs(listDocs());
-  };
+  const refreshDocs = () => setDocs(listDocs());
 
   const namedTemplates = TEMPLATES.filter((t) => t.id !== 'blank');
   const visibleTemplates = showAllTemplates
@@ -129,33 +114,7 @@ export function Home() {
 
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {docs.map((deck) => (
-              <div
-                key={deck.id}
-                onClick={() => router.push(`/edit/${deck.id}`)}
-                className="group relative cursor-pointer overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
-              >
-                <div className="overflow-hidden border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-                  <Thumb deck={deck} />
-                </div>
-                <div className="flex items-center justify-between px-3 py-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-medium text-zinc-800 dark:text-zinc-100">
-                      {deck.title}
-                    </div>
-                    <div className="mt-0.5 text-[10px] text-zinc-400">
-                      {deck.slides.length} slide{deck.slides.length === 1 ? '' : 's'} ·{' '}
-                      {timeAgo(deck.updatedAt)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => remove(deck.id, e)}
-                    title="Delete"
-                    className="ml-2 hidden h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-red-500 group-hover:flex dark:hover:bg-zinc-800"
-                  >
-                    ×
-                  </button>
-                </div>
-              </div>
+              <DocCard key={deck.id} deck={deck} onChange={refreshDocs} />
             ))}
           </div>
         </section>
