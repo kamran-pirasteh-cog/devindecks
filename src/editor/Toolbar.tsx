@@ -12,11 +12,7 @@ import type { ShapePreset } from '@/model';
 const SHAPES: { preset: ShapePreset; label: string }[] = [
   { preset: 'rect', label: '▭' },
   { preset: 'roundRect', label: '▢' },
-  { preset: 'ellipse', label: '◯' },
-  { preset: 'triangle', label: '△' },
-  { preset: 'diamond', label: '◇' },
   { preset: 'rightArrow', label: '→' },
-  { preset: 'chevron', label: '⌦' },
   { preset: 'pill', label: '⬭' },
 ];
 
