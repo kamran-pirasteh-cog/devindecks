@@ -14,7 +14,6 @@ import { ChatColumn } from './ChatColumn';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
-import { Inspector } from './Inspector';
 
 export function Editor({ deck = SAMPLE_DECK, designSystem }: { deck?: Deck; designSystem?: DesignSystem }) {
   const title = useEditor((s) => s.deck.title);
@@ -93,9 +92,6 @@ export function Editor({ deck = SAMPLE_DECK, designSystem }: { deck?: Deck; desi
         <div className="flex min-w-0 flex-1 flex-col">
           <Toolbar />
           <EditorCanvas />
-        </div>
-        <div className="w-[264px] shrink-0 border-l border-zinc-200 dark:border-zinc-800">
-          <Inspector />
         </div>
       </div>
     </div>
