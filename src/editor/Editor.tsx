@@ -13,6 +13,7 @@ import { SAMPLE_DECK } from '@/model/sample';
 import type { Deck } from '@/model';
 import { downloadDeckPptx } from '@/export/pptx';
 import { getDoc, saveDoc } from '@/docs/repository';
+import { getActiveDesignSystem } from '@/design/repository';
 import { ChatColumn } from './ChatColumn';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
@@ -32,7 +33,7 @@ export function Editor({ deckId }: { deckId?: string }) {
       router.replace('/');
       return;
     }
-    loadDeck(doc);
+    loadDeck(doc, getActiveDesignSystem());
   }, [deckId, router]);
 
   // Autosave: persist the deck a beat after any change (only for real docs).

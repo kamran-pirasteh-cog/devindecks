@@ -5,6 +5,7 @@
  * opens the picker (browse templates · start from a prior doc · blank).
  */
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { type Deck } from '@/model';
 import { deleteDoc, listDocs, seedIfFirstRun } from '@/docs/repository';
@@ -49,12 +50,20 @@ export function Home() {
             </div>
             <span className="text-sm font-semibold tracking-tight">Devin Design</span>
           </div>
-          <button
-            onClick={() => setModal(true)}
-            className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
-          >
-            + Start something new
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/admin"
+              className="rounded-md px-2.5 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            >
+              Admin
+            </Link>
+            <button
+              onClick={() => setModal(true)}
+              className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
+            >
+              + Start something new
+            </button>
+          </div>
         </div>
       </header>
 

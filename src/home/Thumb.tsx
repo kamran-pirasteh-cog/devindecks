@@ -2,9 +2,8 @@
 
 /** Shared slide thumbnail — renders through SlideView so it matches the editor. */
 import { SlideView } from '@/render/SlideView';
-import { DEFAULT_DESIGN_SYSTEM, type Deck } from '@/model';
-
-const ds = DEFAULT_DESIGN_SYSTEM;
+import { type Deck } from '@/model';
+import { getActiveDesignSystem } from '@/design/repository';
 
 export function Thumb({
   deck,
@@ -13,6 +12,7 @@ export function Thumb({
   deck: { slides: Deck['slides']; slideSize: Deck['slideSize'] };
   width?: number;
 }) {
+  const ds = getActiveDesignSystem();
   const slide = deck.slides[0];
   if (!slide) {
     return <div style={{ width, height: (width * 9) / 16 }} className="bg-white" />;
