@@ -34,7 +34,11 @@ export function Home() {
 
   const filteredDocs = docs.filter((deck) => {
     const q = query.trim().toLowerCase();
-    if (q && !deck.title.toLowerCase().includes(q)) return false;
+    if (q) {
+      const titleMatch = deck.title.toLowerCase().includes(q);
+      const tagMatch = (deck.tags ?? []).some((t) => t.toLowerCase().includes(q));
+      if (!titleMatch && !tagMatch) return false;
+    }
     if (activeTags.length && !activeTags.every((t) => (deck.tags ?? []).includes(t))) return false;
     return true;
   });
