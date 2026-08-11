@@ -13,42 +13,57 @@ import { SAMPLE_DECK } from '@/model/sample';
 import type { Deck } from '@/model';
 import { downloadDeckPptx } from '@/export/pptx';
 import { getDoc, saveDoc } from '@/docs/repository';
+import { getStoredTemplate, saveTemplateFromDeck, templateAsDeck } from '@/templates/repository';
 import { getActiveDesignSystem } from '@/design/repository';
 import { ChatColumn } from './ChatColumn';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
+import { TemplateDrawer } from './TemplateDrawer';
 
-export function Editor({ deckId }: { deckId?: string }) {
+export function Editor({ deckId, templateId }: { deckId?: string; templateId?: string }) {
   const router = useRouter();
   const title = useEditor((s) => s.deck.title);
   const ds = useEditor((s) => s.designSystem);
   const ready = useEditor((s) => s.currentSlideId !== '');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load the requested document (or the sample when opened without an id).
+  // Load the requested document, template, or the sample when opened bare.
   useEffect(() => {
+    if (templateId) {
+      const tpl = getStoredTemplate(templateId);
+      if (!tpl) {
+        router.replace('/admin');
+        return;
+      }
+      loadDeck(templateAsDeck(tpl), getActiveDesignSystem());
+      return;
+    }
     const doc: Deck | null = deckId ? getDoc(deckId) : SAMPLE_DECK;
     if (!doc) {
       router.replace('/');
       return;
     }
     loadDeck(doc, getActiveDesignSystem());
-  }, [deckId, router]);
+  }, [deckId, templateId, router]);
 
-  // Autosave: persist the deck a beat after any change (only for real docs).
+  // Autosave: persist the deck (or template) a beat after any change.
   useEffect(() => {
-    if (!deckId) return;
+    if (!deckId && !templateId) return;
     const unsub = useEditor.subscribe((state, prev) => {
       if (state.deck === prev.deck) return;
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => saveDoc(useEditor.getState().deck), 500);
+      saveTimer.current = setTimeout(() => {
+        const deck = useEditor.getState().deck;
+        if (templateId) saveTemplateFromDeck(templateId, deck);
+        else saveDoc(deck);
+      }, 500);
     });
     return () => {
       unsub();
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [deckId]);
+  }, [deckId, templateId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -88,13 +103,18 @@ export function Editor({ deckId }: { deckId?: string }) {
       <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <div className="flex items-center gap-2">
           <Link
-            href="/"
+            href={templateId ? '/admin' : '/'}
             className="text-sm font-semibold tracking-tight hover:opacity-70"
-            title="Back to documents"
+            title={templateId ? 'Back to Admin' : 'Back to documents'}
           >
-            Devin Design
+            {templateId ? 'Admin' : 'Devin Design'}
           </Link>
           <span className="text-zinc-300">/</span>
+          {templateId ? (
+            <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300">
+              Editing template
+            </span>
+          ) : null}
           <input
             value={title}
             onChange={(e) => useEditor.getState().setTitle(e.target.value)}
@@ -119,16 +139,13 @@ export function Editor({ deckId }: { deckId?: string }) {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <div className="w-[300px] shrink-0">
-          <ChatColumn />
-        </div>
-        <div className="w-[196px] shrink-0">
-          <Filmstrip />
-        </div>
+        <ChatColumn />
+        <Filmstrip />
         <div className="flex min-w-0 flex-1 flex-col">
           <Toolbar />
           <EditorCanvas />
         </div>
+        <TemplateDrawer />
       </div>
     </div>
   );

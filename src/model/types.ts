@@ -10,6 +10,7 @@
 import type { EMU } from './units';
 import type { ColorRef } from './tokens';
 import type { FontFamily } from './fonts';
+import type { SlideChartConfig } from './chart';
 
 /* ------------------------------------------------------------------ */
 /* Geometry                                                           */
@@ -177,6 +178,8 @@ export interface Slide {
   /** Slide template this slide was instantiated from, if any. */
   layoutId?: string;
   notes?: string;
+  /** Source config for this slide's chart, if its elements were generated from one. */
+  chart?: SlideChartConfig;
 }
 
 export interface Deck {

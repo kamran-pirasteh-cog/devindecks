@@ -7,8 +7,8 @@
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { TEMPLATES } from '@/templates/registry';
 import { createDoc, duplicateDoc, listDocs } from '@/docs/repository';
+import { listTemplates, seedIfFirstRun, type StoredTemplate } from '@/templates/repository';
 import { Thumb } from './Thumb';
 
 type Tab = 'templates' | 'docs' | 'blank';
@@ -18,7 +18,13 @@ const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 export function NewDocModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('templates');
+  const [templates, setTemplates] = useState<StoredTemplate[]>([]);
   const docs = listDocs();
+
+  useEffect(() => {
+    seedIfFirstRun();
+    setTemplates(listTemplates());
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -32,8 +38,8 @@ export function NewDocModal({ onClose }: { onClose: () => void }) {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'templates', label: 'Templates' },
-    { id: 'docs', label: 'From a document' },
-    { id: 'blank', label: 'Blank' },
+    { id: 'docs', label: 'Duplicate existing presentation' },
+    { id: 'blank', label: 'Blank slate' },
   ];
 
   return (
@@ -74,7 +80,7 @@ export function NewDocModal({ onClose }: { onClose: () => void }) {
         <div className="overflow-y-auto p-5">
           {tab === 'templates' ? (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-              {TEMPLATES.filter((t) => t.id !== 'blank').map((t) => (
+              {templates.map((t) => (
                 <button
                   key={t.id}
                   onClick={() => open(createDoc(t.id).id)}
@@ -82,7 +88,7 @@ export function NewDocModal({ onClose }: { onClose: () => void }) {
                   title={t.description}
                 >
                   <div className="border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-                    <Thumb deck={{ slides: t.buildSlides(), slideSize: SLIDE_SIZE }} />
+                    <Thumb deck={{ slides: t.slides, slideSize: SLIDE_SIZE }} />
                   </div>
                   <div className="px-3 py-2">
                     <div className="truncate text-xs font-medium">{t.name}</div>

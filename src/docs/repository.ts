@@ -8,7 +8,8 @@
  */
 import { nanoid } from 'nanoid';
 import { SLIDE_16x9, type Deck } from '@/model';
-import { getTemplate, TEMPLATES } from '@/templates/registry';
+import { TEMPLATES } from '@/templates/registry';
+import { getTemplateSlides } from '@/templates/repository';
 
 const KEY = 'devindesign.docs.v1';
 const SEED_KEY = 'devindesign.seeded.v1';
@@ -109,8 +110,13 @@ function newDeck(title: string, slides: Deck['slides'], templateId?: string): De
 
 /** Create a document from a template (or 'blank') and persist it. */
 export function createDoc(templateId = 'blank', title?: string): Deck {
-  const tpl = getTemplate(templateId) ?? getTemplate('blank')!;
-  const deck = newDeck(title ?? untitledName(tpl.name), tpl.buildSlides(), tpl.id);
+  const tpl = getTemplateSlides(templateId) ?? getTemplateSlides('blank')!;
+  const slides = structuredClone(tpl.slides).map((s) => ({
+    ...s,
+    id: `s-${nanoid(8)}`,
+    elements: s.elements.map((e) => ({ ...e, id: `${e.type}-${nanoid(6)}` })),
+  }));
+  const deck = newDeck(title ?? untitledName(tpl.name), slides, templateId);
   saveDoc(deck);
   return deck;
 }

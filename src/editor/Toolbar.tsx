@@ -11,9 +11,7 @@ import type { ShapePreset } from '@/model';
 
 const SHAPES: { preset: ShapePreset; label: string }[] = [
   { preset: 'rect', label: '▭' },
-  { preset: 'roundRect', label: '▢' },
   { preset: 'rightArrow', label: '→' },
-  { preset: 'pill', label: '⬭' },
 ];
 
 const ALIGN: { mode: AlignMode; label: string; title: string }[] = [

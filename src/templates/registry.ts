@@ -104,6 +104,41 @@ function kpiSlide(): Slide {
   return { ...base, elements: [...base.elements, ...cards] };
 }
 
+export interface SlideLayoutDef {
+  id: string;
+  name: string;
+  layout: 'Title' | 'Section' | 'KPI' | 'Blank';
+  buildSlide: () => Slide;
+}
+
+/** Single-slide layouts for the editor's template drawer, bucketed by layout. */
+export const SLIDE_LAYOUTS: SlideLayoutDef[] = [
+  {
+    id: 'layout-title',
+    name: 'Title',
+    layout: 'Title',
+    buildSlide: () => titleSlide('Slide title', 'Subtitle goes here'),
+  },
+  {
+    id: 'layout-section',
+    name: 'Section header',
+    layout: 'Section',
+    buildSlide: () => sectionSlide('Section heading'),
+  },
+  {
+    id: 'layout-kpi',
+    name: 'KPI overview',
+    layout: 'KPI',
+    buildSlide: () => kpiSlide(),
+  },
+  {
+    id: 'layout-blank',
+    name: 'Blank',
+    layout: 'Blank',
+    buildSlide: () => ({ id: sid(), background: surface, elements: [] }),
+  },
+];
+
 export const TEMPLATES: TemplateDef[] = [
   {
     id: 'blank',
