@@ -61,7 +61,7 @@ export function Home() {
               onClick={() => setModal(true)}
               className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
             >
-              + Start something new
+              + New
             </button>
           </div>
         </div>
@@ -76,15 +76,6 @@ export function Home() {
           </div>
 
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {/* Start-new card */}
-            <button
-              onClick={() => setModal(true)}
-              className="group flex aspect-video flex-col items-center justify-center rounded-lg border-2 border-dashed border-zinc-300 text-zinc-400 transition hover:border-indigo-400 hover:text-indigo-500 dark:border-zinc-700"
-            >
-              <span className="text-2xl">+</span>
-              <span className="mt-1 text-xs font-medium">Start something new</span>
-            </button>
-
             {docs.map((deck) => (
               <div
                 key={deck.id}
