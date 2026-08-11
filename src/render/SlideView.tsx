@@ -1,10 +1,11 @@
 /**
  * SlideView — renders a Slide from the canonical model to DOM/SVG. This is the
  * WYSIWYG surface: what it draws must equal what the .pptx export produces.
- * Geometry comes in as EMU and is scaled to px by a single factor so nothing
- * drifts. Fonts, colors and sizes all resolve through the active DesignSystem.
+ *
+ * The per-element visuals live in <ElementVisual>, which the interactive editor
+ * canvas reuses verbatim — so the editing surface, the thumbnail, the preview,
+ * and the export are all literally the same rendering of the same model.
  */
-import { Fragment } from 'react';
 import {
   EMU_PER_POINT,
   FONTS,
@@ -20,28 +21,19 @@ import {
 } from '@/model';
 import { ShapeGeom } from './geometry';
 
-interface SlideViewProps {
-  slide: Slide;
-  slideSize: { w: EMU; h: EMU };
-  designSystem: DesignSystem;
-  /** Rendered width in px; height derives from aspect ratio. */
-  width: number;
-  className?: string;
-}
-
 const dashArray = (dash: Outline['dash'], stroke: number): string | undefined => {
   if (dash === 'dash') return `${stroke * 3} ${stroke * 2}`;
   if (dash === 'dot') return `${stroke} ${stroke * 1.5}`;
   return undefined;
 };
 
-function fillToCss(fill: Fill | undefined, ds: DesignSystem): string {
+export function fillToCss(fill: Fill | undefined, ds: DesignSystem): string {
   if (!fill || fill.kind === 'none') return 'transparent';
   return resolveColor(fill.color, ds);
 }
 
 /** Render a text body as stacked paragraphs with per-run styling. */
-function TextBodyView({
+export function TextBodyView({
   body,
   ds,
   scale,
@@ -70,6 +62,7 @@ function TextBodyView({
         flexDirection: 'column',
         justifyContent: justify,
         overflow: 'hidden',
+        pointerEvents: 'none',
       }}
     >
       {body.paragraphs.map((p, i) => (
@@ -97,8 +90,6 @@ function ParagraphView({
         marginBottom: (p.spaceAfterPt ?? 0) * EMU_PER_POINT * scale,
         textAlign,
         lineHeight: (p.lineSpacingPct ?? 100) / 100,
-        paddingLeft: p.bullet && p.bullet !== 'none' ? 18 * scale * 16 : 0,
-        textIndent: 0,
       }}
     >
       {p.bullet === 'bullet' ? '• ' : null}
@@ -125,7 +116,12 @@ function ParagraphView({
   );
 }
 
-function ElementView({
+/**
+ * The visual for a single element, filling its parent box (which must be sized
+ * to el.rect * scale and positioned by the caller). No selection chrome here —
+ * purely the model's appearance.
+ */
+export function ElementVisual({
   el,
   ds,
   scale,
@@ -136,20 +132,11 @@ function ElementView({
 }) {
   const w = el.rect.w * scale;
   const h = el.rect.h * scale;
-  const box: React.CSSProperties = {
-    position: 'absolute',
-    left: el.rect.x * scale,
-    top: el.rect.y * scale,
-    width: w,
-    height: h,
-    transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
-    transformOrigin: 'center center',
-  };
 
   switch (el.type) {
     case 'text':
       return (
-        <div style={{ ...box, background: fillToCss(el.fill, ds) }}>
+        <div style={{ position: 'absolute', inset: 0, background: fillToCss(el.fill, ds) }}>
           <TextBodyView body={el.body} ds={ds} scale={scale} />
         </div>
       );
@@ -157,7 +144,7 @@ function ElementView({
     case 'shape': {
       const strokeW = el.outline ? el.outline.widthEmu * scale : 0;
       return (
-        <div style={box}>
+        <div style={{ position: 'absolute', inset: 0 }}>
           <svg
             width={w}
             height={h}
@@ -181,24 +168,21 @@ function ElementView({
 
     case 'line': {
       const strokeW = el.outline.widthEmu * scale;
-      // Direction encoded by flipV (default: top-left -> bottom-right).
       const y1 = el.flipV ? h : 0;
       const y2 = el.flipV ? 0 : h;
       return (
-        <div style={box}>
-          <svg width={w} height={h} style={{ overflow: 'visible' }}>
-            <line
-              x1={0}
-              y1={y1}
-              x2={w}
-              y2={y2}
-              stroke={resolveColor(el.outline.color, ds)}
-              strokeWidth={strokeW}
-              strokeDasharray={dashArray(el.outline.dash, strokeW)}
-              strokeLinecap="round"
-            />
-          </svg>
-        </div>
+        <svg width={w} height={h} style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+          <line
+            x1={0}
+            y1={y1}
+            x2={w}
+            y2={y2}
+            stroke={resolveColor(el.outline.color, ds)}
+            strokeWidth={strokeW}
+            strokeDasharray={dashArray(el.outline.dash, strokeW)}
+            strokeLinecap="round"
+          />
+        </svg>
       );
     }
 
@@ -208,13 +192,47 @@ function ElementView({
         <img
           src={el.src}
           alt={el.name ?? ''}
-          style={{ ...box, objectFit: 'cover' }}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
         />
       );
 
     default:
       return null;
   }
+}
+
+function PositionedElement({
+  el,
+  ds,
+  scale,
+}: {
+  el: SlideElement;
+  ds: DesignSystem;
+  scale: number;
+}) {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: el.rect.x * scale,
+        top: el.rect.y * scale,
+        width: el.rect.w * scale,
+        height: el.rect.h * scale,
+        transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
+        transformOrigin: 'center center',
+      }}
+    >
+      <ElementVisual el={el} ds={ds} scale={scale} />
+    </div>
+  );
+}
+
+interface SlideViewProps {
+  slide: Slide;
+  slideSize: { w: EMU; h: EMU };
+  designSystem: DesignSystem;
+  width: number;
+  className?: string;
 }
 
 export function SlideView({
@@ -239,9 +257,7 @@ export function SlideView({
       }}
     >
       {slide.elements.map((el) => (
-        <Fragment key={el.id}>
-          <ElementView el={el} ds={designSystem} scale={scale} />
-        </Fragment>
+        <PositionedElement key={el.id} el={el} ds={designSystem} scale={scale} />
       ))}
     </div>
   );
