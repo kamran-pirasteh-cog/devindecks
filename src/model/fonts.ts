@@ -18,6 +18,18 @@ export interface FontDef {
   /** Weights we allow authors to pick (regular + bold today). */
   weights: number[];
   supportsItalic: boolean;
+  /**
+   * Height of ONE single-spaced line, as a multiple of font size — the font's
+   * own ascent + descent + line gap.
+   *
+   * This is what "single" line spacing means in OOXML: `lnSpc spcPct val=100000`
+   * is 100% of *this*, NOT 100% of the font size. Setting CSS `line-height: 1`
+   * for 100% packs lines tighter than their own glyph boxes and they visibly
+   * collide. Measured from the loaded webfonts (CSS `line-height: normal` at
+   * 100px); we embed these same fonts on .pptx export, so PowerPoint lays out
+   * against identical metrics.
+   */
+  singleLineFactor: number;
 }
 
 export const FONTS: Record<FontFamily, FontDef> = {
@@ -27,6 +39,7 @@ export const FONTS: Record<FontFamily, FontDef> = {
     category: 'sans',
     weights: [400, 500, 600, 700],
     supportsItalic: true,
+    singleLineFactor: 1.3,
   },
   'Geist Mono': {
     family: 'Geist Mono',
@@ -34,6 +47,7 @@ export const FONTS: Record<FontFamily, FontDef> = {
     category: 'mono',
     weights: [400, 500, 700],
     supportsItalic: true,
+    singleLineFactor: 1.3,
   },
   'Source Serif 4': {
     family: 'Source Serif 4',
@@ -41,6 +55,7 @@ export const FONTS: Record<FontFamily, FontDef> = {
     category: 'serif',
     weights: [400, 600, 700],
     supportsItalic: true,
+    singleLineFactor: 1.38,
   },
 };
 

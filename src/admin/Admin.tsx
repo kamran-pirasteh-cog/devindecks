@@ -122,7 +122,7 @@ export function Admin() {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
           <div className="flex items-center gap-2">
             <Link href="/" className="text-sm font-semibold tracking-tight hover:opacity-70">
-              Devin Design
+              Deckmaker
             </Link>
             <span className="text-zinc-300">/</span>
             <span className="text-sm text-zinc-500">Admin</span>

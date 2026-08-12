@@ -5,8 +5,9 @@
  * uses safe primitives, so anything created from one is export-safe by birth.
  */
 import { nanoid } from 'nanoid';
-import { inchesToEmu, token } from '@/model';
-import type { LineElement, ShapeElement, Slide, SlideElement, TextElement } from '@/model';
+import { DEFAULT_DESIGN_SYSTEM, inchesToEmu, SLIDE_16x9, token } from '@/model';
+import type { LineElement, ShapeElement, Slide, TextElement } from '@/model';
+import { ingestSlides, type RawSlide } from '@/model/ingest';
 import bvaPitchSlides from './data/bva-pitch.json';
 import waveOneExecReadoutSlides from './data/wave-one-exec-readout.json';
 
@@ -112,13 +113,36 @@ function kpiSlide(): Slide {
  * A deck imported element-by-element (text boxes, shapes, lines, pictures) from a
  * reference .pptx, so every run and rect is directly editable — not a flattened
  * screenshot. Fresh ids are assigned per build so re-inserting never collides.
+ *
+ * Everything from outside the app goes through `ingestSlides`, which resolves
+ * inherited run styling to explicit values and reports fidelity risks. Run
+ * `npm run validate:decks` to see the diagnostics for the bundled decks; here we
+ * only surface errors, and only in dev, since a template build is a hot path.
+ *
+ * Normalization resolves against DEFAULT_DESIGN_SYSTEM, not the *active* one, on
+ * purpose: an imported deck should look the way it was imported, so a later
+ * brand edit must not retroactively resize runs whose size the source file
+ * omitted. It also keeps this path identical to `npm run validate:decks`.
  */
-function importedDeckSlides(raw: { elements: SlideElement[]; background?: Slide['background'] }[]): Slide[] {
-  return raw.map((s) => ({
-    id: sid(),
-    elements: s.elements.map((e) => ({ ...e, id: eid(e.type) })),
-    ...(s.background ? { background: s.background } : {}),
-  }));
+export function importedDeckSlides(raw: RawSlide[]): Slide[] {
+  const { slides, diagnostics } = ingestSlides(raw, {
+    designSystem: DEFAULT_DESIGN_SYSTEM,
+    slideSize: SLIDE_16x9,
+    slideId: sid,
+    elementId: eid,
+  });
+
+  if (process.env.NODE_ENV !== 'production') {
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    if (errors.length > 0) {
+      console.warn(
+        `[ingest] ${errors.length} error(s) in imported deck:\n` +
+          errors.map((d) => `  slide ${d.slide}: ${d.code} — ${d.message}`).join('\n'),
+      );
+    }
+  }
+
+  return slides;
 }
 
 export type SlideLayoutCategory = 'Title' | 'Section' | 'KPI' | 'Blank';
@@ -174,7 +198,7 @@ export const TEMPLATES: TemplateDef[] = [
     description: 'Imported reference deck: exec readout on the first wave of a Devin engagement. Every text box and shape is directly editable.',
     category: 'Business Review',
     order: 0,
-    buildSlides: () => importedDeckSlides(waveOneExecReadoutSlides as { elements: SlideElement[] }[]),
+    buildSlides: () => importedDeckSlides(waveOneExecReadoutSlides as RawSlide[]),
   },
   {
     id: 'bva-pitch',
@@ -182,7 +206,7 @@ export const TEMPLATES: TemplateDef[] = [
     description: 'Imported reference deck: business value analysis pitch. Every text box and shape is directly editable.',
     category: 'Value',
     order: 1,
-    buildSlides: () => importedDeckSlides(bvaPitchSlides as { elements: SlideElement[] }[]),
+    buildSlides: () => importedDeckSlides(bvaPitchSlides as RawSlide[]),
   },
   {
     id: 'qbr',

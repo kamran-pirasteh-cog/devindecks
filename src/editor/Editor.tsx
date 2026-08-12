@@ -19,6 +19,7 @@ import { ChatColumn } from './ChatColumn';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
+import { fontSizeDirection } from './fontSizeShortcut';
 import { TemplateDrawer } from './TemplateDrawer';
 import { ExportMenu } from './ExportMenu';
 
@@ -100,6 +101,7 @@ export function Editor({
 
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      const sizeDir = fontSizeDirection(e);
 
       const slide = s.currentSlide();
       const primary = slide.elements.find(
@@ -132,6 +134,13 @@ export function Editor({
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
         s.moveBy(s.selectedIds, dx, dy);
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        // Nothing selected, so the arrows page the deck instead of nudging.
+        e.preventDefault();
+        s.stepSlide(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === 'PageUp' || e.key === 'PageDown') {
+        e.preventDefault();
+        s.stepSlide(e.key === 'PageDown' ? 1 : -1);
       } else if (mod && key === 'b' && firstRun) {
         e.preventDefault();
         s.patchRuns(s.selectedIds, { bold: !firstRun.bold });
@@ -150,12 +159,11 @@ export function Editor({
       } else if (mod && key === 'l' && firstRun) {
         e.preventDefault();
         s.patchParagraphs(s.selectedIds, { align: 'left' });
-      } else if (mod && e.altKey && e.key === '>' && firstRun) {
+      } else if (sizeDir && firstRun) {
         e.preventDefault();
-        s.patchRuns(s.selectedIds, { sizePt: nextFontSize(firstRun.sizePt ?? 12, 'up') });
-      } else if (mod && e.altKey && e.key === '<' && firstRun) {
-        e.preventDefault();
-        s.patchRuns(s.selectedIds, { sizePt: nextFontSize(firstRun.sizePt ?? 12, 'down') });
+        s.patchRuns(s.selectedIds, {
+          sizePt: nextFontSize(firstRun.sizePt ?? s.designSystem.type.body.sizePt, sizeDir),
+        });
       } else if (mod && key === 'w' && s.selectedIds.length >= 2) {
         e.preventDefault();
         s.align('top');
@@ -185,7 +193,7 @@ export function Editor({
             className="text-sm font-semibold tracking-tight hover:opacity-70"
             title={templateId || layoutId ? 'Back to Admin' : 'Back to documents'}
           >
-            {templateId || layoutId ? 'Admin' : 'Devin Design'}
+            {templateId || layoutId ? 'Admin' : 'Deckmaker'}
           </Link>
           <span className="text-zinc-300">/</span>
           {layoutId ? (

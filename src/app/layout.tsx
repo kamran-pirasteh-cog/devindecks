@@ -21,7 +21,7 @@ const sourceSerif = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "Devin Design",
+  title: "Deckmaker",
   description: "Brand-consistent deck creation for Cognition",
 };
 
