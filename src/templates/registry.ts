@@ -6,13 +6,17 @@
  */
 import { nanoid } from 'nanoid';
 import { inchesToEmu, token } from '@/model';
-import type { LineElement, ShapeElement, Slide, TextElement } from '@/model';
+import type { LineElement, ShapeElement, Slide, SlideElement, TextElement } from '@/model';
+import bvaPitchSlides from './data/bva-pitch.json';
+import waveOneExecReadoutSlides from './data/wave-one-exec-readout.json';
 
 export interface TemplateDef {
   id: string;
   name: string;
   description: string;
   category: 'Blank' | 'Business Review' | 'Value' | 'Enablement';
+  /** Lower sorts first; built-ins without an order fall to the end, alphabetically. */
+  order?: number;
   buildSlides: () => Slide[];
 }
 
@@ -104,10 +108,27 @@ function kpiSlide(): Slide {
   return { ...base, elements: [...base.elements, ...cards] };
 }
 
+/**
+ * A deck imported element-by-element (text boxes, shapes, lines, pictures) from a
+ * reference .pptx, so every run and rect is directly editable — not a flattened
+ * screenshot. Fresh ids are assigned per build so re-inserting never collides.
+ */
+function importedDeckSlides(raw: { elements: SlideElement[]; background?: Slide['background'] }[]): Slide[] {
+  return raw.map((s) => ({
+    id: sid(),
+    elements: s.elements.map((e) => ({ ...e, id: eid(e.type) })),
+    ...(s.background ? { background: s.background } : {}),
+  }));
+}
+
+export type SlideLayoutCategory = 'Title' | 'Section' | 'KPI' | 'Blank';
+
+export const SLIDE_LAYOUT_CATEGORIES: SlideLayoutCategory[] = ['Title', 'Section', 'KPI', 'Blank'];
+
 export interface SlideLayoutDef {
   id: string;
   name: string;
-  layout: 'Title' | 'Section' | 'KPI' | 'Blank';
+  layout: SlideLayoutCategory;
   buildSlide: () => Slide;
 }
 
@@ -146,6 +167,22 @@ export const TEMPLATES: TemplateDef[] = [
     description: 'Start from an empty slide.',
     category: 'Blank',
     buildSlides: () => [{ id: sid(), background: surface, elements: [] }],
+  },
+  {
+    id: 'wave-one-exec-readout',
+    name: 'Wave One Exec Readout',
+    description: 'Imported reference deck: exec readout on the first wave of a Devin engagement. Every text box and shape is directly editable.',
+    category: 'Business Review',
+    order: 0,
+    buildSlides: () => importedDeckSlides(waveOneExecReadoutSlides as { elements: SlideElement[] }[]),
+  },
+  {
+    id: 'bva-pitch',
+    name: 'BVA Pitch',
+    description: 'Imported reference deck: business value analysis pitch. Every text box and shape is directly editable.',
+    category: 'Value',
+    order: 1,
+    buildSlides: () => importedDeckSlides(bvaPitchSlides as { elements: SlideElement[] }[]),
   },
   {
     id: 'qbr',

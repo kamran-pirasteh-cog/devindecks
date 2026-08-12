@@ -28,6 +28,7 @@ import {
   type TextRun,
 } from '@/model';
 import { buildChartElements } from '@/templates/charts';
+import { generateRemixes } from '@/templates/remix';
 
 export type AlignMode =
   | 'left'
@@ -37,12 +38,30 @@ export type AlignMode =
   | 'vcenter'
   | 'bottom';
 
+/** PowerPoint's "increase/decrease font size" buttons step through this preset list. */
+export const FONT_SIZE_STEPS = [
+  8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96,
+];
+
+export function nextFontSize(current: number, dir: 'up' | 'down'): number {
+  if (dir === 'up') {
+    const next = FONT_SIZE_STEPS.find((n) => n > current);
+    return next ?? current;
+  }
+  const prev = [...FONT_SIZE_STEPS].reverse().find((n) => n < current);
+  return prev ?? current;
+}
+
 interface EditorState {
   deck: Deck;
   designSystem: DesignSystem;
   currentSlideId: string;
   selectedIds: string[];
   editingId: string | null;
+
+  // slide (filmstrip) multi-selection
+  selectedSlideIds: string[];
+  slideSelectionAnchor: string | null;
 
   past: Deck[];
   future: Deck[];
@@ -76,8 +95,14 @@ interface EditorState {
   addSlide: () => void;
   insertSlides: (slides: Slide[]) => void;
   duplicateSlide: (id: string) => void;
+  remixSlide: (id: string) => void;
   deleteSlide: (id: string) => void;
   updateSlideChart: (id: string, config: SlideChartConfig) => void;
+
+  // slide multi-selection (filmstrip)
+  selectSlideRange: (id: string) => void;
+  deleteSlides: (ids: string[]) => void;
+  moveSlides: (ids: string[], beforeId: string | null) => void;
 
   // history
   commit: () => void;
@@ -101,6 +126,8 @@ export const useEditor = create<EditorState>()(
     currentSlideId: '',
     selectedIds: [],
     editingId: null,
+    selectedSlideIds: [],
+    slideSelectionAnchor: null,
     past: [],
     future: [],
 
@@ -142,6 +169,27 @@ export const useEditor = create<EditorState>()(
 
     setCurrentSlide(id) {
       set((s) => {
+        s.currentSlideId = id;
+        s.selectedIds = [];
+        s.editingId = null;
+        s.selectedSlideIds = [id];
+        s.slideSelectionAnchor = id;
+      });
+    },
+
+    selectSlideRange(id) {
+      set((s) => {
+        const ids = s.deck.slides.map((sl) => sl.id);
+        const anchor = s.slideSelectionAnchor ?? s.currentSlideId;
+        const anchorIdx = ids.indexOf(anchor);
+        const clickedIdx = ids.indexOf(id);
+        if (anchorIdx < 0 || clickedIdx < 0) {
+          s.selectedSlideIds = [id];
+          s.slideSelectionAnchor = id;
+          return;
+        }
+        const [lo, hi] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
+        s.selectedSlideIds = ids.slice(lo, hi + 1);
         s.currentSlideId = id;
         s.selectedIds = [];
         s.editingId = null;
@@ -202,16 +250,52 @@ export const useEditor = create<EditorState>()(
       });
     },
 
-    deleteSlide(id) {
-      if (get().deck.slides.length <= 1) return;
+    remixSlide(id) {
       get().commit();
       set((s) => {
         const idx = s.deck.slides.findIndex((sl) => sl.id === id);
-        s.deck.slides = s.deck.slides.filter((sl) => sl.id !== id);
-        if (s.currentSlideId === id) {
-          s.currentSlideId = s.deck.slides[Math.max(0, idx - 1)].id;
+        if (idx < 0) return;
+        const variants = generateRemixes(s.deck.slides[idx], s.deck.slideSize);
+        s.deck.slides.splice(idx + 1, 0, ...variants);
+        s.currentSlideId = variants[0]?.id ?? s.currentSlideId;
+        s.selectedIds = [];
+      });
+    },
+
+    deleteSlide(id) {
+      get().deleteSlides([id]);
+    },
+
+    deleteSlides(ids) {
+      const idSet = new Set(ids);
+      const { deck } = get();
+      const remaining = deck.slides.filter((sl) => !idSet.has(sl.id));
+      if (remaining.length === 0) return;
+      get().commit();
+      set((s) => {
+        const idx = s.deck.slides.findIndex((sl) => idSet.has(sl.id));
+        const wasCurrentDeleted = idSet.has(s.currentSlideId);
+        s.deck.slides = s.deck.slides.filter((sl) => !idSet.has(sl.id));
+        if (wasCurrentDeleted) {
+          s.currentSlideId = s.deck.slides[Math.max(0, Math.min(idx, s.deck.slides.length - 1))].id;
         }
         s.selectedIds = [];
+        s.selectedSlideIds = [];
+        s.slideSelectionAnchor = null;
+      });
+    },
+
+    moveSlides(ids, beforeId) {
+      if (ids.length === 0) return;
+      get().commit();
+      set((s) => {
+        const idSet = new Set(ids);
+        const moved = s.deck.slides.filter((sl) => idSet.has(sl.id));
+        if (moved.length === 0) return;
+        const rest = s.deck.slides.filter((sl) => !idSet.has(sl.id));
+        const insertAt = beforeId ? rest.findIndex((sl) => sl.id === beforeId) : -1;
+        rest.splice(insertAt < 0 ? rest.length : insertAt, 0, ...moved);
+        s.deck.slides = rest;
       });
     },
 
@@ -444,6 +528,8 @@ export const useEditor = create<EditorState>()(
         s.deck = prev;
         s.selectedIds = [];
         s.editingId = null;
+        s.selectedSlideIds = [];
+        s.slideSelectionAnchor = null;
       });
     },
 
@@ -455,6 +541,8 @@ export const useEditor = create<EditorState>()(
         s.deck = next;
         s.selectedIds = [];
         s.editingId = null;
+        s.selectedSlideIds = [];
+        s.slideSelectionAnchor = null;
       });
     },
   })),
@@ -482,6 +570,8 @@ export function loadDeck(deck: Deck, ds?: DesignSystem) {
     currentSlideId: deck.slides[0]?.id ?? '',
     selectedIds: [],
     editingId: null,
+    selectedSlideIds: [],
+    slideSelectionAnchor: null,
     past: [],
     future: [],
   }));

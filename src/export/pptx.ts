@@ -174,7 +174,11 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
           });
           break;
         case 'picture':
-          slide.addImage({ data: el.src, ...xywh(el), rounding: false });
+          slide.addImage(
+            el.src.startsWith('data:')
+              ? { data: el.src, ...xywh(el), rounding: false }
+              : { path: el.src, ...xywh(el), rounding: false },
+          );
           break;
       }
     }
