@@ -195,6 +195,13 @@ export interface Deck {
   updatedAt: string;
   /** Free-text labels (e.g. client names) for organizing/filtering documents. */
   tags?: string[];
+  /** Who owns this document (free text until there's real auth). */
+  owner?: string;
+  /**
+   * When this was moved to Deleted items. Set means deleted-but-recoverable:
+   * hidden from the dashboard, still on disk until it's purged from there.
+   */
+  deletedAt?: string;
 }
 
 /* ------------------------------------------------------------------ */

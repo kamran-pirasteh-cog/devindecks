@@ -28,7 +28,6 @@ import {
   type TextRun,
 } from '@/model';
 import { buildChartElements } from '@/templates/charts';
-import { generateRemixes } from '@/templates/remix';
 
 export type AlignMode =
   | 'left'
@@ -72,6 +71,7 @@ interface EditorState {
   clearSelection: () => void;
   setEditing: (id: string | null) => void;
   setCurrentSlide: (id: string) => void;
+  stepSlide: (delta: number) => void;
   setTitle: (title: string) => void;
 
   // element mutations (all commit unless transient)
@@ -95,7 +95,6 @@ interface EditorState {
   addSlide: () => void;
   insertSlides: (slides: Slide[]) => void;
   duplicateSlide: (id: string) => void;
-  remixSlide: (id: string) => void;
   deleteSlide: (id: string) => void;
   updateSlideChart: (id: string, config: SlideChartConfig) => void;
 
@@ -177,6 +176,14 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    /** Move `delta` slides from the current one, clamped at both ends. */
+    stepSlide(delta) {
+      const { deck, currentSlideId, setCurrentSlide } = get();
+      const i = deck.slides.findIndex((sl) => sl.id === currentSlideId);
+      const next = deck.slides[i + delta];
+      if (next) setCurrentSlide(next.id);
+    },
+
     selectSlideRange(id) {
       set((s) => {
         const ids = s.deck.slides.map((sl) => sl.id);
@@ -246,18 +253,6 @@ export const useEditor = create<EditorState>()(
         copy.elements = copy.elements.map((e) => ({ ...e, id: `${e.id}-${nanoid(4)}` }));
         s.deck.slides.splice(idx + 1, 0, copy);
         s.currentSlideId = newSlideId;
-        s.selectedIds = [];
-      });
-    },
-
-    remixSlide(id) {
-      get().commit();
-      set((s) => {
-        const idx = s.deck.slides.findIndex((sl) => sl.id === id);
-        if (idx < 0) return;
-        const variants = generateRemixes(s.deck.slides[idx], s.deck.slideSize);
-        s.deck.slides.splice(idx + 1, 0, ...variants);
-        s.currentSlideId = variants[0]?.id ?? s.currentSlideId;
         s.selectedIds = [];
       });
     },

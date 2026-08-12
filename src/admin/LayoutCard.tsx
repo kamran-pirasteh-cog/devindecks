@@ -64,9 +64,15 @@ export function LayoutCard({
   return (
     <div
       onClick={() => !renaming && router.push(`/admin/layouts/${layout.id}`)}
-      className="group relative cursor-pointer overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
+      // Same dropdown-behind-the-next-card problem as DocCard (see the note
+      // there), plus `overflow-hidden` had to come off the card — it clipped
+      // the menu at the card's own edge. It only exists to round the preview's
+      // corners, so it belongs on the preview.
+      className={`group relative cursor-pointer rounded-lg border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 ${
+        menuOpen ? 'z-20' : ''
+      }`}
     >
-      <div className="border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
+      <div className="overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
         <SlideView slide={layout.slide} slideSize={SLIDE_SIZE} designSystem={designSystem} width={320} />
       </div>
       <div className="px-3 py-2">

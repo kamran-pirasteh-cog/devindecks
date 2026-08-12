@@ -1,13 +1,12 @@
 'use client';
 
 /** Slide navigator — thumbnails via the same SlideView renderer, scaled down. */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { SlideView } from '@/render/SlideView';
 import { useEditor } from '@/store/editorStore';
 import { useResizableWidth } from './useResizableWidth';
+import { useContentWidth } from './useContentWidth';
 import { ResizeHandle } from './ResizeHandle';
-
-const THUMB_PADDING_X = 24; // px-3 on both sides of the thumbnail column
 
 /** First non-dragged slide after `afterIndex`, or null to mean "end of list". */
 function nextDropTargetId(afterIndex: number, draggingIds: string[], slides: { id: string }[]) {
@@ -26,11 +25,13 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
   const selectSlideRange = useEditor((s) => s.selectSlideRange);
   const addSlide = useEditor((s) => s.addSlide);
   const duplicateSlide = useEditor((s) => s.duplicateSlide);
-  const remixSlide = useEditor((s) => s.remixSlide);
   const deleteSlides = useEditor((s) => s.deleteSlides);
   const moveSlides = useEditor((s) => s.moveSlides);
   const { width, startDrag } = useResizableWidth(196, 180, 320, 'right');
-  const thumbWidth = width - THUMB_PADDING_X;
+  // Measured, not derived: the thumbnail column scrolls, so its usable width is
+  // the panel width minus padding *and* the scrollbar. See useContentWidth.
+  const listRef = useRef<HTMLDivElement>(null);
+  const thumbWidth = useContentWidth(listRef);
 
   const [draggingIds, setDraggingIds] = useState<string[] | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -62,6 +63,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
           )}
         </div>
         <div
+          ref={listRef}
           className="flex-1 space-y-2 overflow-y-auto px-3 pb-3"
           onKeyDown={(e) => {
             if (singleSlide) return;
@@ -129,6 +131,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                     if (e.shiftKey) selectSlideRange(slide.id);
                     else setCurrentSlide(slide.id);
                   }}
+                  style={{ aspectRatio: `${deck.slideSize.w} / ${deck.slideSize.h}` }}
                   className={`block w-full overflow-hidden rounded ring-1 ${
                     isActive
                       ? 'ring-2 ring-indigo-500'
@@ -137,7 +140,14 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                         : 'ring-black/10 hover:ring-zinc-400'
                   }`}
                 >
-                  <SlideView slide={slide} slideSize={deck.slideSize} designSystem={ds} width={thumbWidth} />
+                  {thumbWidth === null ? null : (
+                    <SlideView
+                      slide={slide}
+                      slideSize={deck.slideSize}
+                      designSystem={ds}
+                      width={thumbWidth}
+                    />
+                  )}
                 </button>
                 <span className="absolute left-1 top-1 rounded bg-black/50 px-1 text-[9px] text-white">
                   {i + 1}
@@ -162,13 +172,6 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                         </button>
                       ) : null}
                     </div>
-                    <button
-                      onClick={() => remixSlide(slide.id)}
-                      title="Remix: generate layout variations of this slide"
-                      className="absolute bottom-1 right-1 hidden items-center justify-center rounded bg-black/50 px-1.5 h-6 text-sm leading-none text-white hover:bg-black/70 group-hover:flex"
-                    >
-                      ✦ Remix
-                    </button>
                   </>
                 )}
               </div>

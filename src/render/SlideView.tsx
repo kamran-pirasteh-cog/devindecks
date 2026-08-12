@@ -13,6 +13,7 @@ import {
   type DesignSystem,
   type EMU,
   type Fill,
+  type FontFamily,
   type Outline,
   type Paragraph,
   type Slide,
@@ -51,6 +52,9 @@ export function TextBodyView({
 
   return (
     <div
+      // Tagged so the editor can find this box and measure the text inside it
+      // (fit-box-to-text) without knowing how the element wraps it.
+      className="dd-text-body"
       style={{
         position: 'absolute',
         inset: 0,
@@ -61,7 +65,14 @@ export function TextBodyView({
         display: 'flex',
         flexDirection: 'column',
         justifyContent: justify,
-        overflow: 'hidden',
+        // NOT `overflow: hidden`. A PowerPoint text box with autofit off does
+        // not clip — text that outgrows the shape spills outside it and stays
+        // fully visible (that's why "shrink text on overflow" exists as an
+        // option). Google Slides does the same. Clipping here invented a
+        // constraint the source app never applies, silently eating any line
+        // that didn't fit a box we must not resize. The slide container still
+        // clips at the slide edge, which IS what both engines do.
+        overflow: 'visible',
         pointerEvents: 'none',
       }}
     >
@@ -82,6 +93,25 @@ function ParagraphView({
   scale: number;
 }) {
   const textAlign = (p.align ?? 'left') as 'left' | 'center' | 'right' | 'justify';
+  // The paragraph must carry its own font-size and line-height, both taken from
+  // its LARGEST run — which is how PowerPoint sizes a line.
+  //
+  // font-size: a line box is at least as tall as its block's strut, so leaving
+  // <p> at the inherited 16px browser default inflates every line to ~16px no
+  // matter how small the runs are, clipping text in boxes sized for the real type.
+  //
+  // line-height: OOXML's 100% means one *single-spaced line* (the font's own
+  // ascent + descent + gap), not 100% of the font size — so scale the font's
+  // singleLineFactor, or lines pack tighter than their glyphs and collide.
+  const largest = p.runs.reduce<{ pt: number; font: FontFamily }>(
+    (max, r) => {
+      const pt = r.sizePt ?? ds.type.body.sizePt;
+      return pt > max.pt ? { pt, font: r.font ?? ds.fonts.body } : max;
+    },
+    { pt: 0, font: ds.fonts.body },
+  );
+  const linePt = largest.pt || ds.type.body.sizePt;
+  const lineHeight = ((p.lineSpacingPct ?? 100) / 100) * FONTS[largest.font].singleLineFactor;
   return (
     <p
       style={{
@@ -89,7 +119,8 @@ function ParagraphView({
         marginTop: (p.spaceBeforePt ?? 0) * EMU_PER_POINT * scale,
         marginBottom: (p.spaceAfterPt ?? 0) * EMU_PER_POINT * scale,
         textAlign,
-        lineHeight: (p.lineSpacingPct ?? 100) / 100,
+        fontSize: linePt * EMU_PER_POINT * scale,
+        lineHeight,
       }}
     >
       {p.bullet === 'bullet' ? '• ' : null}
@@ -176,7 +207,27 @@ export function ElementVisual({
       const y1 = el.flipV ? h : 0;
       const y2 = el.flipV ? 0 : h;
       return (
-        <svg width={w} height={h} style={{ position: 'absolute', inset: 0, overflow: 'visible' }}>
+        // A line's box is zero on its cross axis (h=0 horizontal, w=0
+        // vertical), and an <svg> with a zero width or height renders NOTHING
+        // — the whole subtree is disabled. Floor both at 1px and let the stroke
+        // overflow; the geometry below still uses the true w/h.
+        <svg
+          width={Math.max(w, 1)}
+          height={Math.max(h, 1)}
+          style={{ position: 'absolute', inset: 0, overflow: 'visible' }}
+        >
+          {/* A line's box is zero-thickness on its cross axis, so there is
+              nothing to click. This invisible fat stroke gives it a grab
+              target; it paints nothing, in the editor or on export. */}
+          <line
+            x1={0}
+            y1={y1}
+            x2={w}
+            y2={y2}
+            stroke="transparent"
+            strokeWidth={Math.max(strokeW, 10)}
+            pointerEvents="stroke"
+          />
           <line
             x1={0}
             y1={y1}

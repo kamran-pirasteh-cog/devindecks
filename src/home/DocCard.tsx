@@ -11,9 +11,11 @@ import {
   isTitleAvailable,
   removeDocTag,
   renameDoc,
+  setDocOwner,
   suggestCopyTitle,
 } from '@/docs/repository';
 import { Thumb } from './Thumb';
+import { ConfirmDialog } from './ConfirmDialog';
 
 function timeAgo(iso: string): string {
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -26,20 +28,23 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-type MenuView = 'main' | 'tag' | 'duplicate';
+type MenuView = 'main' | 'tag' | 'owner' | 'duplicate';
 
 export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuView, setMenuView] = useState<MenuView>('main');
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [title, setTitle] = useState(deck.title);
   const [copied, setCopied] = useState(false);
   const [tagInput, setTagInput] = useState('');
+  const [ownerInput, setOwnerInput] = useState(deck.owner ?? '');
   const [dupName, setDupName] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const tagInputRef = useRef<HTMLInputElement>(null);
+  const ownerInputRef = useRef<HTMLInputElement>(null);
   const dupInputRef = useRef<HTMLInputElement>(null);
 
   const tags = deck.tags ?? [];
@@ -65,6 +70,13 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
 
   useEffect(() => {
     if (menuView === 'tag') tagInputRef.current?.focus();
+    if (menuView === 'owner') {
+      setOwnerInput(deck.owner ?? '');
+      requestAnimationFrame(() => {
+        ownerInputRef.current?.focus();
+        ownerInputRef.current?.select();
+      });
+    }
     if (menuView === 'duplicate') {
       setDupName(suggestCopyTitle(deck.title));
       requestAnimationFrame(() => {
@@ -98,8 +110,13 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
 
   const remove = (e: React.MouseEvent) => {
     e.stopPropagation();
-    deleteDoc(deck.id);
     setMenuOpen(false);
+    setConfirmDelete(true);
+  };
+
+  const confirmRemove = () => {
+    deleteDoc(deck.id);
+    setConfirmDelete(false);
     onChange();
   };
 
@@ -109,6 +126,13 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
       setTagInput('');
       onChange();
     }
+  };
+
+  const commitOwner = () => {
+    setDocOwner(deck.id, ownerInput);
+    setMenuOpen(false);
+    setMenuView('main');
+    onChange();
   };
 
   const removeTag = (tag: string) => {
@@ -130,7 +154,15 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
   return (
     <div
       onClick={() => !renaming && router.push(`/edit/${deck.id}`)}
-      className="group relative cursor-pointer rounded-lg border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
+      // `z-20` while the menu is open, on the CARD and not just the menu: the
+      // hover lift is a transform, which makes the hovered card a stacking
+      // context — and an open menu means the pointer is on this card. That
+      // traps the menu's own z-index inside the card, so the next row of cards
+      // (later siblings, z-index auto) painted straight over the dropdown.
+      // Lifting the whole card is what actually gets its subtree out in front.
+      className={`group relative cursor-pointer rounded-lg border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 ${
+        menuOpen ? 'z-20' : ''
+      }`}
     >
       <div className="overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
         <Thumb deck={deck} />
@@ -174,7 +206,10 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
               </div>
             )}
             <div className="mt-0.5 text-[10px] text-zinc-400">
-              {deck.slides.length} slide{deck.slides.length === 1 ? '' : 's'}
+              {deck.slides.length} slide{deck.slides.length === 1 ? '' : 's'} · Owner:{' '}
+              <span className={deck.owner ? 'text-zinc-500 dark:text-zinc-300' : 'italic'}>
+                {deck.owner ?? 'Unassigned'}
+              </span>
             </div>
             <div className="mt-0.5 text-[10px] text-zinc-400">
               Created {timeAgo(deck.createdAt)} · Last updated {timeAgo(deck.updatedAt)}
@@ -215,6 +250,12 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
                       className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
                     >
                       Tag{tags.length ? ` (${tags.length})` : ''}
+                    </button>
+                    <button
+                      onClick={() => setMenuView('owner')}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                    >
+                      Set owner
                     </button>
                     <button
                       onClick={() => setMenuView('duplicate')}
@@ -280,6 +321,41 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
                       className="w-full rounded border border-zinc-200 bg-white px-2 py-1 text-xs outline-none focus:border-indigo-300 dark:border-zinc-600 dark:bg-zinc-900"
                     />
                   </div>
+                ) : menuView === 'owner' ? (
+                  <div className="px-3 py-2">
+                    <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
+                      <button
+                        onClick={() => setMenuView('main')}
+                        className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                        title="Back"
+                      >
+                        ←
+                      </button>
+                      Owner
+                    </div>
+                    <input
+                      ref={ownerInputRef}
+                      value={ownerInput}
+                      onChange={(e) => setOwnerInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          commitOwner();
+                        }
+                      }}
+                      placeholder="Who owns this document?"
+                      className="w-full rounded border border-zinc-200 bg-white px-2 py-1 text-xs outline-none focus:border-indigo-300 dark:border-zinc-600 dark:bg-zinc-900"
+                    />
+                    <button
+                      onClick={commitOwner}
+                      className="mt-2 w-full rounded bg-black px-2 py-1 text-xs font-medium text-white dark:bg-white dark:text-black"
+                    >
+                      Save owner
+                    </button>
+                    <div className="mt-1 text-[10px] text-zinc-400">
+                      Leave blank to clear the owner.
+                    </div>
+                  </div>
                 ) : (
                   <div className="px-3 py-2">
                     <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
@@ -328,6 +404,16 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
           </div>
         </div>
       </div>
+
+      {confirmDelete ? (
+        <ConfirmDialog
+          title="Delete this document?"
+          message={`“${deck.title}” will move to Deleted items. You can restore it from there, or delete it for good.`}
+          confirmLabel="Delete"
+          onConfirm={confirmRemove}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      ) : null}
     </div>
   );
 }

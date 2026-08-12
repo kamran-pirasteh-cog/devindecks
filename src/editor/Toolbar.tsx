@@ -5,8 +5,11 @@
  * store action; it holds no logic of its own. The same actions back the future
  * Devin chat.
  */
+import { useRef, useState } from 'react';
 import { useEditor, type AlignMode } from '@/store/editorStore';
-import { makeLine, makeShape, makeText } from './factories';
+import { makeShape, makeText } from './factories';
+import { LinePopover } from './LinePopover';
+import { ShortcutsModal } from './ShortcutsModal';
 import type { ShapePreset } from '@/model';
 
 const SHAPES: { preset: ShapePreset; label: string }[] = [
@@ -63,15 +66,23 @@ export function Toolbar() {
   const selCount = useEditor((s) => s.selectedIds.length);
   const canUndo = useEditor((s) => s.past.length > 0);
   const canRedo = useEditor((s) => s.future.length > 0);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showLine, setShowLine] = useState(false);
+  const lineAnchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="flex items-center gap-0.5 border-b border-zinc-200 bg-white px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-950">
       <Btn onClick={() => addElement(makeText())} title="Add text">
         <span className="font-serif">T</span>
       </Btn>
-      <Btn onClick={() => addElement(makeLine())} title="Add line">
-        ╱
-      </Btn>
+      <div ref={lineAnchorRef} className="relative flex">
+        <Btn onClick={() => setShowLine((v) => !v)} title="Add line">
+          ╱
+        </Btn>
+        {showLine ? (
+          <LinePopover onClose={() => setShowLine(false)} anchorRef={lineAnchorRef} />
+        ) : null}
+      </div>
       <Divider />
       {SHAPES.map((s) => (
         <Btn key={s.preset} onClick={() => addElement(makeShape(s.preset))} title={`Add ${s.preset}`}>
@@ -104,6 +115,15 @@ export function Toolbar() {
       <Btn onClick={redo} title="Redo" disabled={!canRedo}>
         ↻
       </Btn>
+      <Divider />
+      <button
+        onClick={() => setShowShortcuts(true)}
+        title="Keyboard shortcuts"
+        className="flex h-8 items-center rounded-md px-2.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+      >
+        Shortcuts
+      </button>
+      {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
     </div>
   );
 }

@@ -11,6 +11,9 @@ import { SLIDE_16x9, type Deck } from '@/model';
 import { TEMPLATES } from '@/templates/registry';
 import { getTemplateSlides } from '@/templates/repository';
 
+/** Stand-in for the signed-in user until Phase 5 brings real auth. */
+export const DEFAULT_OWNER = 'Me';
+
 const KEY = 'devindesign.docs.v1';
 const SEED_KEY = 'devindesign.seeded.v1';
 
@@ -32,8 +35,18 @@ function write(map: DocMap) {
 
 const now = () => new Date().toISOString();
 
+/** Live documents — everything except what's sitting in Deleted items. */
 export function listDocs(): Deck[] {
-  return Object.values(read()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return Object.values(read())
+    .filter((d) => !d.deletedAt)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** Deleted items, most recently deleted first. */
+export function listDeletedDocs(): Deck[] {
+  return Object.values(read())
+    .filter((d) => d.deletedAt)
+    .sort((a, b) => (b.deletedAt ?? '').localeCompare(a.deletedAt ?? ''));
 }
 
 export function getDoc(id: string): Deck | null {
@@ -46,9 +59,41 @@ export function saveDoc(deck: Deck): void {
   write(map);
 }
 
+/**
+ * Move a document to Deleted items. It stays on disk — `deletedAt` is what
+ * hides it — so it can be restored. `updatedAt` is deliberately untouched:
+ * deleting isn't editing, and a restored document should keep its real
+ * last-edited time.
+ */
 export function deleteDoc(id: string): void {
   const map = read();
+  if (!map[id]) return;
+  map[id] = { ...map[id], deletedAt: now() };
+  write(map);
+}
+
+/** Put it back on the dashboard. */
+export function restoreDoc(id: string): void {
+  const map = read();
+  if (!map[id]) return;
+  const { deletedAt: _deletedAt, ...rest } = map[id];
+  map[id] = rest;
+  write(map);
+}
+
+/** Delete for good, from Deleted items. This is the only unrecoverable path. */
+export function purgeDoc(id: string): void {
+  const map = read();
   delete map[id];
+  write(map);
+}
+
+/** Empty Deleted items entirely. */
+export function purgeAllDeleted(): void {
+  const map = read();
+  for (const doc of Object.values(map)) {
+    if (doc.deletedAt) delete map[doc.id];
+  }
   write(map);
 }
 
@@ -66,6 +111,24 @@ export function setDocTags(id: string, tags: string[]): void {
     map[id] = { ...map[id], tags, updatedAt: now() };
     write(map);
   }
+}
+
+export function setDocOwner(id: string, owner: string): void {
+  const map = read();
+  if (map[id]) {
+    const trimmed = owner.trim();
+    map[id] = { ...map[id], owner: trimmed || undefined, updatedAt: now() };
+    write(map);
+  }
+}
+
+/** All distinct owners across every document, for building the owner filter. */
+export function listAllOwners(): string[] {
+  const set = new Set<string>();
+  for (const doc of listDocs()) {
+    if (doc.owner) set.add(doc.owner);
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
 
 export function addDocTag(id: string, tag: string): void {
@@ -87,7 +150,7 @@ export function removeDocTag(id: string, tag: string): void {
 /** All distinct tags across every document, for building filter chips. */
 export function listAllTags(): string[] {
   const set = new Set<string>();
-  for (const doc of Object.values(read())) {
+  for (const doc of listDocs()) {
     for (const t of doc.tags ?? []) set.add(t);
   }
   return Array.from(set).sort((a, b) => a.localeCompare(b));
@@ -98,6 +161,7 @@ function newDeck(title: string, slides: Deck['slides'], templateId?: string): De
   return {
     id: `doc-${nanoid(10)}`,
     title,
+    owner: DEFAULT_OWNER,
     slideSize: { w: SLIDE_16x9.w, h: SLIDE_16x9.h },
     slides,
     designSystemId: 'ds.default',
@@ -129,9 +193,9 @@ function untitledName(templateName: string): string {
 export function isTitleAvailable(title: string, excludeId?: string): boolean {
   const t = title.trim().toLowerCase();
   if (!t) return false;
-  return !Object.values(read()).some(
-    (d) => d.id !== excludeId && d.title.trim().toLowerCase() === t,
-  );
+  // Deleted items don't reserve their titles — an invisible document must not
+  // block a name the user can't see or free up.
+  return !listDocs().some((d) => d.id !== excludeId && d.title.trim().toLowerCase() === t);
 }
 
 /** A default "Copy of X" / "Copy of X (2)" name that doesn't collide. */
@@ -154,6 +218,7 @@ export function duplicateDoc(id: string, title?: string): Deck | null {
     ...clone,
     id: `doc-${nanoid(10)}`,
     title: title?.trim() || suggestCopyTitle(src.title),
+    owner: DEFAULT_OWNER,
     createdAt: now(),
     updatedAt: now(),
     slides: clone.slides.map((s) => ({
