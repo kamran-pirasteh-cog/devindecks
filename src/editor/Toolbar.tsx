@@ -35,14 +35,19 @@ function Btn({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      disabled={disabled}
-      className="flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-30 dark:text-zinc-200 dark:hover:bg-zinc-800"
-    >
-      {children}
-    </button>
+    <div className="group relative flex">
+      <button
+        onClick={onClick}
+        aria-label={title}
+        disabled={disabled}
+        className="flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-30 dark:text-zinc-200 dark:hover:bg-zinc-800"
+      >
+        {children}
+      </button>
+      <span className="pointer-events-none absolute top-full left-1/2 z-10 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-800 px-2 py-1 text-xs text-white opacity-0 transition-opacity delay-300 group-hover:opacity-100 dark:bg-zinc-700">
+        {title}
+      </span>
+    </div>
   );
 }
 
@@ -53,7 +58,6 @@ export function Toolbar() {
   const align = useEditor((s) => s.align);
   const distribute = useEditor((s) => s.distribute);
   const reorder = useEditor((s) => s.reorder);
-  const deleteSelected = useEditor((s) => s.deleteSelected);
   const undo = useEditor((s) => s.undo);
   const redo = useEditor((s) => s.redo);
   const selCount = useEditor((s) => s.selectedIds.length);
@@ -92,10 +96,6 @@ export function Toolbar() {
       </Btn>
       <Btn onClick={() => reorder('back')} title="Send to back" disabled={selCount < 1}>
         ⬇
-      </Btn>
-      <Divider />
-      <Btn onClick={deleteSelected} title="Delete" disabled={selCount < 1}>
-        🗑
       </Btn>
       <div className="flex-1" />
       <Btn onClick={undo} title="Undo" disabled={!canUndo}>

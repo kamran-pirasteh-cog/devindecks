@@ -8,8 +8,14 @@
  * before inserting; hovering a chart card reveals an arrow to start it
  * horizontal instead of vertical.
  */
-import { useState } from 'react';
-import { SLIDE_LAYOUTS } from '@/templates/registry';
+import { useEffect, useState } from 'react';
+import { SLIDE_LAYOUT_CATEGORIES } from '@/templates/registry';
+import {
+  getLayoutSlide,
+  listLayouts,
+  seedLayoutsIfFirstRun,
+  type StoredLayout,
+} from '@/templates/layoutRepository';
 import {
   buildChartElements,
   buildChartSlide,
@@ -23,8 +29,6 @@ import { Thumb } from '@/home/Thumb';
 import { useResizableWidth } from './useResizableWidth';
 import { ResizeHandle } from './ResizeHandle';
 import { ChartEditorModal } from './ChartEditorModal';
-
-const CATEGORY_ORDER = ['Title', 'Section', 'KPI', 'Blank'] as const;
 
 type Tab = 'templates' | 'charts' | 'artifacts';
 type SlideSize = { w: number; h: number };
@@ -76,6 +80,7 @@ export function TemplateDrawer() {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('templates');
   const [chartModal, setChartModal] = useState<SlideChartConfig | null>(null);
+  const [layouts, setLayouts] = useState<StoredLayout[]>([]);
   const slideSize = useEditor((s) => s.deck.slideSize);
   const insertSlides = useEditor((s) => s.insertSlides);
   const ds = useEditor((s) => s.designSystem);
@@ -83,12 +88,17 @@ export function TemplateDrawer() {
   // Drawer padding (p-3 = 12px/side) + card border (1px/side).
   const thumbWidth = width - 26;
 
+  useEffect(() => {
+    seedLayoutsIfFirstRun();
+    setLayouts(listLayouts());
+  }, []);
+
   if (!open) {
     return (
       <div className="flex h-full w-10 shrink-0 flex-col items-center border-l border-zinc-200 bg-white py-2.5 dark:border-zinc-800 dark:bg-zinc-950">
         <button
           onClick={() => setOpen(true)}
-          title="Templates, charts & artifacts"
+          title="Layouts, charts & artifacts"
           className="flex h-6 w-6 items-center justify-center rounded text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
         >
           ▦
@@ -98,7 +108,7 @@ export function TemplateDrawer() {
   }
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'templates', label: 'Templates' },
+    { id: 'templates', label: 'Layouts' },
     { id: 'charts', label: 'Charts' },
     { id: 'artifacts', label: 'Artifacts' },
   ];
@@ -137,24 +147,27 @@ export function TemplateDrawer() {
 
         {tab === 'templates' ? (
           <div className="flex-1 space-y-5 overflow-y-auto p-3">
-            {CATEGORY_ORDER.map((category) => {
-              const layouts = SLIDE_LAYOUTS.filter((l) => l.layout === category);
-              if (!layouts.length) return null;
+            {SLIDE_LAYOUT_CATEGORIES.map((category) => {
+              const inCategory = layouts.filter((l) => l.category === category);
+              if (!inCategory.length) return null;
               return (
                 <div key={category}>
                   <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
                     {category}
                   </div>
                   <div className="space-y-3">
-                    {layouts.map((l) => (
+                    {inCategory.map((l) => (
                       <button
                         key={l.id}
-                        onClick={() => insertSlides([l.buildSlide()])}
+                        onClick={() => {
+                          const slide = getLayoutSlide(l.id);
+                          if (slide) insertSlides([slide]);
+                        }}
                         title={`Insert "${l.name}" slide`}
                         className="group block w-full overflow-hidden rounded-lg border border-zinc-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
                       >
                         <div className="border-b border-zinc-100 dark:border-zinc-800">
-                          <Thumb deck={{ slides: [l.buildSlide()], slideSize }} width={thumbWidth} />
+                          <Thumb deck={{ slides: [l.slide], slideSize }} width={thumbWidth} />
                         </div>
                         <div className="px-2 py-1.5">
                           <div className="truncate text-xs font-medium">{l.name}</div>
@@ -165,6 +178,11 @@ export function TemplateDrawer() {
                 </div>
               );
             })}
+            {layouts.length === 0 ? (
+              <div className="pt-1 text-center text-[10px] text-zinc-400">
+                No layouts yet. Create some from Admin → Layouts.
+              </div>
+            ) : null}
           </div>
         ) : tab === 'charts' ? (
           <div className="flex-1 space-y-3 overflow-y-auto p-3">

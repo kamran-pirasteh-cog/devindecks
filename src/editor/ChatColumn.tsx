@@ -21,9 +21,10 @@ export function ChatColumn() {
         <button
           onClick={() => setOpen(true)}
           title="Open Devin"
-          className="flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs font-semibold text-white hover:opacity-80"
+          className="flex h-6 w-6 items-center justify-center rounded-full hover:opacity-80"
         >
-          D
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/devin-logo.svg" alt="" className="h-6 w-6 dark:invert" />
         </button>
       </div>
     );
@@ -36,8 +37,9 @@ export function ChatColumn() {
         className="flex h-full flex-col border-r border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
       >
         <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
-          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs font-semibold text-white">
-            D
+          <div className="flex h-6 w-6 items-center justify-center rounded-full">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/devin-logo.svg" alt="" className="h-6 w-6 dark:invert" />
           </div>
           <span className="text-sm font-medium">Devin</span>
           <div className="flex-1" />

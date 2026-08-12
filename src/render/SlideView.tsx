@@ -257,7 +257,10 @@ export function SlideView({
         position: 'relative',
         width,
         height,
-        background: fillToCss(slide.background, designSystem) || '#ffffff',
+        background:
+          slide.background?.kind === 'solid'
+            ? resolveColor(slide.background.color, designSystem)
+            : '#ffffff',
         overflow: 'hidden',
       }}
     >

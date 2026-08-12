@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 import Moveable from 'react-moveable';
 import Selecto from 'react-selecto';
 import { ElementVisual } from '@/render/SlideView';
-import { pxToEmu, type Rect } from '@/model';
+import { pxToEmu, resolveColor, type Rect } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { ShapeContextMenu } from './ShapeContextMenu';
 import { TextEditor } from './TextEditor';
@@ -145,7 +145,12 @@ export function EditorCanvas() {
       <div
         ref={canvasRef}
         className="dd-canvas group relative shadow-xl ring-1 ring-black/10"
-        style={{ width, height, background: '#ffffff' }}
+        style={{
+          width,
+          height,
+          background:
+            slide.background?.kind === 'solid' ? resolveColor(slide.background.color, ds) : '#ffffff',
+        }}
         onMouseDown={(e) => {
           // Clicking empty canvas clears selection (marquee handled by Selecto).
           if (e.target === canvasRef.current) store().clearSelection();

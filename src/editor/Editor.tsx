@@ -8,28 +8,46 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEditor, loadDeck } from '@/store/editorStore';
+import { useEditor, loadDeck, nextFontSize } from '@/store/editorStore';
 import { SAMPLE_DECK } from '@/model/sample';
-import type { Deck } from '@/model';
-import { downloadDeckPptx } from '@/export/pptx';
+import { inchesToEmu, type Deck } from '@/model';
 import { getDoc, saveDoc } from '@/docs/repository';
 import { getStoredTemplate, saveTemplateFromDeck, templateAsDeck } from '@/templates/repository';
+import { getStoredLayout, layoutAsDeck, saveLayoutFromSlide } from '@/templates/layoutRepository';
 import { getActiveDesignSystem } from '@/design/repository';
 import { ChatColumn } from './ChatColumn';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
 import { TemplateDrawer } from './TemplateDrawer';
+import { ExportMenu } from './ExportMenu';
 
-export function Editor({ deckId, templateId }: { deckId?: string; templateId?: string }) {
+export function Editor({
+  deckId,
+  templateId,
+  layoutId,
+}: {
+  deckId?: string;
+  templateId?: string;
+  layoutId?: string;
+}) {
   const router = useRouter();
   const title = useEditor((s) => s.deck.title);
   const ds = useEditor((s) => s.designSystem);
   const ready = useEditor((s) => s.currentSlideId !== '');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load the requested document, template, or the sample when opened bare.
+  // Load the requested document, template, layout, or the sample when opened bare.
   useEffect(() => {
+    if (layoutId) {
+      const l = getStoredLayout(layoutId);
+      if (!l) {
+        router.replace('/admin');
+        return;
+      }
+      loadDeck(layoutAsDeck(l), getActiveDesignSystem());
+      return;
+    }
     if (templateId) {
       const tpl = getStoredTemplate(templateId);
       if (!tpl) {
@@ -45,17 +63,18 @@ export function Editor({ deckId, templateId }: { deckId?: string; templateId?: s
       return;
     }
     loadDeck(doc, getActiveDesignSystem());
-  }, [deckId, templateId, router]);
+  }, [deckId, templateId, layoutId, router]);
 
-  // Autosave: persist the deck (or template) a beat after any change.
+  // Autosave: persist the deck (or template/layout) a beat after any change.
   useEffect(() => {
-    if (!deckId && !templateId) return;
+    if (!deckId && !templateId && !layoutId) return;
     const unsub = useEditor.subscribe((state, prev) => {
       if (state.deck === prev.deck) return;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         const deck = useEditor.getState().deck;
-        if (templateId) saveTemplateFromDeck(templateId, deck);
+        if (layoutId) saveLayoutFromSlide(layoutId, deck.slides[0], deck.title);
+        else if (templateId) saveTemplateFromDeck(templateId, deck);
         else saveDoc(deck);
       }, 500);
     });
@@ -63,9 +82,12 @@ export function Editor({ deckId, templateId }: { deckId?: string; templateId?: s
       unsub();
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [deckId, templateId]);
+  }, [deckId, templateId, layoutId]);
 
   useEffect(() => {
+    const NUDGE = inchesToEmu(0.083);
+    const NUDGE_LARGE = NUDGE * 10;
+
     const onKey = (e: KeyboardEvent) => {
       const s = useEditor.getState();
       const typing =
@@ -77,10 +99,21 @@ export function Editor({ deckId, templateId }: { deckId?: string; templateId?: s
       if (typing) return;
 
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === 'z') {
+      const key = e.key.toLowerCase();
+
+      const slide = s.currentSlide();
+      const primary = slide.elements.find(
+        (el) => s.selectedIds.includes(el.id) && (el.type === 'text' || (el.type === 'shape' && el.body)),
+      );
+      const firstRun =
+        primary && (primary.type === 'text' || (primary.type === 'shape' && primary.body))
+          ? primary.body?.paragraphs[0]?.runs[0]
+          : undefined;
+
+      if (mod && key === 'z') {
         e.preventDefault();
         e.shiftKey ? s.redo() : s.undo();
-      } else if (mod && e.key.toLowerCase() === 'y') {
+      } else if (mod && key === 'y') {
         e.preventDefault();
         s.redo();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -90,6 +123,51 @@ export function Editor({ deckId, templateId }: { deckId?: string; templateId?: s
         }
       } else if (e.key === 'Escape') {
         s.clearSelection();
+      } else if (
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+        s.selectedIds.length
+      ) {
+        e.preventDefault();
+        const step = e.shiftKey ? NUDGE_LARGE : NUDGE;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        s.moveBy(s.selectedIds, dx, dy);
+      } else if (mod && key === 'b' && firstRun) {
+        e.preventDefault();
+        s.patchRuns(s.selectedIds, { bold: !firstRun.bold });
+      } else if (mod && key === 'i' && firstRun) {
+        e.preventDefault();
+        s.patchRuns(s.selectedIds, { italic: !firstRun.italic });
+      } else if (mod && key === 'u' && firstRun) {
+        e.preventDefault();
+        s.patchRuns(s.selectedIds, { underline: !firstRun.underline });
+      } else if (mod && key === 'e' && firstRun) {
+        e.preventDefault();
+        s.patchParagraphs(s.selectedIds, { align: 'center' });
+      } else if (mod && key === 'r' && firstRun) {
+        e.preventDefault();
+        s.patchParagraphs(s.selectedIds, { align: 'right' });
+      } else if (mod && key === 'l' && firstRun) {
+        e.preventDefault();
+        s.patchParagraphs(s.selectedIds, { align: 'left' });
+      } else if (mod && e.altKey && e.key === '>' && firstRun) {
+        e.preventDefault();
+        s.patchRuns(s.selectedIds, { sizePt: nextFontSize(firstRun.sizePt ?? 12, 'up') });
+      } else if (mod && e.altKey && e.key === '<' && firstRun) {
+        e.preventDefault();
+        s.patchRuns(s.selectedIds, { sizePt: nextFontSize(firstRun.sizePt ?? 12, 'down') });
+      } else if (mod && key === 'w' && s.selectedIds.length >= 2) {
+        e.preventDefault();
+        s.align('top');
+      } else if (mod && key === 'a' && s.selectedIds.length >= 2) {
+        e.preventDefault();
+        s.align('left');
+      } else if (mod && key === 'd' && s.selectedIds.length >= 2) {
+        e.preventDefault();
+        s.align('right');
+      } else if (mod && key === 's' && s.selectedIds.length >= 2) {
+        e.preventDefault();
+        s.align('bottom');
       }
     };
     window.addEventListener('keydown', onKey);
@@ -103,14 +181,18 @@ export function Editor({ deckId, templateId }: { deckId?: string; templateId?: s
       <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <div className="flex items-center gap-2">
           <Link
-            href={templateId ? '/admin' : '/'}
+            href={templateId || layoutId ? '/admin' : '/'}
             className="text-sm font-semibold tracking-tight hover:opacity-70"
-            title={templateId ? 'Back to Admin' : 'Back to documents'}
+            title={templateId || layoutId ? 'Back to Admin' : 'Back to documents'}
           >
-            {templateId ? 'Admin' : 'Devin Design'}
+            {templateId || layoutId ? 'Admin' : 'Devin Design'}
           </Link>
           <span className="text-zinc-300">/</span>
-          {templateId ? (
+          {layoutId ? (
+            <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300">
+              Editing layout
+            </span>
+          ) : templateId ? (
             <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300">
               Editing template
             </span>
@@ -125,22 +207,13 @@ export function Editor({ deckId, templateId }: { deckId?: string; templateId?: s
           <span className="text-[11px] text-zinc-400">
             {ds.name} · v{ds.version}
           </span>
-          <button
-            onClick={() => {
-              const s = useEditor.getState();
-              downloadDeckPptx(s.deck, s.designSystem);
-            }}
-            className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
-            title="Export to .pptx"
-          >
-            Export .pptx
-          </button>
+          <ExportMenu />
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <ChatColumn />
-        <Filmstrip />
+        <Filmstrip singleSlide={!!layoutId} />
         <div className="flex min-w-0 flex-1 flex-col">
           <Toolbar />
           <EditorCanvas />

@@ -4,8 +4,8 @@
  * Deck template repository. Mirrors `docs/repository.ts`: templates are
  * persisted (localStorage today) so Admin can create, edit and delete them
  * like documents, instead of only shipping the built-ins baked into
- * `registry.ts`. On first run we seed storage from that built-in library so
- * existing templates show up pre-populated and editable.
+ * `registry.ts`. Every load ensures storage has all built-ins (skipping ones
+ * already present), so newly added built-ins show up without wiping edits.
  *
  * 'blank' stays special-cased in the registry (it's the "start empty" escape
  * hatch on the new-document picker, not something Admin authors) and never
@@ -16,13 +16,14 @@ import { SLIDE_16x9, type Deck, type PictureElement, type Slide } from '@/model'
 import { getTemplate, TEMPLATES, type TemplateDef } from './registry';
 
 const KEY = 'devindesign.templates.v1';
-const SEED_KEY = 'devindesign.templates.seeded.v1';
 
 export interface StoredTemplate {
   id: string;
   name: string;
   description: string;
   category: TemplateDef['category'];
+  /** Lower sorts first; carried over from the built-in def, if any. */
+  order?: number;
   slides: Slide[];
   createdAt: string;
   updatedAt: string;
@@ -46,12 +47,11 @@ function write(map: TemplateMap) {
 
 const now = () => new Date().toISOString();
 
-/** Seed the store from the built-in registry (once) so they're editable. */
+/** Ensure every built-in template exists in storage (idempotent, safe to call every load). */
 export function seedIfFirstRun(): void {
   if (typeof window === 'undefined') return;
-  if (window.localStorage.getItem(SEED_KEY)) return;
-  window.localStorage.setItem(SEED_KEY, '1');
   const map = read();
+  let changed = false;
   for (const t of TEMPLATES) {
     if (t.id === 'blank' || map[t.id]) continue;
     const ts = now();
@@ -60,16 +60,20 @@ export function seedIfFirstRun(): void {
       name: t.name,
       description: t.description,
       category: t.category,
+      order: t.order,
       slides: t.buildSlides(),
       createdAt: ts,
       updatedAt: ts,
     };
+    changed = true;
   }
-  write(map);
+  if (changed) write(map);
 }
 
 export function listTemplates(): StoredTemplate[] {
-  return Object.values(read()).sort((a, b) => a.name.localeCompare(b.name));
+  return Object.values(read()).sort(
+    (a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.name.localeCompare(b.name),
+  );
 }
 
 export function getStoredTemplate(id: string): StoredTemplate | null {

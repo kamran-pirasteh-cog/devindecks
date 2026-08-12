@@ -1,11 +1,13 @@
 'use client';
 
 /**
- * Admin view — Kamran's control room. Two areas:
+ * Admin view — Kamran's control room. Three areas:
  *  - Design system: edit the brand palette + semantic type roles, with a live
  *    preview. Saving bumps the version; because decks reference tokens, the
  *    change reflows everywhere.
- *  - Templates: the deck template library (previews). Authoring lands here next.
+ *  - Layouts: the individual slide-layout library, bucketed by type (mirrors
+ *    the RHS drawer's grouping). Build from scratch or upload a reference.
+ *  - Artifacts: the shared asset library (coming soon).
  *
  * In Playground this route gets gated to a template-admin Okta group.
  */
@@ -14,16 +16,16 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ALLOWED_FONTS, type ColorToken, type DesignSystem, type FontFamily, type TypeRole } from '@/model';
 import { SlideView } from '@/render/SlideView';
-import { TEMPLATES } from '@/templates/registry';
+import { SLIDE_LAYOUT_CATEGORIES, TEMPLATES, type SlideLayoutCategory } from '@/templates/registry';
 import {
-  createTemplate,
-  createTemplateFromImage,
-  listTemplates,
-  seedIfFirstRun,
-  type StoredTemplate,
-} from '@/templates/repository';
+  createLayout,
+  createLayoutFromImage,
+  listLayouts,
+  seedLayoutsIfFirstRun,
+  type StoredLayout,
+} from '@/templates/layoutRepository';
 import { getActiveDesignSystem, resetDesignSystem, saveDesignSystem } from '@/design/repository';
-import { TemplateCard } from './TemplateCard';
+import { LayoutCard } from './LayoutCard';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
@@ -35,7 +37,13 @@ const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
   'kpiValue',
 ];
 
-type Tab = 'design' | 'templates';
+type Tab = 'design' | 'templates' | 'artifacts';
+
+const TAB_LABELS: Record<Tab, string> = {
+  design: 'Design system',
+  templates: 'Layouts',
+  artifacts: 'Artifacts',
+};
 
 function stripExt(filename: string): string {
   return filename.replace(/\.[^./]+$/, '');
@@ -47,29 +55,29 @@ export function Admin() {
   const [ds, setDs] = useState<DesignSystem>(() => getActiveDesignSystem());
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [templates, setTemplates] = useState<StoredTemplate[]>([]);
+  const [layouts, setLayouts] = useState<StoredLayout[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    seedIfFirstRun();
-    setTemplates(listTemplates());
+    seedLayoutsIfFirstRun();
+    setLayouts(listLayouts());
   }, []);
 
-  const refreshTemplates = () => setTemplates(listTemplates());
+  const refreshLayouts = () => setLayouts(listLayouts());
 
-  const buildTemplate = () => {
-    const t = createTemplate({ name: 'Untitled template', category: 'Blank' });
-    router.push(`/admin/templates/${t.id}`);
+  const buildLayout = (category: SlideLayoutCategory) => {
+    const l = createLayout({ name: 'Untitled layout', category });
+    router.push(`/admin/layouts/${l.id}`);
   };
 
-  const uploadTemplate = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const uploadLayout = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const t = createTemplateFromImage(reader.result as string, stripExt(file.name));
-      router.push(`/admin/templates/${t.id}`);
+      const l = createLayoutFromImage(reader.result as string, stripExt(file.name));
+      router.push(`/admin/layouts/${l.id}`);
     };
     reader.readAsDataURL(file);
   };
@@ -144,7 +152,7 @@ export function Admin() {
           </div>
         </div>
         <div className="mx-auto flex max-w-6xl gap-1 px-5">
-          {(['design', 'templates'] as Tab[]).map((t) => (
+          {(['design', 'templates', 'artifacts'] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -154,7 +162,7 @@ export function Admin() {
                   : 'border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
               }`}
             >
-              {t === 'design' ? 'Design system' : 'Templates'}
+              {TAB_LABELS[t]}
             </button>
           ))}
         </div>
@@ -293,46 +301,65 @@ export function Admin() {
               ))}
             </div>
           </div>
-        ) : (
+        ) : tab === 'templates' ? (
           <div>
             <div className="mb-4 flex items-center justify-between">
               <p className="text-xs text-zinc-500">
-                Deck templates. Click one to open and edit it, or create a new one from scratch or
-                from an uploaded reference.
+                Individual slide layouts, bucketed by type. Click one to open and edit it, or
+                create a new one from scratch or from an uploaded reference.
               </p>
               <div className="flex shrink-0 gap-2">
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
-                  onChange={uploadTemplate}
+                  onChange={uploadLayout}
                   className="hidden"
                 />
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
-                  Upload to create template
+                  Upload to create layout
                 </button>
                 <button
-                  onClick={buildTemplate}
+                  onClick={() => buildLayout('Blank')}
                   className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
                 >
-                  + Build template
+                  + Build layout
                 </button>
               </div>
             </div>
-            {templates.length === 0 ? (
+            {layouts.length === 0 ? (
               <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
-                No templates yet.
+                No layouts yet.
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                {templates.map((t) => (
-                  <TemplateCard key={t.id} template={t} designSystem={ds} onChange={refreshTemplates} />
-                ))}
+              <div className="space-y-8">
+                {SLIDE_LAYOUT_CATEGORIES.map((category) => {
+                  const inCategory = layouts.filter((l) => l.category === category);
+                  if (!inCategory.length) return null;
+                  return (
+                    <div key={category}>
+                      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                        {category}
+                      </h3>
+                      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                        {inCategory.map((l) => (
+                          <LayoutCard key={l.id} layout={l} designSystem={ds} onChange={refreshLayouts} />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
+            A shared library of images and icons, organized into folders. Upload and organize
+            assets here — everyone picks from the same set in the deck editor.
+            <div className="mt-2 text-xs text-zinc-400">(Coming soon.)</div>
           </div>
         )}
       </main>

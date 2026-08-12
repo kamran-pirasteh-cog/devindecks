@@ -17,7 +17,7 @@ import {
   type TextElement,
   type Paragraph,
 } from '@/model';
-import { useEditor } from '@/store/editorStore';
+import { useEditor, nextFontSize } from '@/store/editorStore';
 
 export function TextEditor({
   el,
@@ -76,9 +76,35 @@ export function TextEditor({
           e.preventDefault();
           store().setEditing(null);
         }
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        const mod = e.metaKey || e.ctrlKey;
+        const key = e.key.toLowerCase();
+        if (mod && key === 'enter') {
           e.preventDefault();
           commit();
+        } else if (mod && key === 'b') {
+          e.preventDefault();
+          store().patchRuns([el.id], { bold: !firstRun.bold });
+        } else if (mod && key === 'i') {
+          e.preventDefault();
+          store().patchRuns([el.id], { italic: !firstRun.italic });
+        } else if (mod && key === 'u') {
+          e.preventDefault();
+          store().patchRuns([el.id], { underline: !firstRun.underline });
+        } else if (mod && key === 'e') {
+          e.preventDefault();
+          store().patchParagraphs([el.id], { align: 'center' });
+        } else if (mod && key === 'r') {
+          e.preventDefault();
+          store().patchParagraphs([el.id], { align: 'right' });
+        } else if (mod && key === 'l') {
+          e.preventDefault();
+          store().patchParagraphs([el.id], { align: 'left' });
+        } else if (mod && e.altKey && e.key === '>') {
+          e.preventDefault();
+          store().patchRuns([el.id], { sizePt: nextFontSize(firstRun.sizePt ?? ds.type.body.sizePt, 'up') });
+        } else if (mod && e.altKey && e.key === '<') {
+          e.preventDefault();
+          store().patchRuns([el.id], { sizePt: nextFontSize(firstRun.sizePt ?? ds.type.body.sizePt, 'down') });
         }
         e.stopPropagation();
       }}
