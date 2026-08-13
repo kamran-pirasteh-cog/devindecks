@@ -34,26 +34,30 @@ export const DEFAULT_MARGINS: SlideMargins = {
   right: inchesToEmu(0.45),
   top: inchesToEmu(0.45),
   bottom: inchesToEmu(0.6),
-  // Moved down with `top` by the same 0.15in, so the title band keeps its height.
-  contentTop: inchesToEmu(1.3),
+  /*
+   * Sits just clear of a two-line title rather than through it: a 26pt Geist
+   * title (1.3 line factor) hung from `top` renders two lines down to 1.39in,
+   * and the imported decks hang theirs ~0.14in lower still. At 1.3in the guide
+   * fell on the second line's baseline and clipped its descenders.
+   */
+  contentTop: inchesToEmu(1.55),
 };
 
 /**
- * The thin padding between a shape's edge and the text inside it — PowerPoint's
- * default body insets (0.1in sides, 0.05in top/bottom), which is what a shape
- * with `body.insets` unset renders with.
+ * The padding between a shape's edge and the text inside it, for a shape with
+ * `body.insets` unset.
+ *
+ * Zero, deliberately — unlike PowerPoint's 0.1in/0.05in body insets. Text sits
+ * flush with the box it's in, so a box's rect *is* where its text starts and
+ * two boxes aligned on the canvas have their text aligned too. Decks that want
+ * PowerPoint's inset carry it explicitly on `body.insets`.
  *
  * Shared so the renderer's padding and the canvas's snap lines are the SAME
  * distance: a text box dropped on a shape's inner guide lands exactly where
  * that shape's own text would sit, which is what makes placement consistent
  * across every shape on the deck.
  */
-export const DEFAULT_TEXT_INSETS: Insets = {
-  l: inchesToEmu(0.1),
-  t: inchesToEmu(0.05),
-  r: inchesToEmu(0.1),
-  b: inchesToEmu(0.05),
-};
+export const DEFAULT_TEXT_INSETS: Insets = { l: 0, t: 0, r: 0, b: 0 };
 
 /** A shape's text area: its rect pulled in by its insets. */
 export function textInsetBox(rect: Rect, insets?: Insets): Rect {

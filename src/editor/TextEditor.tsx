@@ -16,6 +16,7 @@
  */
 import { useEffect, useRef } from 'react';
 import {
+  DEFAULT_TEXT_INSETS,
   EMU_PER_POINT,
   FONTS,
   resolveColor,
@@ -30,6 +31,7 @@ import { bulletMarkers, clampLevel, indentMetricsPt } from '@/render/bullets';
 import { useEditor, nextFontSize } from '@/store/editorStore';
 import { fontSizeDirection } from './fontSizeShortcut';
 import { formatPainterAction } from './formatShortcut';
+import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
 
 /** Character-level formatting, as carried by the contentEditable DOM. */
 interface Fmt {
@@ -490,6 +492,7 @@ export function TextEditor({
         const key = e.key.toLowerCase();
         const sizeDir = fontSizeDirection(e);
         const painter = formatPainterAction(e);
+        const textEdge = textAlignEdge(e);
         if (painter) {
           e.preventDefault();
           if (painter === 'copy') {
@@ -514,6 +517,17 @@ export function TextEditor({
         } else if (mod && e.shiftKey && (key === '7' || key === '&')) {
           e.preventDefault();
           applyList('number');
+        } else if (textEdge) {
+          // Same chord as on the canvas, so alignment behaves the same whether
+          // the box is selected or being typed into.
+          e.preventDefault();
+          if (textEdge === 'left' || textEdge === 'right') {
+            store().patchParagraphs([el.id], {
+              align: nextParaAlign(textEdge, body.paragraphs[0]?.align),
+            });
+          } else {
+            store().setAnchor([el.id], nextAnchor(textEdge, body.anchor));
+          }
         } else if (mod && (key === 'b' || key === 'i' || key === 'u')) {
           e.preventDefault();
           applyFormat(key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'underline');
@@ -537,10 +551,10 @@ export function TextEditor({
       style={{
         position: 'absolute',
         inset: 0,
-        paddingLeft: (body.insets?.l ?? 91440) * scale,
-        paddingTop: (body.insets?.t ?? 45720) * scale,
-        paddingRight: (body.insets?.r ?? 91440) * scale,
-        paddingBottom: (body.insets?.b ?? 45720) * scale,
+        paddingLeft: (body.insets?.l ?? DEFAULT_TEXT_INSETS.l) * scale,
+        paddingTop: (body.insets?.t ?? DEFAULT_TEXT_INSETS.t) * scale,
+        paddingRight: (body.insets?.r ?? DEFAULT_TEXT_INSETS.r) * scale,
+        paddingBottom: (body.insets?.b ?? DEFAULT_TEXT_INSETS.b) * scale,
         display: 'flex',
         flexDirection: 'column',
         justifyContent: justify,

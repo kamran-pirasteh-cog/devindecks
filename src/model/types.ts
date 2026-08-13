@@ -29,7 +29,13 @@ export interface Rect {
 
 export type Fill =
   | { kind: 'none' }
-  | { kind: 'solid'; color: ColorRef };
+  /**
+   * `alpha` is opacity, 0..1, and absent means fully opaque. Stored as opacity
+   * rather than PowerPoint's transparency percentage because that's what both
+   * render targets want (CSS rgba, OOXML `<a:alpha>`); the UI does the one
+   * subtraction it takes to show it as "40% transparent".
+   */
+  | { kind: 'solid'; color: ColorRef; alpha?: number };
 
 export type DashStyle = 'solid' | 'dash' | 'dot';
 
@@ -217,6 +223,12 @@ export interface Deck {
   tags?: string[];
   /** Who owns this document (free text until there's real auth). */
   owner?: string;
+  /**
+   * Which dashboard folder this document filed under, or unset for "Unfiled".
+   * A document lives in at most one folder — folders are the single-home
+   * hierarchy; tags stay the many-to-many axis.
+   */
+  folderId?: string;
   /**
    * When this was moved to Deleted items. Set means deleted-but-recoverable:
    * hidden from the dashboard, still on disk until it's purged from there.

@@ -16,6 +16,7 @@
  */
 import PptxGenJS from 'pptxgenjs';
 import {
+  DEFAULT_TEXT_INSETS,
   emuToInches,
   emuToPoints,
   FONTS,
@@ -24,6 +25,7 @@ import {
   resolveColor,
   type Deck,
   type DesignSystem,
+  type Fill,
   type Outline,
   type ShapeElement,
   type SlideElement,
@@ -47,6 +49,20 @@ const PRESET_TO_SHAPE: Record<ShapeElement['preset'], string> = {
 
 const dashType = (d: Outline['dash']): 'dash' | 'sysDot' | 'solid' =>
   d === 'dash' ? 'dash' : d === 'dot' ? 'sysDot' : 'solid';
+
+/**
+ * Fill opts, with our 0..1 opacity flipped into the transparency percentage
+ * PowerPoint speaks. Returns undefined for no fill so callers can pick their
+ * own "unfilled" spelling (a text box wants none, a shape wants `type: 'none'`).
+ */
+function fillOpts(fill: Fill | undefined, ds: DesignSystem) {
+  if (!fill || fill.kind !== 'solid') return undefined;
+  const alpha = fill.alpha ?? 1;
+  return {
+    color: hx(fill.color, ds),
+    transparency: alpha >= 1 ? undefined : Math.round((1 - alpha) * 100),
+  };
+}
 
 function outlineOpts(outline: Outline | undefined, ds: DesignSystem) {
   if (!outline) return undefined;
@@ -102,14 +118,15 @@ function bodyBoxOpts(body: TextBody) {
     valign: body.anchor ?? 'top',
     wrap: body.wrap ?? true,
     fit: body.autofit === 'shrink' ? 'shrink' : body.autofit === 'resize' ? 'resize' : 'none',
-    margin: body.insets
-      ? [
-          emuToPoints(body.insets.t),
-          emuToPoints(body.insets.r),
-          emuToPoints(body.insets.b),
-          emuToPoints(body.insets.l),
-        ]
-      : [emuToPoints(45720), emuToPoints(91440), emuToPoints(45720), emuToPoints(91440)],
+    // Always explicit: unset insets mean flush text here (DEFAULT_TEXT_INSETS),
+    // but PowerPoint's own default is 0.1in/0.05in — leaving `margin` off would
+    // let the exported deck re-inset text the editor showed flush.
+    margin: [
+      emuToPoints(body.insets?.t ?? DEFAULT_TEXT_INSETS.t),
+      emuToPoints(body.insets?.r ?? DEFAULT_TEXT_INSETS.r),
+      emuToPoints(body.insets?.b ?? DEFAULT_TEXT_INSETS.b),
+      emuToPoints(body.insets?.l ?? DEFAULT_TEXT_INSETS.l),
+    ],
   };
 }
 
@@ -131,7 +148,7 @@ function addTextElement(slide: any, el: TextElement, ds: DesignSystem) {
   slide.addText(textRuns(el.body, ds), {
     ...xywh(el),
     ...bodyBoxOpts(el.body),
-    fill: el.fill && el.fill.kind === 'solid' ? { color: hx(el.fill.color, ds) } : undefined,
+    fill: fillOpts(el.fill, ds),
     line: outlineOpts(el.outline, ds),
   });
 }
@@ -140,7 +157,7 @@ function addShapeElement(slide: any, el: ShapeElement, ds: DesignSystem) {
   const shapeType = PRESET_TO_SHAPE[el.preset];
   const opts: Record<string, unknown> = {
     ...xywh(el),
-    fill: el.fill && el.fill.kind === 'solid' ? { color: hx(el.fill.color, ds) } : { type: 'none' },
+    fill: fillOpts(el.fill, ds) ?? { type: 'none' },
     line: outlineOpts(el.outline, ds),
     rectRadius: el.preset === 'pill' ? emuToInches(el.rect.h) / 2 : undefined,
   };

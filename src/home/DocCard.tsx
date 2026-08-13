@@ -1,6 +1,6 @@
 'use client';
 
-/** Document card with a "..." menu: rename, tag, copy link, delete. */
+/** Document card with a "..." menu: rename, tag, move to folder, copy link, delete. */
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Deck } from '@/model';
@@ -11,9 +11,11 @@ import {
   isTitleAvailable,
   removeDocTag,
   renameDoc,
+  setDocFolder,
   setDocOwner,
   suggestCopyTitle,
 } from '@/docs/repository';
+import type { DocFolder } from '@/docs/folders';
 import { Thumb } from './Thumb';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -28,9 +30,18 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-type MenuView = 'main' | 'tag' | 'owner' | 'duplicate';
+type MenuView = 'main' | 'tag' | 'owner' | 'duplicate' | 'folder';
 
-export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }) {
+export function DocCard({
+  deck,
+  onChange,
+  /** Folders offered by "Move to folder"; omitted where there's no rail. */
+  folders = [],
+}: {
+  deck: Deck;
+  onChange: () => void;
+  folders?: DocFolder[];
+}) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuView, setMenuView] = useState<MenuView>('main');
@@ -151,9 +162,24 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
     onChange();
   };
 
+  const moveTo = (folderId: string | undefined) => {
+    setDocFolder(deck.id, folderId);
+    setMenuOpen(false);
+    setMenuView('main');
+    onChange();
+  };
+
   return (
     <div
       onClick={() => !renaming && router.push(`/edit/${deck.id}`)}
+      // Dragged onto a folder row in the rail to file it. Suspended while the
+      // title is being renamed, where a drag would fight text selection in the
+      // input; the payload is just the document id (see `FolderRail`).
+      draggable={!renaming}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/devindesign-doc', deck.id);
+        e.dataTransfer.effectAllowed = 'move';
+      }}
       // `z-20` while the menu is open, on the CARD and not just the menu: the
       // hover lift is a transform, which makes the hovered card a stacking
       // context — and an open menu means the pointer is on this card. That
@@ -258,6 +284,12 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
                       Set owner
                     </button>
                     <button
+                      onClick={() => setMenuView('folder')}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                    >
+                      Move to folder
+                    </button>
+                    <button
                       onClick={() => setMenuView('duplicate')}
                       className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
                     >
@@ -356,7 +388,7 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
                       Leave blank to clear the owner.
                     </div>
                   </div>
-                ) : (
+                ) : menuView === 'duplicate' ? (
                   <div className="px-3 py-2">
                     <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
                       <button
@@ -397,6 +429,49 @@ export function DocCard({ deck, onChange }: { deck: Deck; onChange: () => void }
                     >
                       Create duplicate
                     </button>
+                  </div>
+                ) : (
+                  <div className="px-3 py-2">
+                    <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
+                      <button
+                        onClick={() => setMenuView('main')}
+                        className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                        title="Back"
+                      >
+                        ←
+                      </button>
+                      Move to folder
+                    </div>
+                    <div className="-mx-1 max-h-52 overflow-y-auto">
+                      <button
+                        onClick={() => moveTo(undefined)}
+                        className={`flex w-full items-center justify-between rounded px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700 ${
+                          deck.folderId ? '' : 'font-medium text-indigo-600 dark:text-indigo-300'
+                        }`}
+                      >
+                        No folder
+                        {deck.folderId ? null : <span aria-hidden>✓</span>}
+                      </button>
+                      {folders.map((f) => (
+                        <button
+                          key={f.id}
+                          onClick={() => moveTo(f.id)}
+                          className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700 ${
+                            deck.folderId === f.id
+                              ? 'font-medium text-indigo-600 dark:text-indigo-300'
+                              : ''
+                          }`}
+                        >
+                          <span className="truncate">{f.name}</span>
+                          {deck.folderId === f.id ? <span aria-hidden>✓</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                    {folders.length ? null : (
+                      <div className="mt-1 text-[10px] text-zinc-400">
+                        No folders yet — add one in the rail on the left.
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

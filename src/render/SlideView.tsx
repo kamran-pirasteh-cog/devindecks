@@ -35,7 +35,15 @@ const dashArray = (dash: Outline['dash'], stroke: number): string | undefined =>
 
 export function fillToCss(fill: Fill | undefined, ds: DesignSystem): string {
   if (!fill || fill.kind === 'none') return 'transparent';
-  return resolveColor(fill.color, ds);
+  const hex = resolveColor(fill.color, ds);
+  const alpha = fill.alpha ?? 1;
+  if (alpha >= 1) return hex;
+  // Alpha rides along as an 8-digit hex so callers that hand this to `fill=` on
+  // an SVG node or `background` in CSS both keep working unchanged.
+  const byte = Math.round(Math.max(0, alpha) * 255)
+    .toString(16)
+    .padStart(2, '0');
+  return `${hex}${byte}`;
 }
 
 /** Render a text body as stacked paragraphs with per-run styling. */

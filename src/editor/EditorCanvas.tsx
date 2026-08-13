@@ -63,6 +63,7 @@ export function EditorCanvas() {
   const selectedIds = useEditor((s) => s.selectedIds);
   const editingId = useEditor((s) => s.editingId);
   const showGuides = useEditor((s) => s.showGuides);
+  const pendingFitId = useEditor((s) => s.pendingFitId);
 
   const slide = deck.slides.find((s) => s.id === currentSlideId) ?? deck.slides[0];
 
@@ -370,25 +371,51 @@ export function EditorCanvas() {
    * top-left corner put (PowerPoint's "resize shape to fit text" anchor).
    * Non-text elements in the selection are left alone.
    */
+  const fitToText = (id: string, transient = false) => {
+    const el = findEl(id);
+    const node = nodeMap.current.get(id);
+    if (!el || !node) return;
+    if (!(el.type === 'text' || (el.type === 'shape' && el.body))) return;
+    const fit = measureTextFitPx(node, el.rect.w * scale);
+    if (!fit) return;
+    const rect: Rect = {
+      x: el.rect.x,
+      y: el.rect.y,
+      w: pxToEmu(fit.w, scale),
+      h: pxToEmu(fit.h, scale),
+    };
+    if (rect.w === el.rect.w && rect.h === el.rect.h) return;
+    store().setRect(id, rect, transient);
+  };
+
   const fitSelectionToText = () => {
-    selectedIds.forEach((id) => {
-      const el = findEl(id);
-      const node = nodeMap.current.get(id);
-      if (!el || !node) return;
-      if (!(el.type === 'text' || (el.type === 'shape' && el.body))) return;
-      const fit = measureTextFitPx(node, el.rect.w * scale);
-      if (!fit) return;
-      const rect: Rect = {
-        x: el.rect.x,
-        y: el.rect.y,
-        w: pxToEmu(fit.w, scale),
-        h: pxToEmu(fit.h, scale),
-      };
-      if (rect.w === el.rect.w && rect.h === el.rect.h) return;
-      store().setRect(id, rect);
-    });
+    selectedIds.forEach((id) => fitToText(id));
     moveableRef.current?.updateRect();
   };
+
+  /**
+   * Shrink a just-inserted text box onto its own text, so the selection you
+   * land on hugs the type instead of the factory's nominal box. The measurement
+   * needs the rendered node, which only exists here — and only once the webfont
+   * has landed, or it would size the box to the fallback face.
+   *
+   * Transient: it's part of inserting the box, not a second step to undo.
+   */
+  useEffect(() => {
+    if (!pendingFitId || !nodeMap.current.has(pendingFitId)) return;
+    let cancelled = false;
+    document.fonts.ready.then(() => {
+      if (cancelled) return;
+      fitToText(pendingFitId, true);
+      moveableRef.current?.updateRect();
+      store().clearPendingFit();
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `fitToText` closes over this render's scale and deck; both are deps here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFitId, scale, deck]);
 
   /**
    * Start tracking the resize modifiers (Shift = keep ratio, ⌘/Ctrl = resize

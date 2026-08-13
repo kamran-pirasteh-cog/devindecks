@@ -191,7 +191,7 @@ export function ArrangeBar() {
       </Btn>
       <Btn
         onClick={() => ungroup()}
-        title="Ungroup (⌘⇧G)"
+        title="Ungroup (⌘⌥G)"
         disabled={!canUngroup(elements, selectedIds)}
       >
         <Icon>

@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createDoc, duplicateDoc, listDocs } from '@/docs/repository';
+import { createDoc, duplicateDoc, listDocs, setDocFolder } from '@/docs/repository';
 import { listTemplates, seedIfFirstRun, type StoredTemplate } from '@/templates/repository';
 import { Thumb } from './Thumb';
 
@@ -15,7 +15,14 @@ type Tab = 'templates' | 'docs' | 'blank';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 
-export function NewDocModal({ onClose }: { onClose: () => void }) {
+export function NewDocModal({
+  onClose,
+  /** Folder the dashboard was showing, if any — the new document lands there. */
+  folderId,
+}: {
+  onClose: () => void;
+  folderId?: string;
+}) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('templates');
   const [templates, setTemplates] = useState<StoredTemplate[]>([]);
@@ -32,8 +39,13 @@ export function NewDocModal({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // Every path in here funnels through `open`, so filing once here covers
+  // templates, duplicates and blank alike: create something while a folder is
+  // selected and it stays in that folder instead of landing in Unfiled.
   const open = (deckId: string | null) => {
-    if (deckId) router.push(`/edit/${deckId}`);
+    if (!deckId) return;
+    if (folderId) setDocFolder(deckId, folderId);
+    router.push(`/edit/${deckId}`);
   };
 
   const tabs: { id: Tab; label: string }[] = [
