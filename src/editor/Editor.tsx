@@ -20,6 +20,7 @@ import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
 import { fontSizeDirection } from './fontSizeShortcut';
+import { formatPainterAction } from './formatShortcut';
 import { TemplateDrawer } from './TemplateDrawer';
 import { ExportMenu } from './ExportMenu';
 
@@ -88,6 +89,8 @@ export function Editor({
   useEffect(() => {
     const NUDGE = inchesToEmu(0.083);
     const NUDGE_LARGE = NUDGE * 10;
+    /** PowerPoint drops a duplicate slightly down-right of the original. */
+    const DUP_OFFSET = inchesToEmu(0.2);
 
     const onKey = (e: KeyboardEvent) => {
       const s = useEditor.getState();
@@ -102,6 +105,7 @@ export function Editor({
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
       const sizeDir = fontSizeDirection(e);
+      const painter = formatPainterAction(e);
 
       const slide = s.currentSlide();
       const primary = slide.elements.find(
@@ -112,9 +116,17 @@ export function Editor({
           ? primary.body?.paragraphs[0]?.runs[0]
           : undefined;
 
-      if (mod && key === 'z') {
+      // Format painter first: its chords carry Alt/Shift, so they must not be
+      // read as a plain mod+C/V by anything below.
+      if (painter && s.selectedIds.length) {
         e.preventDefault();
-        e.shiftKey ? s.redo() : s.undo();
+        if (painter === 'copy') s.copyFormat();
+        else s.pasteFormat();
+      } else if (mod && !e.shiftKey && key === 'z') {
+        // Undo is mod+Z only; redo is mod+Y. mod+shift+Z is deliberately not
+        // bound, so it falls through rather than acting as a second redo.
+        e.preventDefault();
+        s.undo();
       } else if (mod && key === 'y') {
         e.preventDefault();
         s.redo();
@@ -170,7 +182,11 @@ export function Editor({
       } else if (mod && key === 'a' && s.selectedIds.length >= 2) {
         e.preventDefault();
         s.align('left');
-      } else if (mod && key === 'd' && s.selectedIds.length >= 2) {
+      } else if (mod && !e.shiftKey && key === 'd' && s.selectedIds.length) {
+        // Duplicate wins mod+D (as in PowerPoint); align-right moves to mod+⇧+D.
+        e.preventDefault();
+        s.duplicateBy(s.selectedIds, DUP_OFFSET, DUP_OFFSET);
+      } else if (mod && e.shiftKey && key === 'd' && s.selectedIds.length >= 2) {
         e.preventDefault();
         s.align('right');
       } else if (mod && key === 's' && s.selectedIds.length >= 2) {
@@ -193,7 +209,7 @@ export function Editor({
             className="text-sm font-semibold tracking-tight hover:opacity-70"
             title={templateId || layoutId ? 'Back to Admin' : 'Back to documents'}
           >
-            {templateId || layoutId ? 'Admin' : 'Deckmaker'}
+            {templateId || layoutId ? 'Admin' : 'Devin Decks'}
           </Link>
           <span className="text-zinc-300">/</span>
           {layoutId ? (

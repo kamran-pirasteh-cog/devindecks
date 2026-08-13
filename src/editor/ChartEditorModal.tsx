@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { SlideView } from '@/render/SlideView';
 import { token, type ColorRef, type DesignSystem, type SlideChartConfig } from '@/model';
 import { buildChartElements, CHART_TYPES } from '@/templates/charts';
+import { MODAL_Z } from './layers';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 
@@ -121,7 +122,11 @@ export function ChartEditorModal({
   const preview = buildChartElements(config);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+    <div
+      style={{ zIndex: MODAL_Z }}
+      className="fixed inset-0 flex items-center justify-center bg-black/40 p-4"
+      onClick={onCancel}
+    >
       <div
         className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-zinc-900"
         onClick={(e) => e.stopPropagation()}

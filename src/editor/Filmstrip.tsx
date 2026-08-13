@@ -62,9 +62,11 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
             </button>
           )}
         </div>
+        {/* pt-1: the active thumbnail's ring and the drop indicator are drawn
+            outside the box, so the scroll container needs slack or they clip. */}
         <div
           ref={listRef}
-          className="flex-1 space-y-2 overflow-y-auto px-3 pb-3"
+          className="flex-1 space-y-2 overflow-y-auto px-3 pb-3 pt-1"
           onKeyDown={(e) => {
             if (singleSlide) return;
             if (e.key !== 'Backspace' && e.key !== 'Delete') return;
@@ -149,7 +151,9 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                     />
                   )}
                 </button>
-                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 text-[9px] text-white">
+                {/* Bottom-right: out of the way of the hover actions up top, and
+                    clear of the title area most slides put in the top-left. */}
+                <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/50 px-1 text-[9px] text-white">
                   {i + 1}
                 </span>
                 {singleSlide ? null : (

@@ -6,6 +6,7 @@ import { useEditor } from '@/store/editorStore';
 import { downloadDeckPptx } from '@/export/pptx';
 import { downloadDeckHtml } from '@/export/html';
 import { exportDeckToPdf } from '@/export/pdf';
+import { OVERLAY_Z } from './layers';
 
 const OPTIONS = [
   { key: 'pptx', label: 'PowerPoint (.pptx)' },
@@ -47,7 +48,10 @@ export function ExportMenu() {
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-8 z-10 w-44 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
+        <div
+          style={{ zIndex: OVERLAY_Z }}
+          className="absolute right-0 top-8 w-44 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
+        >
           {OPTIONS.map((opt) => (
             <button
               key={opt.key}

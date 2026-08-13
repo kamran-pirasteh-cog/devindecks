@@ -20,6 +20,7 @@ import { ElementVisual } from '@/render/SlideView';
 import { pxToEmu, resolveColor, type Rect } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { ShapeContextMenu } from './ShapeContextMenu';
+import { SelectionFormatBar } from './SelectionFormatBar';
 import { TextEditor } from './TextEditor';
 import { ChartEditorModal } from './ChartEditorModal';
 import { measureTextFitPx } from './fitToText';
@@ -68,11 +69,17 @@ export function EditorCanvas() {
   const resizeFromCenterRef = useRef(false);
   const resizeModifierCleanupRef = useRef<(() => void) | null>(null);
   // PowerPoint-style drag modifiers: Shift constrains movement to the
-  // horizontal/vertical axis; Ctrl+Shift does the same while dropping a copy
-  // instead of moving the original.
+  // horizontal/vertical axis; ⌘/Ctrl drops a copy instead of moving the
+  // original, and the two combine (⌘⇧-drag = duplicate along one axis).
   const dragAxisLockRef = useRef(false);
   const dragDuplicateRef = useRef(false);
   const dragModifierCleanupRef = useRef<(() => void) | null>(null);
+  // Live previews of the copies a ⌘-drag is about to drop: DOM clones of the
+  // dragged elements that follow the cursor while the originals stay put. Held
+  // in a layer React renders empty and never reconciles, so appending to it
+  // can't fight the reconciler.
+  const ghostLayerRef = useRef<HTMLDivElement>(null);
+  const dragGhostsRef = useRef<Map<HTMLElement, HTMLElement>>(new Map());
   // A selection change that mousedown on an already-selected element implies,
   // held until mouseup so it can be dropped if the gesture turns into a drag.
   const pendingSelectRef = useRef<{ id: string; mode: 'toggle' | 'only' } | null>(null);
@@ -233,12 +240,17 @@ export function EditorCanvas() {
 
   const attachDragModifiers = (inputEvent: any) => {
     dragModifierCleanupRef.current?.();
-    const sync = (ke: KeyboardEvent) => {
-      dragAxisLockRef.current = ke.shiftKey;
-      dragDuplicateRef.current = ke.shiftKey && ke.ctrlKey;
+    // ⌘ (Ctrl off Apple platforms) rather than Ctrl everywhere: Ctrl-drag on a
+    // Mac is a right-click, so it can't be held through a drag.
+    const apply = (shift: boolean, mod: boolean) => {
+      dragAxisLockRef.current = shift;
+      dragDuplicateRef.current = mod;
+      // PowerPoint's copy cursor. Set on <body> so it wins over the element's
+      // own `cursor: move` for the whole gesture, wherever the pointer goes.
+      document.body.style.cursor = mod ? 'copy' : '';
     };
-    dragAxisLockRef.current = !!inputEvent?.shiftKey;
-    dragDuplicateRef.current = !!inputEvent?.shiftKey && !!inputEvent?.ctrlKey;
+    const sync = (ke: KeyboardEvent) => apply(ke.shiftKey, ke.metaKey || ke.ctrlKey);
+    apply(!!inputEvent?.shiftKey, !!(inputEvent?.metaKey || inputEvent?.ctrlKey));
     window.addEventListener('keydown', sync);
     window.addEventListener('keyup', sync);
     dragModifierCleanupRef.current = () => {
@@ -251,6 +263,7 @@ export function EditorCanvas() {
     dragModifierCleanupRef.current = null;
     dragAxisLockRef.current = false;
     dragDuplicateRef.current = false;
+    document.body.style.cursor = '';
   };
   /**
    * Hand the dragged element to the compositor for the length of the gesture.
@@ -305,6 +318,69 @@ export function EditorCanvas() {
     Math.abs(dx) >= Math.abs(dy) ? [dx, 0] : [0, dy];
 
   /**
+   * Repaint a node at its committed position.
+   *
+   * Needed after a ⌘-drag: the original doesn't move, so its React props are
+   * unchanged and React never rewrites the style attribute — leaving the
+   * transform the drag painted, i.e. the original sitting on top of the copy.
+   */
+  const restoreCommittedTransform = (target: HTMLElement) => {
+    const el = findEl(target.dataset.id!);
+    if (!el) return;
+    target.style.transform = `translate(${el.rect.x * scale}px, ${el.rect.y * scale}px)${
+      el.rotation ? ` rotate(${el.rotation}deg)` : ''
+    }`;
+  };
+
+  /**
+   * Paint one frame of a duplicate-drag: the original sits at its committed
+   * position and a clone of it — the copy that will be dropped — moves under
+   * the cursor. Clones are created lazily on the first frame that ⌘ is held, so
+   * a plain drag never pays for them, and ⌘ can be pressed or released mid-drag.
+   */
+  const paintGhost = (target: HTMLElement, dx: number, dy: number) => {
+    const el = findEl(target.dataset.id!);
+    const layer = ghostLayerRef.current;
+    if (!el || !layer) return;
+    let ghost = dragGhostsRef.current.get(target);
+    if (!ghost) {
+      ghost = target.cloneNode(true) as HTMLElement;
+      // A clone is decoration only: it must not be hit-testable (Selecto and
+      // resolveMouseDown both look for `.dd-el`) and must not answer to an id.
+      ghost.classList.remove('dd-el');
+      delete ghost.dataset.id;
+      ghost.style.pointerEvents = 'none';
+      ghost.style.willChange = 'transform';
+      layer.appendChild(ghost);
+      dragGhostsRef.current.set(target, ghost);
+    }
+    ghost.style.transform = `translate(${el.rect.x * scale + dx}px, ${el.rect.y * scale + dy}px)${
+      el.rotation ? ` rotate(${el.rotation}deg)` : ''
+    }`;
+    restoreCommittedTransform(target);
+  };
+  const clearGhosts = () => {
+    dragGhostsRef.current.forEach((ghost) => ghost.remove());
+    dragGhostsRef.current.clear();
+  };
+
+  /**
+   * The element under a viewport point, or undefined for empty space.
+   *
+   * Walks UP from each hit node rather than looking for `.dd-el` in the list
+   * itself: a line's wrapper box is zero-thickness on its cross axis, and a
+   * zero-area box is never returned by elementsFromPoint even when its
+   * overflowing stroke is what got hit. Only the inner <svg>/<line> shows up, so
+   * matching the list directly picked whatever full-size element happened to sit
+   * under the line instead.
+   */
+  const elementAtPoint = (clientX: number, clientY: number) =>
+    document
+      .elementsFromPoint(clientX, clientY)
+      .map((n) => (n as HTMLElement).closest?.('.dd-el') as HTMLElement | null)
+      .find(Boolean) as HTMLElement | undefined;
+
+  /**
    * Single source of truth for what a mousedown selects. It runs in the CAPTURE
    * phase on the whole canvas area because Moveable's overlay (the group drag
    * area in particular) swallows mousedown before it can reach the element or
@@ -319,18 +395,11 @@ export function EditorCanvas() {
     if (typeof target.className === 'string' && /moveable-(control|rotation|line)/.test(target.className)) {
       return;
     }
+    // The format bar acts ON the selection, so using it must never change it —
+    // without this the click lands on empty workspace and clears.
+    if (target.closest?.('.dd-format-bar')) return;
 
-    // Walk UP from each hit node rather than looking for `.dd-el` in the list
-    // itself: a line's wrapper box is zero-thickness on its cross axis, and a
-    // zero-area box is never returned by elementsFromPoint even when its
-    // overflowing stroke is what got hit. Only the inner <svg>/<line> shows up,
-    // so matching the list directly picked whatever full-size element happened
-    // to sit under the line instead.
-    const hit = document
-      .elementsFromPoint(e.clientX, e.clientY)
-      .map((n) => (n as HTMLElement).closest?.('.dd-el') as HTMLElement | null)
-      .find(Boolean) as HTMLElement | undefined;
-    const id = hit?.dataset.id;
+    const id = elementAtPoint(e.clientX, e.clientY)?.dataset.id;
 
     // Right-click opens the context menu on whatever is under the pointer; it
     // must never shrink an existing multi-selection the menu is about to act on.
@@ -386,19 +455,33 @@ export function EditorCanvas() {
         }
       }}
     >
-      <div
-        ref={canvasRef}
-        className="dd-canvas group relative m-auto shrink-0 select-none shadow-xl ring-1 ring-black/10"
-        style={{
-          width: displayWidth,
-          height,
-          background:
-            slide.background?.kind === 'solid' ? resolveColor(slide.background.color, ds) : '#ffffff',
-        }}
-        onContextMenu={(e) => {
-          if (e.target === canvasRef.current) e.preventDefault();
-        }}
-      >
+      {/* The slide plus the format bar hovering over its top-right corner. The
+          bar is absolutely positioned so selecting something doesn't shove the
+          slide down; it sits in the workspace padding above it. */}
+      <div className="relative m-auto shrink-0" style={{ width: displayWidth }}>
+        <div className="absolute bottom-full right-0 z-30 mb-2 flex justify-end">
+          <SelectionFormatBar />
+        </div>
+        <div
+          ref={canvasRef}
+          className="dd-canvas group relative shrink-0 select-none shadow-xl ring-1 ring-black/10"
+          style={{
+            width: displayWidth,
+            height,
+            background:
+              slide.background?.kind === 'solid'
+                ? resolveColor(slide.background.color, ds)
+                : '#ffffff',
+          }}
+          onContextMenu={(e) => {
+            if (e.target === canvasRef.current) e.preventDefault();
+          }}
+        >
+        {/* Empty in JSX on purpose: `paintGhost` appends duplicate-drag previews
+            here, and React never reconciles the children of a node it renders
+            childless. Shares the elements' coordinate origin. */}
+        <div ref={ghostLayerRef} className="pointer-events-none absolute inset-0 z-10" />
+
         {slide.chart ? (
           <button
             onClick={() => setEditingChart(true)}
@@ -523,6 +606,11 @@ export function EditorCanvas() {
               const [dx, dy] = dragAxisLockRef.current
                 ? lockAxis(e.dist[0], e.dist[1])
                 : (e.dist as [number, number]);
+              if (dragDuplicateRef.current) {
+                paintGhost(e.target as HTMLElement, dx, dy);
+                return;
+              }
+              clearGhosts();
               e.target.style.transform = `translate(${el.rect.x * scale + dx}px, ${el.rect.y * scale + dy}px)${
                 el.rotation ? ` rotate(${el.rotation}deg)` : ''
               }`;
@@ -531,6 +619,7 @@ export function EditorCanvas() {
               const wasDuplicate = dragDuplicateRef.current;
               const wasAxisLocked = dragAxisLockRef.current;
               detachDragModifiers();
+              clearGhosts();
               demoteAfterGesture([e.target as HTMLElement]);
               const last = e.lastEvent;
               if (!last) return;
@@ -539,8 +628,12 @@ export function EditorCanvas() {
                 ? lockAxis(last.dist[0], last.dist[1])
                 : (last.dist as [number, number]);
               if (wasDuplicate) {
-                if (!dx && !dy) return;
+                if (!dx && !dy) {
+                  restoreCommittedTransform(e.target as HTMLElement);
+                  return;
+                }
                 store().duplicateBy([id], pxToEmu(dx, scale), pxToEmu(dy, scale));
+                restoreCommittedTransform(e.target as HTMLElement);
               } else {
                 store().moveBy([id], pxToEmu(dx, scale), pxToEmu(dy, scale));
               }
@@ -556,6 +649,11 @@ export function EditorCanvas() {
               const [dx, dy] = dragAxisLockRef.current
                 ? lockAxis(first.dist[0], first.dist[1])
                 : (first.dist as [number, number]);
+              if (dragDuplicateRef.current) {
+                e.events.forEach((ev) => paintGhost(ev.target as HTMLElement, dx, dy));
+                return;
+              }
+              clearGhosts();
               e.events.forEach((ev) => {
                 const id = (ev.target as HTMLElement).dataset.id!;
                 const el = findEl(id);
@@ -569,6 +667,7 @@ export function EditorCanvas() {
               const wasDuplicate = dragDuplicateRef.current;
               const wasAxisLocked = dragAxisLockRef.current;
               detachDragModifiers();
+              clearGhosts();
               demoteAfterGesture(e.events.map((ev) => ev.target as HTMLElement));
               const last = e.events[0]?.lastEvent;
               if (!last) return;
@@ -576,8 +675,9 @@ export function EditorCanvas() {
                 ? lockAxis(last.dist[0], last.dist[1])
                 : (last.dist as [number, number]);
               if (wasDuplicate) {
-                if (!dx && !dy) return;
-                store().duplicateBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
+                if (dx || dy)
+                  store().duplicateBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
+                e.events.forEach((ev) => restoreCommittedTransform(ev.target as HTMLElement));
               } else {
                 store().moveBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
               }
@@ -587,10 +687,12 @@ export function EditorCanvas() {
               resizeModifierCleanupRef.current?.();
               const syncModifiers = (ke: KeyboardEvent) => {
                 setKeepRatioActive(ke.shiftKey);
-                resizeFromCenterRef.current = ke.ctrlKey;
+                resizeFromCenterRef.current = ke.metaKey || ke.ctrlKey;
               };
               setKeepRatioActive(!!e.inputEvent?.shiftKey);
-              resizeFromCenterRef.current = !!e.inputEvent?.ctrlKey;
+              resizeFromCenterRef.current = !!(
+                e.inputEvent?.metaKey || e.inputEvent?.ctrlKey
+              );
               window.addEventListener('keydown', syncModifiers);
               window.addEventListener('keyup', syncModifiers);
               resizeModifierCleanupRef.current = () => {
@@ -673,11 +775,29 @@ export function EditorCanvas() {
             onDragStart={(e) => {
               const inp = e.inputEvent as MouseEvent;
               const target = inp.target as HTMLElement;
+              // Hit-test the point, not `target`: Moveable's own overlay covers
+              // the element it targets, so `target` is the overlay rather than
+              // the element on every press that lands on the selection.
+              const hitId = elementAtPoint(inp.clientX, inp.clientY)?.dataset.id;
               if (
                 moveableRef.current?.isMoveableElement(target) ||
+                target.closest?.('.dd-format-bar') ||
+                hitId ||
                 selectedNodes.some((n) => n === target || n.contains(target))
               ) {
+                // A press on an object is a move, never a marquee.
                 e.stop();
+              }
+              // Pressing an object that wasn't selected yet is the case that
+              // used to need two clicks: `resolveMouseDown` selects it, but
+              // Moveable is gated on there being a selection, so it only mounts
+              // on the render that follows and never saw this mousedown. Replay
+              // the press into it once it exists — otherwise the gesture is
+              // dropped and the object doesn't move until you release and press
+              // again. Deferred by a frame because the selection state has to
+              // commit (and Moveable mount) first.
+              if (hitId && !selectedIds.includes(hitId) && hitId !== editingId) {
+                requestAnimationFrame(() => moveableRef.current?.dragStart(inp));
               }
             }}
             onSelectEnd={(e) => {
@@ -692,6 +812,7 @@ export function EditorCanvas() {
             }}
           />
         ) : null}
+        </div>
       </div>
 
       {contextMenu

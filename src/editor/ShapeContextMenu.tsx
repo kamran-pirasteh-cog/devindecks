@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ALLOWED_FONTS, hex as hexColor, token, type FontFamily, type SlideElement } from '@/model';
 import { useEditor } from '@/store/editorStore';
+import { OVERLAY_Z } from './layers';
 
 interface ShapeContextMenuProps {
   x: number;
@@ -51,7 +52,7 @@ export function ShapeContextMenu({ x, y, elementIds, primary, onClose }: ShapeCo
   return (
     <div
       ref={ref}
-      style={{ position: 'fixed', left: x, top: y, zIndex: 100 }}
+      style={{ position: 'fixed', left: x, top: y, zIndex: OVERLAY_Z }}
       className="w-52 rounded-lg border border-zinc-200 bg-white py-2 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
       onContextMenu={(e) => e.preventDefault()}
     >

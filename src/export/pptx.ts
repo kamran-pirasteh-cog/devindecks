@@ -151,7 +151,7 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
     height: emuToInches(deck.slideSize.h),
   });
   pptx.layout = 'DD';
-  pptx.author = 'Deckmaker';
+  pptx.author = 'Devin Decks';
   pptx.title = deck.title;
 
   for (const s of deck.slides) {

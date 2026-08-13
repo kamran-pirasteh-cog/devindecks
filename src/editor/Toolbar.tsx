@@ -10,6 +10,7 @@ import { useEditor, type AlignMode } from '@/store/editorStore';
 import { makeShape, makeText } from './factories';
 import { LinePopover } from './LinePopover';
 import { ShortcutsModal } from './ShortcutsModal';
+import { OVERLAY_Z } from './layers';
 import type { ShapePreset } from '@/model';
 
 const SHAPES: { preset: ShapePreset; label: string }[] = [
@@ -47,7 +48,10 @@ function Btn({
       >
         {children}
       </button>
-      <span className="pointer-events-none absolute top-full left-1/2 z-10 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-800 px-2 py-1 text-xs text-white opacity-0 transition-opacity delay-300 group-hover:opacity-100 dark:bg-zinc-700">
+      <span
+        style={{ zIndex: OVERLAY_Z }}
+        className="pointer-events-none absolute top-full left-1/2 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-800 px-2 py-1 text-xs text-white opacity-0 transition-opacity delay-300 group-hover:opacity-100 dark:bg-zinc-700"
+      >
         {title}
       </span>
     </div>
@@ -63,6 +67,9 @@ export function Toolbar() {
   const reorder = useEditor((s) => s.reorder);
   const undo = useEditor((s) => s.undo);
   const redo = useEditor((s) => s.redo);
+  const copyFormat = useEditor((s) => s.copyFormat);
+  const pasteFormat = useEditor((s) => s.pasteFormat);
+  const hasFormat = useEditor((s) => s.formatClipboard !== null);
   const selCount = useEditor((s) => s.selectedIds.length);
   const canUndo = useEditor((s) => s.past.length > 0);
   const canRedo = useEditor((s) => s.future.length > 0);
@@ -100,6 +107,21 @@ export function Toolbar() {
       </Btn>
       <Btn onClick={() => distribute('v')} title="Distribute vertically" disabled={selCount < 3}>
         ☷
+      </Btn>
+      <Divider />
+      <Btn
+        onClick={() => copyFormat()}
+        title="Copy formatting (⌘⌥C)"
+        disabled={selCount < 1}
+      >
+        🖌↑
+      </Btn>
+      <Btn
+        onClick={() => pasteFormat()}
+        title="Paste formatting (⌘⌥V)"
+        disabled={selCount < 1 || !hasFormat}
+      >
+        🖌↓
       </Btn>
       <Divider />
       <Btn onClick={() => reorder('front')} title="Bring to front" disabled={selCount < 1}>

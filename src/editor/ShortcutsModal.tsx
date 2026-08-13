@@ -10,6 +10,7 @@
  * drifts from the code is worse than none.
  */
 import { useEffect } from 'react';
+import { MODAL_Z } from './layers';
 
 interface Shortcut {
   keys: string[];
@@ -37,14 +38,15 @@ const buildGroups = (MOD: string): Group[] => [
     title: 'General',
     items: [
       { keys: [MOD, 'Z'], label: 'Undo' },
-      { keys: [MOD, '⇧', 'Z'], label: 'Redo' },
       { keys: [MOD, 'Y'], label: 'Redo' },
       { keys: ['Delete'], label: 'Delete selection' },
       { keys: ['Esc'], label: 'Clear selection', note: 'exits text editing first' },
       { keys: ['Double-click'], label: 'Edit text in place' },
       { keys: ['⇧', 'Click'], label: 'Add or remove from selection' },
       { keys: ['Click'], label: 'Select only what you clicked', note: 'empty space clears' },
-      { keys: ['Ctrl', 'Scroll'], label: 'Zoom the slide in or out' },
+      { keys: [MOD, 'Scroll'], label: 'Zoom the slide in or out' },
+      { keys: [MOD, '⌥', 'C'], label: 'Copy formatting', note: `also ${MOD}⇧C` },
+      { keys: [MOD, '⌥', 'V'], label: 'Paste formatting', note: `also ${MOD}⇧V` },
     ],
   },
   {
@@ -66,8 +68,9 @@ const buildGroups = (MOD: string): Group[] => [
     items: [
       { keys: ['↑', '↓', '←', '→'], label: 'Nudge' },
       { keys: ['⇧', 'Arrow'], label: 'Nudge further' },
+      { keys: [MOD, 'D'], label: 'Duplicate selection' },
       { keys: [MOD, 'A'], label: 'Align left edges', note: '2+ selected' },
-      { keys: [MOD, 'D'], label: 'Align right edges', note: '2+ selected' },
+      { keys: [MOD, '⇧', 'D'], label: 'Align right edges', note: '2+ selected' },
       { keys: [MOD, 'W'], label: 'Align top edges', note: '2+ selected' },
       { keys: [MOD, 'S'], label: 'Align bottom edges', note: '2+ selected' },
     ],
@@ -76,9 +79,10 @@ const buildGroups = (MOD: string): Group[] => [
     title: 'Drag & resize',
     items: [
       { keys: ['⇧', 'Drag'], label: 'Lock to one axis' },
-      { keys: ['⇧', 'Ctrl', 'Drag'], label: 'Duplicate as you drag' },
+      { keys: [MOD, 'Drag'], label: 'Duplicate as you drag' },
+      { keys: [MOD, '⇧', 'Drag'], label: 'Duplicate, locked to one axis' },
       { keys: ['⇧', 'Resize'], label: 'Keep aspect ratio' },
-      { keys: ['Ctrl', 'Resize'], label: 'Resize from centre' },
+      { keys: [MOD, 'Resize'], label: 'Resize from centre' },
       { keys: ['Double-click'], label: 'Reset rotation to 0°', note: 'on the rotation handle' },
       {
         keys: ['Double-click'],
@@ -127,7 +131,8 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
       aria-modal="true"
       aria-label="Keyboard shortcuts"
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+      style={{ zIndex: MODAL_Z }}
+      className="fixed inset-0 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
     >
       <div
         onClick={(e) => e.stopPropagation()}

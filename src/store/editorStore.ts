@@ -28,6 +28,7 @@ import {
   type TextRun,
 } from '@/model';
 import { buildChartElements } from '@/templates/charts';
+import { applyFormat, extractFormat, type ElementFormat } from '@/editor/elementFormat';
 
 export type AlignMode =
   | 'left'
@@ -65,6 +66,12 @@ interface EditorState {
   past: Deck[];
   future: Deck[];
 
+  /**
+   * Format painter buffer. Deliberately outside the deck: it's a scratch
+   * register, not document state, so it survives undo and isn't autosaved.
+   */
+  formatClipboard: ElementFormat | null;
+
   // selection
   select: (ids: string[], additive?: boolean) => void;
   toggleSelect: (id: string) => void;
@@ -85,6 +92,10 @@ interface EditorState {
   patchRuns: (ids: string[], patch: Partial<TextRun>) => void;
   patchParagraphs: (ids: string[], patch: Partial<Omit<Paragraph, 'runs'>>) => void;
   deleteSelected: () => void;
+
+  // format painter
+  copyFormat: (id?: string) => void;
+  pasteFormat: (ids?: string[]) => void;
 
   // arrangement
   align: (mode: AlignMode) => void;
@@ -129,6 +140,7 @@ export const useEditor = create<EditorState>()(
     slideSelectionAnchor: null,
     past: [],
     future: [],
+    formatClipboard: null,
 
     currentSlide() {
       const { deck, currentSlideId } = get();
@@ -418,6 +430,39 @@ export const useEditor = create<EditorState>()(
           const body = el.type === 'text' ? el.body : el.type === 'shape' ? el.body : undefined;
           if (!body) continue;
           for (const p of body.paragraphs) Object.assign(p, patch);
+        }
+      });
+    },
+
+    /**
+     * Pick up the formatting of one element. Defaults to the first selected
+     * element (PowerPoint samples a single source, never a mixed selection).
+     */
+    copyFormat(id) {
+      const s = get();
+      const sourceId = id ?? s.selectedIds[0];
+      if (!sourceId) return;
+      const el = slideById(s.deck, s.currentSlideId)?.elements.find((e) => e.id === sourceId);
+      if (!el) return;
+      set((d) => {
+        d.formatClipboard = extractFormat(el);
+      });
+    },
+
+    /** Stamp the buffered formatting onto every selected element. */
+    pasteFormat(ids) {
+      const s = get();
+      const fmt = s.formatClipboard;
+      const targets = ids ?? s.selectedIds;
+      if (!fmt || targets.length === 0) return;
+      const slide = slideById(s.deck, s.currentSlideId);
+      if (!slide?.elements.some((e) => targets.includes(e.id))) return;
+      get().commit();
+      set((d) => {
+        const sl = slideById(d.deck, d.currentSlideId);
+        if (!sl) return;
+        for (const el of sl.elements) {
+          if (targets.includes(el.id)) applyFormat(el, fmt);
         }
       });
     },

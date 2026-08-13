@@ -26,6 +26,7 @@ import {
 } from '@/model';
 import { useEditor, nextFontSize } from '@/store/editorStore';
 import { fontSizeDirection } from './fontSizeShortcut';
+import { formatPainterAction } from './formatShortcut';
 
 /** Character-level formatting, as carried by the contentEditable DOM. */
 interface Fmt {
@@ -329,7 +330,18 @@ export function TextEditor({
         const mod = e.metaKey || e.ctrlKey;
         const key = e.key.toLowerCase();
         const sizeDir = fontSizeDirection(e);
-        if (mod && key === 'enter') {
+        const painter = formatPainterAction(e);
+        if (painter) {
+          e.preventDefault();
+          if (painter === 'copy') {
+            store().copyFormat(el.id);
+          } else {
+            // Pasting a format restyles the whole box, so it ends the edit —
+            // commit the typing first, then stamp the format over the result.
+            commit();
+            store().pasteFormat([el.id]);
+          }
+        } else if (mod && key === 'enter') {
           e.preventDefault();
           commit();
         } else if (mod && (key === 'b' || key === 'i' || key === 'u')) {
