@@ -19,6 +19,7 @@ import {
   pointsToEmu,
   resolveColor,
   token,
+  type BulletKind,
   type ColorRef,
   type ColorToken,
   type DashStyle,
@@ -168,13 +169,41 @@ function ColorPicker({
   );
 }
 
-/** The first run of the body-bearing element whose values the bar displays. */
-function firstRunOf(selected: SlideElement[]) {
-  const el = selected.find(
+/** The body-bearing element whose values the bar displays. */
+function bodyElementOf(selected: SlideElement[]) {
+  return selected.find(
     (e): e is Extract<SlideElement, { type: 'text' | 'shape' }> =>
       e.type === 'text' || (e.type === 'shape' && !!e.body),
   );
-  return el?.body?.paragraphs[0]?.runs[0];
+}
+
+/** Bullet/numbering icons, drawn rather than typed so they scale with the bar. */
+function ListIcon({ numbered }: { numbered: boolean }) {
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden fill="none">
+      {[1.5, 6.5, 11.5].map((y, i) =>
+        numbered ? (
+          <text key={y} x={0} y={y + 4} fontSize={5} fill="currentColor">
+            {i + 1}
+          </text>
+        ) : (
+          <circle key={y} cx={2} cy={y + 2} r={1.4} fill="currentColor" />
+        ),
+      )}
+      {[1.5, 6.5, 11.5].map((y) => (
+        <line
+          key={y}
+          x1={6}
+          y1={y + 2}
+          x2={14}
+          y2={y + 2}
+          stroke="currentColor"
+          strokeWidth={1.4}
+          strokeLinecap="round"
+        />
+      ))}
+    </svg>
+  );
 }
 
 function outlineOf(el: SlideElement | undefined): Outline | undefined {
@@ -207,7 +236,13 @@ export function SelectionFormatBar() {
   // never removed.
   const borderRequired = selected.every((e) => e.type === 'line');
 
-  const run = firstRunOf(selected);
+  const textEl = bodyElementOf(selected);
+  const run = textEl?.body?.paragraphs[0]?.runs[0];
+  const paragraphs = textEl?.body?.paragraphs ?? [];
+  // A list button reads "on" only when the whole box is that list — the same
+  // rule `toggleBullet` uses to decide whether pressing it clears the style.
+  const listKind = (kind: BulletKind) =>
+    paragraphs.length > 0 && paragraphs.every((p) => p.bullet === kind);
 
   /** Border edits patch whatever outline exists, falling back to a real one. */
   const patchOutline = (patch: Partial<Outline>) =>
@@ -254,6 +289,45 @@ export function SelectionFormatBar() {
                   </option>
                 ))}
             </select>
+          </Group>
+          <Group label="List">
+            <div className="flex gap-0.5">
+              {([
+                { kind: 'bullet' as const, label: 'Bulleted list' },
+                { kind: 'number' as const, label: 'Numbered list' },
+              ]).map(({ kind, label }) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => store().toggleBullet(selectedIds, kind)}
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={listKind(kind)}
+                  className={`flex h-7 w-7 items-center justify-center rounded border ${
+                    listKind(kind)
+                      ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  <ListIcon numbered={kind === 'number'} />
+                </button>
+              ))}
+              {([
+                { delta: -1, label: 'Decrease indent', glyph: '⇤' },
+                { delta: 1, label: 'Increase indent', glyph: '⇥' },
+              ]).map(({ delta, label, glyph }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => store().indentParagraphs(selectedIds, delta)}
+                  title={label}
+                  aria-label={label}
+                  className="flex h-7 w-7 items-center justify-center rounded border border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  {glyph}
+                </button>
+              ))}
+            </div>
           </Group>
           <Group label="Text">
             <ColorPicker

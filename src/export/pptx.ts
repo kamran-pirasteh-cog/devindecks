@@ -18,6 +18,9 @@ import PptxGenJS from 'pptxgenjs';
 import {
   emuToInches,
   emuToPoints,
+  FONTS,
+  pageNumberInk,
+  pageNumberLabel,
   resolveColor,
   type Deck,
   type DesignSystem,
@@ -65,7 +68,10 @@ function textRuns(body: TextBody, ds: DesignSystem) {
         options: {
           fontFace: r.font,
           fontSize: r.sizePt,
-          bold: r.bold,
+          // OOXML has no weight axis — only b on/off. A Medium (500) run has
+          // no PowerPoint equivalent, so it rides as regular rather than
+          // silently thickening to bold.
+          bold: r.bold || (r.weight ?? 400) >= 600,
           italic: r.italic,
           underline: r.underline ? { style: 'sng' } : undefined,
           color: r.color ? hx(r.color, ds) : undefined,
@@ -76,6 +82,9 @@ function textRuns(body: TextBody, ds: DesignSystem) {
               : p.bullet === 'number'
                 ? { type: 'number' }
                 : undefined,
+          // PowerPoint's own indent ladder, so a demoted item nests natively
+          // instead of arriving flush-left with a hand-drawn glyph.
+          indentLevel: p.level || undefined,
           lineSpacingMultiple: p.lineSpacingPct ? p.lineSpacingPct / 100 : undefined,
           paraSpaceBefore: p.spaceBeforePt,
           paraSpaceAfter: p.spaceAfterPt,
@@ -142,6 +151,47 @@ function addShapeElement(slide: any, el: ShapeElement, ds: DesignSystem) {
   }
 }
 
+/**
+ * The page number, exported as a plain text box.
+ *
+ * Not a PowerPoint slide-number FIELD: a field renumbers itself in PowerPoint
+ * but arrives in Google Slides as whatever value was cached, and this deck's
+ * numbering rules (skip the title slide) live in our model, not theirs. A
+ * literal string is what both engines render identically — the number is
+ * already correct at the moment of export, and re-exporting is what updates it.
+ */
+function addPageNumber(slide: any, deck: Deck, index: number, ds: DesignSystem) {
+  const style = ds.pageNumbers;
+  const label = pageNumberLabel(style, index, deck.slides.length);
+  if (!label) return;
+  const bg =
+    deck.slides[index].background?.kind === 'solid'
+      ? resolveColor(deck.slides[index].background!.color, ds)
+      : '#ffffff';
+  const lineIn = (style.sizePt * FONTS[style.font].singleLineFactor) / 72;
+  const marginX = emuToInches(style.marginXEmu);
+  slide.addText([{ text: label, options: {} }], {
+    x: marginX,
+    y: emuToInches(deck.slideSize.h - style.marginYEmu) - lineIn,
+    w: emuToInches(deck.slideSize.w) - marginX * 2,
+    h: lineIn,
+    fontFace: style.font,
+    fontSize: style.sizePt,
+    bold: !!style.bold,
+    color: pageNumberInk(style, bg).replace('#', ''),
+    align:
+      style.position === 'bottom-center'
+        ? 'center'
+        : style.position === 'bottom-left'
+          ? 'left'
+          : 'right',
+    valign: 'bottom',
+    margin: 0,
+    fit: 'none',
+    wrap: false,
+  });
+}
+
 /** Build the pptxgenjs document from the model (no serialization). */
 export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
   const pptx = new PptxGenJS();
@@ -154,7 +204,7 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
   pptx.author = 'Devin Decks';
   pptx.title = deck.title;
 
-  for (const s of deck.slides) {
+  deck.slides.forEach((s, slideIndex) => {
     const slide = pptx.addSlide();
     if (s.background && s.background.kind === 'solid') {
       slide.background = { color: hx(s.background.color, ds) };
@@ -182,7 +232,8 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
           break;
       }
     }
-  }
+    if (deck.pageNumbers) addPageNumber(slide, deck, slideIndex, ds);
+  });
 
   return pptx;
 }

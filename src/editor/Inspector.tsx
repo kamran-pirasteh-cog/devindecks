@@ -247,6 +247,25 @@ export function Inspector() {
               ))}
             </div>
 
+            <div className="flex gap-0.5">
+              {(
+                [
+                  { label: 'Bullets', onClick: () => store().toggleBullet(selectedIds, 'bullet') },
+                  { label: '1. 2. 3.', onClick: () => store().toggleBullet(selectedIds, 'number') },
+                  { label: '⇤', onClick: () => store().indentParagraphs(selectedIds, -1) },
+                  { label: '⇥', onClick: () => store().indentParagraphs(selectedIds, 1) },
+                ] as const
+              ).map((b) => (
+                <button
+                  key={b.label}
+                  onClick={b.onClick}
+                  className="h-7 flex-1 rounded bg-zinc-100 text-[11px] text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+
             <div>
               <div className="mb-1.5 text-[10px] uppercase tracking-wider text-zinc-400">Text color</div>
               <Swatches colors={ds.colors} onPick={(id) => store().patchRuns(selectedIds, { color: token(id) })} />

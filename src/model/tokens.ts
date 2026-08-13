@@ -10,6 +10,7 @@
  */
 
 import type { FontFamily } from './fonts';
+import { DEFAULT_PAGE_NUMBERS, type PageNumberStyle } from './pageNumbers';
 
 export interface ColorToken {
   /** Stable id referenced by elements, e.g. 'brand.primary'. */
@@ -48,6 +49,9 @@ export interface DesignSystem {
     caption: TypeRole;
     kpiValue: TypeRole;
   };
+
+  /** How page numbers look on any deck that turns them on. */
+  pageNumbers: PageNumberStyle;
 }
 
 /** A color reference on any element. Prefer tokens; hex is an escape hatch. */
@@ -90,4 +94,5 @@ export const DEFAULT_DESIGN_SYSTEM: DesignSystem = {
     caption: { font: 'Geist', sizePt: 11, colorToken: 'ink.muted' },
     kpiValue: { font: 'Geist', sizePt: 48, bold: true, colorToken: 'brand.accent' },
   },
+  pageNumbers: DEFAULT_PAGE_NUMBERS,
 };

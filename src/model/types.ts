@@ -47,6 +47,14 @@ export interface TextRun {
   text: string;
   font?: FontFamily;
   sizePt?: number;
+  /**
+   * Numeric weight, when the run wants a face between regular and bold (e.g.
+   * Medium 500). Must be one of the family's `weights` — anything else has no
+   * real face to render. `bold` stays the canonical on/off for the 700 face
+   * because that's the only weight distinction OOXML itself carries; on export
+   * a weight of 600+ becomes bold and Medium falls back to regular.
+   */
+  weight?: number;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
@@ -129,6 +137,11 @@ interface BaseElement {
   flipH?: boolean;
   flipV?: boolean;
   locked?: boolean;
+  /**
+   * Groups this element belongs to, outermost first. Flat membership rather
+   * than a nested container element — see `model/group.ts` for why.
+   */
+  groupIds?: string[];
 }
 
 export interface TextElement extends BaseElement {
@@ -193,6 +206,13 @@ export interface Deck {
   deckTemplateId?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Whether this deck shows page numbers. One flag, not per-slide text: the
+   * numbers are drawn from each slide's live index at render time, so they
+   * renumber themselves as slides are added, deleted or reordered. Style comes
+   * from the design system (see `model/pageNumbers.ts`).
+   */
+  pageNumbers?: boolean;
   /** Free-text labels (e.g. client names) for organizing/filtering documents. */
   tags?: string[];
   /** Who owns this document (free text until there's real auth). */

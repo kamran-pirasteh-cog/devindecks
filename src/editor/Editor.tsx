@@ -8,21 +8,42 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEditor, loadDeck, nextFontSize } from '@/store/editorStore';
+import { useEditor, loadDeck, nextFontSize, type AlignMode } from '@/store/editorStore';
 import { SAMPLE_DECK } from '@/model/sample';
-import { inchesToEmu, type Deck } from '@/model';
+import { expandSelection, inchesToEmu, type Deck } from '@/model';
 import { getDoc, saveDoc } from '@/docs/repository';
 import { getStoredTemplate, saveTemplateFromDeck, templateAsDeck } from '@/templates/repository';
 import { getStoredLayout, layoutAsDeck, saveLayoutFromSlide } from '@/templates/layoutRepository';
 import { getActiveDesignSystem } from '@/design/repository';
+import { useComments } from '@/store/commentStore';
 import { ChatColumn } from './ChatColumn';
+import { CommentsPanel } from './CommentsPanel';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
 import { fontSizeDirection } from './fontSizeShortcut';
 import { formatPainterAction } from './formatShortcut';
+import { isCommentShortcut } from './commentShortcut';
 import { TemplateDrawer } from './TemplateDrawer';
 import { ExportMenu } from './ExportMenu';
+
+/**
+ * Alignment rides the arrow keys: the direction you press is the edge things
+ * move to. The plain arrows still nudge, so only a modified press aligns —
+ * ⌘ (align to each other) or Ctrl (snap to the margin guides).
+ *
+ * Which of the two actually happens is decided by the SELECTION, not the
+ * modifier: `align` measures against the margin frame when a single object is
+ * selected and against the selection's own bounds when several are. So each
+ * modifier does the documented thing in the case it's documented for, and the
+ * sensible thing in the other.
+ */
+const ALIGN_KEYS: Record<string, AlignMode | undefined> = {
+  ArrowUp: 'top',
+  ArrowLeft: 'left',
+  ArrowDown: 'bottom',
+  ArrowRight: 'right',
+};
 
 export function Editor({
   deckId,
@@ -67,6 +88,12 @@ export function Editor({
     loadDeck(doc, getActiveDesignSystem());
   }, [deckId, templateId, layoutId, router]);
 
+  // Comments belong to a document, so templates, layouts and the bare sample
+  // get an in-memory thread list that is never persisted.
+  useEffect(() => {
+    useComments.getState().load(deckId && !templateId && !layoutId ? deckId : null);
+  }, [deckId, templateId, layoutId]);
+
   // Autosave: persist the deck (or template/layout) a beat after any change.
   useEffect(() => {
     if (!deckId && !templateId && !layoutId) return;
@@ -104,6 +131,8 @@ export function Editor({
 
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      // Matched ahead of the nudge branch, which otherwise swallows every arrow.
+      const alignMode = mod && !e.altKey && !e.shiftKey ? ALIGN_KEYS[e.key] : undefined;
       const sizeDir = fontSizeDirection(e);
       const painter = formatPainterAction(e);
 
@@ -122,6 +151,15 @@ export function Editor({
         e.preventDefault();
         if (painter === 'copy') s.copyFormat();
         else s.pasteFormat();
+      } else if (alignMode && s.selectedIds.length) {
+        e.preventDefault();
+        s.align(alignMode);
+      } else if (isCommentShortcut(e)) {
+        // Google Slides' insert-comment chord. With something selected the
+        // thread pins to it (the first object, as the format painter does);
+        // otherwise it's a comment on the slide itself.
+        e.preventDefault();
+        useComments.getState().startDraft(s.currentSlideId, s.selectedIds[0]);
       } else if (mod && !e.shiftKey && key === 'z') {
         // Undo is mod+Z only; redo is mod+Y. mod+shift+Z is deliberately not
         // bound, so it falls through rather than acting as a second redo.
@@ -130,13 +168,29 @@ export function Editor({
       } else if (mod && key === 'y') {
         e.preventDefault();
         s.redo();
+      } else if (mod && e.altKey && (e.code === 'KeyG' || key === 'g' || key === '©')) {
+        // Guides gave up ⌘⇧G to ungroup, which is where PowerPoint puts it.
+        // ⌥ rewrites the character on macOS (⌥G arrives as "©"), so `code` is
+        // the half of the match to trust.
+        e.preventDefault();
+        s.toggleGuides();
+      } else if (mod && e.shiftKey && (e.code === 'KeyG' || key === 'g')) {
+        e.preventDefault();
+        s.ungroup();
+      } else if (mod && !e.shiftKey && (e.code === 'KeyG' || key === 'g')) {
+        e.preventDefault();
+        s.group();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (s.selectedIds.length) {
           e.preventDefault();
           s.deleteSelected();
         }
       } else if (e.key === 'Escape') {
-        s.clearSelection();
+        // Escape climbs back out of a group before it clears: with one member
+        // of a group selected it re-selects the whole group, as PowerPoint does.
+        const grown = expandSelection(s.currentSlide().elements, s.selectedIds);
+        if (s.selectedIds.length && grown.length > s.selectedIds.length) s.select(s.selectedIds);
+        else s.clearSelection();
       } else if (
         (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
         s.selectedIds.length
@@ -176,22 +230,21 @@ export function Editor({
         s.patchRuns(s.selectedIds, {
           sizePt: nextFontSize(firstRun.sizePt ?? s.designSystem.type.body.sizePt, sizeDir),
         });
-      } else if (mod && key === 'w' && s.selectedIds.length >= 2) {
+      } else if (mod && !e.shiftKey && key === 'a') {
         e.preventDefault();
-        s.align('top');
-      } else if (mod && key === 'a' && s.selectedIds.length >= 2) {
-        e.preventDefault();
-        s.align('left');
+        s.select(slide.elements.map((el) => el.id));
       } else if (mod && !e.shiftKey && key === 'd' && s.selectedIds.length) {
-        // Duplicate wins mod+D (as in PowerPoint); align-right moves to mod+⇧+D.
         e.preventDefault();
         s.duplicateBy(s.selectedIds, DUP_OFFSET, DUP_OFFSET);
-      } else if (mod && e.shiftKey && key === 'd' && s.selectedIds.length >= 2) {
+      } else if (mod && key === 's') {
+        // Nothing to save — the deck persists as it changes. Swallowed so the
+        // browser's save-page dialog never lands on top of the editor.
         e.preventDefault();
-        s.align('right');
-      } else if (mod && key === 's' && s.selectedIds.length >= 2) {
+      } else if (mod && !e.altKey && !e.shiftKey && (e.code === 'KeyM' || key === 'm')) {
+        // PowerPoint's new-slide chord. ⌘⌥M (comment) is matched further up, so
+        // by here Alt is already ruled out.
         e.preventDefault();
-        s.align('bottom');
+        s.addSlide();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -242,6 +295,7 @@ export function Editor({
           <Toolbar />
           <EditorCanvas />
         </div>
+        <CommentsPanel />
         <TemplateDrawer />
       </div>
     </div>

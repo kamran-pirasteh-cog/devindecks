@@ -53,11 +53,19 @@ export const FONTS: Record<FontFamily, FontDef> = {
     family: 'Source Serif 4',
     cssStack: 'var(--font-source-serif), Georgia, serif',
     category: 'serif',
-    weights: [400, 600, 700],
+    weights: [400, 500, 600, 700],
     supportsItalic: true,
     singleLineFactor: 1.38,
   },
 };
+
+/**
+ * The CSS weight a run should paint at. `bold` outranks `weight`, so bolding a
+ * Medium run thickens it (rather than the 500 silently swallowing the B key),
+ * and un-bolding drops it back to its own Medium face.
+ */
+export const runWeight = (run: { weight?: number; bold?: boolean }): number =>
+  run.bold ? 700 : (run.weight ?? 400);
 
 export const ALLOWED_FONTS = Object.keys(FONTS) as FontFamily[];
 

@@ -19,11 +19,14 @@ import {
   EMU_PER_POINT,
   FONTS,
   resolveColor,
+  runWeight,
+  type BulletKind,
   type ShapeElement,
   type TextElement,
   type Paragraph,
   type TextRun,
 } from '@/model';
+import { bulletMarkers, clampLevel, indentMetricsPt } from '@/render/bullets';
 import { useEditor, nextFontSize } from '@/store/editorStore';
 import { fontSizeDirection } from './fontSizeShortcut';
 import { formatPainterAction } from './formatShortcut';
@@ -105,6 +108,9 @@ const runsFromNodes = (
   const walk = (node: Node, f: Fmt, src: number | null) => {
     if (node.nodeType === Node.TEXT_NODE) return push(node.nodeValue ?? '', f, src);
     if (!(node instanceof HTMLElement)) return;
+    // Bullet glyphs and number labels are drawn, not typed — they must never
+    // come back as run text.
+    if (node.dataset.marker !== undefined) return;
     if (node.tagName === 'BR') {
       paras.push([]);
       return;
@@ -170,17 +176,104 @@ export function TextEditor({
     // mono 400 face, which changed its look *and* re-wrapped it mid-edit.
     const r = p.runs[0] ?? firstRun;
     node.style.fontFamily = FONTS[r.font ?? ds.fonts.body].cssStack;
-    node.style.fontWeight = r.bold ? '700' : '400';
+    node.style.fontWeight = String(runWeight(r));
     node.style.fontStyle = r.italic ? 'italic' : 'normal';
     node.style.textDecoration = r.underline ? 'underline' : 'none';
     node.style.color = resolveColor(r.color, ds);
-    if (p.bullet === 'bullet') {
-      // A list marker instead of a literal "• " keeps the caret out of the
-      // bullet — it renders at the same place but isn't editable text.
-      node.style.display = 'list-item';
-      node.style.listStyleType = 'disc';
-      node.style.listStylePosition = 'inside';
-    }
+    // The block, not the model, is the live truth for list style while the
+    // editor is open — Tab and the list shortcuts move these two attributes and
+    // `commit` reads them back out. Seed them from the model on the way in.
+    setList(node, p.bullet, p.level);
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* Bullets                                                          */
+  /* ---------------------------------------------------------------- */
+
+  /** The paragraph blocks, in order. */
+  const blocks = () =>
+    Array.from(ref.current?.children ?? []).filter(
+      (n): n is HTMLElement => n instanceof HTMLElement,
+    );
+
+  const listOf = (node: HTMLElement) => ({
+    bullet: (node.dataset.bullet as BulletKind | undefined) || undefined,
+    level: Number(node.dataset.level ?? '0') || undefined,
+  });
+
+  const setList = (node: HTMLElement, bullet: BulletKind | undefined, level: number | undefined) => {
+    if (bullet && bullet !== 'none') node.dataset.bullet = bullet;
+    else delete node.dataset.bullet;
+    const lv = clampLevel(level);
+    if (lv) node.dataset.level = String(lv);
+    else delete node.dataset.level;
+  };
+
+  /**
+   * Draw the markers and hanging indents, exactly as <ParagraphView> does.
+   *
+   * Numbering counts across the whole body, so this runs over every block after
+   * any edit — typing a new line in the middle of a numbered list has to
+   * renumber the ones below it. Markers are `contenteditable=false` spans
+   * carrying `data-marker`, which keeps the caret out of them and lets
+   * `runsFromNodes` skip them when reading the text back.
+   */
+  const syncMarkers = () => {
+    const nodes = blocks();
+    const markers = bulletMarkers(nodes.map((n) => ({ runs: [], ...listOf(n) })));
+    nodes.forEach((node, i) => {
+      const { indentPt, hangPt } = indentMetricsPt({ runs: [], ...listOf(node) });
+      node.style.paddingLeft = `${indentPt * EMU_PER_POINT * scale}px`;
+      node.style.textIndent = `${-hangPt * EMU_PER_POINT * scale}px`;
+      const marker = markers[i];
+      const existing = node.querySelector<HTMLElement>(':scope > [data-marker]');
+      if (!marker) {
+        existing?.remove();
+        return;
+      }
+      const span = existing ?? document.createElement('span');
+      span.dataset.marker = '';
+      span.contentEditable = 'false';
+      span.style.display = 'inline-block';
+      span.style.width = `${hangPt * EMU_PER_POINT * scale}px`;
+      span.style.textIndent = '0';
+      span.style.fontWeight = '400';
+      span.style.fontStyle = 'normal';
+      span.style.textDecoration = 'none';
+      // Match the paragraph's own type — the block carries its first run's
+      // font, size and colour, so inheriting from it is enough.
+      span.style.fontSize = node.style.fontSize;
+      span.textContent = marker;
+      if (!existing) node.insertBefore(span, node.firstChild);
+    });
+  };
+
+  /** Blocks the caret or selection touches; the whole box if we can't tell. */
+  const targetBlocks = () => {
+    const all = blocks();
+    const sel = window.getSelection();
+    if (!sel?.rangeCount || !ref.current?.contains(sel.anchorNode)) return all;
+    const range = sel.getRangeAt(0);
+    const hit = all.filter((b) => range.intersectsNode(b));
+    return hit.length ? hit : all;
+  };
+
+  const applyList = (kind: BulletKind) => {
+    const hit = targetBlocks();
+    // Pressing the style a paragraph already has clears it, as in PowerPoint.
+    const off = hit.every((b) => b.dataset.bullet === kind);
+    hit.forEach((b) => setList(b, off ? 'none' : kind, listOf(b).level));
+    syncMarkers();
+    syncModel();
+  };
+
+  const applyIndent = (delta: number) => {
+    targetBlocks().forEach((b) => {
+      const { bullet, level } = listOf(b);
+      setList(b, bullet, clampLevel((level ?? 0) + delta));
+    });
+    syncMarkers();
+    syncModel();
   };
 
   /**
@@ -198,7 +291,7 @@ export function TextEditor({
     span.dataset.run = String(index);
     span.style.fontFamily = FONTS[r.font ?? ds.fonts.body].cssStack;
     span.style.fontSize = `${(r.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale}px`;
-    span.style.fontWeight = r.bold ? '700' : '400';
+    span.style.fontWeight = String(runWeight(r));
     span.style.fontStyle = r.italic ? 'italic' : 'normal';
     span.style.textDecoration = r.underline ? 'underline' : 'none';
     span.style.color = resolveColor(r.color, ds);
@@ -222,6 +315,7 @@ export function TextEditor({
         return line;
       }),
     );
+    syncMarkers();
     node.focus();
     // Place caret at end.
     const range = document.createRange();
@@ -245,34 +339,42 @@ export function TextEditor({
       const p = body.paragraphs[i];
       if (p && child instanceof HTMLElement) applyParagraphStyle(child, p);
     });
+    // applyParagraphStyle reseeds each block's list attributes from the model,
+    // so the markers and indents have to be redrawn to match.
+    syncMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [body, scale, ds]);
 
-  const commit = () => {
-    const root = ref.current;
-    if (!root) return store().setEditing(null);
+  /**
+   * Read the editable back out as model paragraphs. Takes the root explicitly
+   * because the unmount commit runs after React has detached `ref`.
+   */
+  const readParagraphs = (root: HTMLElement | null): Paragraph[] | null => {
+    if (!root) return null;
 
     // Group the editable's top-level nodes into paragraphs. Our own render puts
     // one <div> per paragraph and Enter keeps that shape, but a browser can also
     // leave bare text or a <br> at the top level — those collect into an
     // implicit paragraph rather than being dropped.
-    const blocks: Node[][] = [];
+    // `owner` is the block element the nodes came from, when there is one: it
+    // carries the paragraph's live bullet and indent level.
+    const groups: { nodes: Node[]; owner: HTMLElement | null }[] = [];
     let implicit: Node[] | null = null;
     for (const node of Array.from(root.childNodes)) {
       if (node instanceof HTMLElement && (node.tagName === 'DIV' || node.tagName === 'P')) {
         implicit = null;
-        blocks.push([node]);
+        groups.push({ nodes: [node], owner: node });
       } else {
         if (!implicit) {
           implicit = [];
-          blocks.push(implicit);
+          groups.push({ nodes: implicit, owner: null });
         }
         implicit.push(node);
       }
     }
 
     const paragraphs: Paragraph[] = [];
-    for (const nodes of blocks.length ? blocks : [[]]) {
+    for (const { nodes, owner } of groups.length ? groups : [{ nodes: [], owner: null }]) {
       // Keep each paragraph's own spacing/bullet/alignment; paragraphs the user
       // added inherit from the one they split off the end of.
       const src = body.paragraphs[paragraphs.length] ?? body.paragraphs[body.paragraphs.length - 1];
@@ -286,14 +388,68 @@ export function TextEditor({
       // `data-run` identifies; text the browser produced without a span (a
       // pasted or freshly typed stretch) falls back to the paragraph's first.
       const sourceRun = (i: number | null) => (i === null ? base : (src?.runs[i] ?? base));
+      // The block, not `src`, owns the list style — a bullet toggled or
+      // indented since the editor opened lives only in the DOM until now. A
+      // <br>-split block hands the same style to both halves.
+      const list = owner ? listOf(owner) : { bullet: src?.bullet, level: src?.level };
       for (const runs of runsFromNodes(nodes, sourceRun, inherit)) {
-        paragraphs.push({ ...src, runs: runs.length ? runs : [{ ...base, text: '' }] });
+        paragraphs.push({
+          ...src,
+          ...list,
+          runs: runs.length ? runs : [{ ...base, text: '' }],
+        });
       }
     }
+    return paragraphs;
+  };
 
-    store().updateElement(el.id, { body: { ...body, paragraphs } });
+  /**
+   * Write the editable's text into the model, if it actually differs — an
+   * unchanged write would still push an undo step.
+   */
+  const writeBack = (root: HTMLElement | null) => {
+    const paragraphs = readParagraphs(root);
+    if (!paragraphs) return;
+    // Against the LIVE body, not this render's: `commit` writes and closes in
+    // one batch, so the unmount pass never sees a render carrying its own
+    // result and would otherwise re-write it as a second undo step. A missing
+    // element (deleted, or the slide changed under us) has nowhere to go.
+    const s = store();
+    const el2 = s.deck.slides
+      .find((sl) => sl.id === s.currentSlideId)
+      ?.elements.find((x) => x.id === el.id);
+    const live = el2 && 'body' in el2 ? el2.body : undefined;
+    if (!live) return;
+    if (JSON.stringify(paragraphs) === JSON.stringify(live.paragraphs)) return;
+    store().updateElement(el.id, { body: { ...live, paragraphs } });
+  };
+
+  /** Push the current text into the model without leaving edit mode. */
+  const syncModel = () => writeBack(ref.current);
+
+  const commit = () => {
+    writeBack(ref.current);
     store().setEditing(null);
   };
+
+  /**
+   * Every way OUT of edit mode other than blur — clicking another element,
+   * clicking empty canvas, Escape, changing slides — clears `editingId` from
+   * inside the mousedown/keydown handler, which unmounts this component before
+   * the browser gets around to firing `blur`. Typing lives only in the
+   * contentEditable DOM until commit, so without this the edit was thrown away.
+   *
+   * The node is captured on mount: by cleanup time React has already nulled
+   * `ref`, but the detached element still holds the text we need to read.
+   */
+  const commitRef = useRef<(root: HTMLElement | null) => void>(writeBack);
+  // Refreshed every render so the cleanup writes against the CURRENT model,
+  // not the one this component happened to mount with.
+  commitRef.current = writeBack;
+  useEffect(() => {
+    const node = ref.current;
+    return () => commitRef.current(node);
+  }, []);
 
   /**
    * B/I/U inside the editor. With text highlighted the format applies to the
@@ -322,6 +478,9 @@ export function TextEditor({
       contentEditable
       suppressContentEditableWarning
       onBlur={commit}
+      // Typing can add, remove or reorder blocks (Enter, a paste, deleting a
+      // line), and every one of those changes the numbering below it.
+      onInput={syncMarkers}
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -344,6 +503,17 @@ export function TextEditor({
         } else if (mod && key === 'enter') {
           e.preventDefault();
           commit();
+        } else if (e.key === 'Tab') {
+          // PowerPoint's demote/promote. The editable would otherwise lose
+          // focus to the next control, ending the edit.
+          e.preventDefault();
+          applyIndent(e.shiftKey ? -1 : 1);
+        } else if (mod && e.shiftKey && (key === '8' || key === '*')) {
+          e.preventDefault();
+          applyList('bullet');
+        } else if (mod && e.shiftKey && (key === '7' || key === '&')) {
+          e.preventDefault();
+          applyList('number');
         } else if (mod && (key === 'b' || key === 'i' || key === 'u')) {
           e.preventDefault();
           applyFormat(key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'underline');
@@ -377,7 +547,7 @@ export function TextEditor({
         outline: '2px solid #4F46E5',
         fontFamily: font.cssStack,
         fontSize: (firstRun.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale,
-        fontWeight: firstRun.bold ? 700 : 400,
+        fontWeight: runWeight(firstRun),
         fontStyle: firstRun.italic ? 'italic' : 'normal',
         color: resolveColor(firstRun.color, ds),
         textAlign: (body.paragraphs[0]?.align ?? 'left') as 'left' | 'center' | 'right',

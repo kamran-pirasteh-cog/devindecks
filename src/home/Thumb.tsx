@@ -9,7 +9,11 @@ export function Thumb({
   deck,
   width = 320,
 }: {
-  deck: { slides: Deck['slides']; slideSize: Deck['slideSize'] };
+  deck: {
+    slides: Deck['slides'];
+    slideSize: Deck['slideSize'];
+    pageNumbers?: Deck['pageNumbers'];
+  };
   width?: number;
 }) {
   const ds = getActiveDesignSystem();
@@ -17,5 +21,13 @@ export function Thumb({
   if (!slide) {
     return <div style={{ width, height: (width * 9) / 16 }} className="bg-white" />;
   }
-  return <SlideView slide={slide} slideSize={deck.slideSize} designSystem={ds} width={width} />;
+  return (
+    <SlideView
+      slide={slide}
+      slideSize={deck.slideSize}
+      designSystem={ds}
+      width={width}
+      page={deck.pageNumbers ? { index: 0, count: deck.slides.length } : undefined}
+    />
+  );
 }

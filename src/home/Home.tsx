@@ -5,7 +5,7 @@
  * picker (browse templates · start from a prior doc · blank).
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { type Deck } from '@/model';
 import {
   listAllOwners,
@@ -18,13 +18,9 @@ import { DocCard } from './DocCard';
 import { NewDocModal } from './NewDocModal';
 import { Reports } from './Reports';
 import { DeletedItems } from './DeletedItems';
+import { PrimaryTabs } from '@/nav/PrimaryTabs';
 
 type Tab = 'documents' | 'reports';
-
-const TABS: { value: Tab; label: string }[] = [
-  { value: 'documents', label: 'Documents' },
-  { value: 'reports', label: 'Reports' },
-];
 
 type SortBy = 'updated' | 'created' | 'client' | 'owner';
 
@@ -187,7 +183,13 @@ export function Home() {
   const [clientFilter, setClientFilter] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('updated');
-  const [tab, setTab] = useState<Tab>('documents');
+  // Documents/Reports are local state, but `?tab=reports` seeds it so the tab
+  // is addressable from another route — that's how Admin's copy of the tab
+  // strip links back to Reports.
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<Tab>(
+    searchParams.get('tab') === 'reports' ? 'reports' : 'documents',
+  );
   // "Deleted items" swaps the grid for the recycle bin.
   const [showTrash, setShowTrash] = useState(false);
   const [deleted, setDeleted] = useState<Deck[]>([]);
@@ -292,33 +294,23 @@ export function Home() {
               onNewReport={() => {
                 setShowTrash(false);
                 setTab('reports');
+                window.history.replaceState(null, '', '/?tab=reports');
               }}
             />
           </div>
         </div>
-        <div className="flex gap-1 px-7">
-          {TABS.map((t) => (
-            <button
-              key={t.value}
-              onClick={() => setTab(t.value)}
-              className={`-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium ${
-                tab === t.value
-                  ? 'border-indigo-500 text-zinc-900 dark:text-white'
-                  : 'border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-          {/* Admin lives on its own route, so it's a link wearing the
-              inactive-tab styling rather than a `tab` state value. */}
-          <Link
-            href="/admin"
-            className="-mb-px border-b-2 border-transparent px-3.5 py-2.5 text-sm font-medium text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-          >
-            Admin
-          </Link>
-        </div>
+        <PrimaryTabs
+          active={tab}
+          onSelect={(t) => {
+            setShowTrash(false);
+            setTab(t);
+            // Keep the URL matching the visible tab so a reload (or a link
+            // copied out of the address bar) comes back to the same place.
+            // replaceState rather than a router push: switching tabs isn't a
+            // navigation, and it shouldn't stack up Back-button entries.
+            window.history.replaceState(null, '', t === 'reports' ? '/?tab=reports' : '/');
+          }}
+        />
       </header>
 
       <main className="px-8 py-6">

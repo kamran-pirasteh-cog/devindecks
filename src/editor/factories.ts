@@ -6,6 +6,7 @@
 import { inchesToEmu, pointsToEmu, token } from '@/model';
 import type {
   DashStyle,
+  FontFamily,
   LineElement,
   ShapeElement,
   ShapePreset,
@@ -13,7 +14,63 @@ import type {
 } from '@/model';
 import { newId } from '@/store/editorStore';
 
-export function makeText(): TextElement {
+/**
+ * The typefaces an author can drop text in, as *faces* rather than families —
+ * "Geist Medium" is the family Geist at weight 500. Only faces that exist in the
+ * three allowed families appear here, so picking one can never ask the renderer
+ * (or PowerPoint) for a face it hasn't got.
+ */
+export interface TextStyle {
+  id: string;
+  label: string;
+  font: FontFamily;
+  weight: number;
+  italic?: boolean;
+  /** Placeholder copy, so a dropped box shows the face rather than "Text". */
+  sample: string;
+}
+
+export const TEXT_STYLES: TextStyle[] = [
+  { id: 'geist-medium', label: 'Geist Medium', font: 'Geist', weight: 500, sample: 'Geist Medium' },
+  { id: 'geist-bold', label: 'Geist Bold', font: 'Geist', weight: 700, sample: 'Geist Bold' },
+  {
+    id: 'serif-medium',
+    label: 'Source Serif 4 Medium',
+    font: 'Source Serif 4',
+    weight: 500,
+    sample: 'Source Serif 4 Medium',
+  },
+  {
+    id: 'serif-medium-italic',
+    label: 'Source Serif 4 Medium Italic',
+    font: 'Source Serif 4',
+    weight: 500,
+    italic: true,
+    sample: 'Source Serif 4 Medium Italic',
+  },
+  {
+    id: 'mono-medium',
+    label: 'Geist Mono Medium',
+    font: 'Geist Mono',
+    weight: 500,
+    sample: 'Geist Mono Medium',
+  },
+  {
+    id: 'mono-bold',
+    label: 'Geist Mono Bold',
+    font: 'Geist Mono',
+    weight: 700,
+    sample: 'Geist Mono Bold',
+  },
+];
+
+/** Sizes offered in the inserter, in points — the deck's own type ladder. */
+export const TEXT_SIZES = [12, 14, 18, 24, 32, 40, 54] as const;
+
+export const DEFAULT_TEXT_SIZE_PT = 18;
+
+export function makeText(style?: TextStyle, sizePt: number = DEFAULT_TEXT_SIZE_PT): TextElement {
+  const s = style ?? TEXT_STYLES[0];
   return {
     id: newId('text'),
     type: 'text',
@@ -21,8 +78,25 @@ export function makeText(): TextElement {
     rect: { x: inchesToEmu(4.5), y: inchesToEmu(3.0), w: inchesToEmu(4), h: inchesToEmu(1) },
     body: {
       anchor: 'top',
+      // 'resize' so the box takes the shape of whichever face and size was
+      // picked, instead of clipping a 54pt sample inside a 1in default box.
+      autofit: 'resize',
       paragraphs: [
-        { runs: [{ text: 'Text', font: 'Geist', sizePt: 18, color: token('ink.strong') }] },
+        {
+          runs: [
+            {
+              text: style ? s.sample : 'Text',
+              font: s.font,
+              sizePt,
+              // Bold is the 700 face; anything lighter rides on `weight`, which
+              // has no OOXML equivalent and exports as regular.
+              weight: s.weight >= 700 ? undefined : s.weight,
+              bold: s.weight >= 700 || undefined,
+              italic: s.italic,
+              color: token('ink.strong'),
+            },
+          ],
+        },
       ],
     },
   };

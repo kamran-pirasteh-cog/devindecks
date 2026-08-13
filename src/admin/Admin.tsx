@@ -14,10 +14,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ALLOWED_FONTS, type ColorToken, type DesignSystem, type FontFamily, type TypeRole } from '@/model';
+import {
+  ALLOWED_FONTS,
+  EMU_PER_INCH,
+  EMU_PER_POINT,
+  FONTS,
+  inchesToEmu,
+  pageNumberInk,
+  pageNumberLabel,
+  type ColorToken,
+  type DesignSystem,
+  type FontFamily,
+  type PageNumberPosition,
+  type PageNumberStyle,
+  type TypeRole,
+} from '@/model';
 import { FitSlideView } from '@/render/FitSlideView';
-import { SlideView } from '@/render/SlideView';
-import { SLIDE_LAYOUT_CATEGORIES, TEMPLATES, type SlideLayoutCategory } from '@/templates/registry';
+import { SLIDE_LAYOUT_CATEGORIES, type SlideLayoutCategory } from '@/templates/registry';
 import {
   createLayout,
   createLayoutFromImage,
@@ -26,6 +39,7 @@ import {
   type StoredLayout,
 } from '@/templates/layoutRepository';
 import { getActiveDesignSystem, resetDesignSystem, saveDesignSystem } from '@/design/repository';
+import { PrimaryTabs, SubTabs } from '@/nav/PrimaryTabs';
 import { Artifacts } from './Artifacts';
 import { LayoutCard } from './LayoutCard';
 
@@ -40,6 +54,8 @@ const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
 ];
 
 type Tab = 'design' | 'templates' | 'artifacts';
+
+const ADMIN_TABS: Tab[] = ['design', 'templates', 'artifacts'];
 
 const TAB_LABELS: Record<Tab, string> = {
   design: 'Design system',
@@ -104,6 +120,9 @@ export function Admin() {
   const setRole = (role: keyof DesignSystem['type'], next: Partial<TypeRole>) =>
     patch({ type: { ...ds.type, [role]: { ...ds.type[role], ...next } } });
 
+  const setPageNumbers = (next: Partial<PageNumberStyle>) =>
+    patch({ pageNumbers: { ...ds.pageNumbers, ...next } });
+
   const save = () => {
     const next = saveDesignSystem(ds);
     setDs(next);
@@ -117,8 +136,6 @@ export function Admin() {
     setDirty(false);
     setSavedAt(null);
   };
-
-  const previewSlides = TEMPLATES.find((t) => t.id === 'qbr')!.buildSlides();
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -160,26 +177,21 @@ export function Admin() {
             </button>
           </div>
         </div>
-        <div className="flex gap-1 px-7">
-          {(['design', 'templates', 'artifacts'] as Tab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium ${
-                tab === t
-                  ? 'border-indigo-500 text-zinc-900 dark:text-white'
-                  : 'border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-              }`}
-            >
-              {TAB_LABELS[t]}
-            </button>
-          ))}
+        {/* The app's tabs stay put, with Admin marked active; Admin's own areas
+            hang off it as a second row instead of replacing the strip. */}
+        <div className="border-b border-zinc-200 dark:border-zinc-800">
+          <PrimaryTabs active="admin" />
         </div>
+        <SubTabs
+          tabs={ADMIN_TABS.map((t) => ({ value: t, label: TAB_LABELS[t] }))}
+          active={tab}
+          onSelect={setTab}
+        />
       </header>
 
       <main className="px-8 py-6">
         {tab === 'design' ? (
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
+          <div>
             <div className="space-y-6">
               {/* Colors */}
               <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -279,12 +291,12 @@ export function Admin() {
                 </div>
               </section>
 
+              {/* Page numbers */}
+              <PageNumbersSection style={ds.pageNumbers} onChange={setPageNumbers} />
+
               {/* Fonts (locked) */}
               <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <h3 className="mb-1 text-sm font-semibold">Fonts</h3>
-                <p className="mb-3 text-[11px] text-zinc-400">
-                  Locked to fonts that survive both PowerPoint and Google Slides.
-                </p>
+                <h3 className="mb-3 text-sm font-semibold">Fonts</h3>
                 <div className="flex gap-2">
                   {ALLOWED_FONTS.map((f) => (
                     <span
@@ -296,18 +308,6 @@ export function Admin() {
                   ))}
                 </div>
               </section>
-            </div>
-
-            {/* Live preview */}
-            <div className="space-y-3">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                Live preview
-              </h3>
-              {previewSlides.map((slide, i) => (
-                <div key={i} className="overflow-hidden rounded-lg shadow ring-1 ring-black/5">
-                  <SlideView slide={slide} slideSize={SLIDE_SIZE} designSystem={ds} width={360} />
-                </div>
-              ))}
             </div>
           </div>
         ) : tab === 'templates' ? (
@@ -329,10 +329,7 @@ export function Admin() {
                   </h2>
                 </div>
               ) : (
-                <p className="text-xs text-zinc-500">
-                  Slide layouts are organized into albums by slide type. Open an album to browse
-                  and edit its layouts, or create a new one from scratch or an uploaded reference.
-                </p>
+                <div />
               )}
               <div className="flex shrink-0 gap-2">
                 <input
@@ -388,6 +385,210 @@ export function Admin() {
           <Artifacts />
         )}
       </main>
+    </div>
+  );
+}
+
+const POSITIONS: { value: PageNumberPosition; label: string }[] = [
+  { value: 'bottom-left', label: 'Bottom left' },
+  { value: 'bottom-center', label: 'Bottom center' },
+  { value: 'bottom-right', label: 'Bottom right' },
+];
+
+const FORMATS: { value: string; label: string }[] = [
+  { value: '{n}', label: '7' },
+  { value: 'Page {n}', label: 'Page 7' },
+  { value: '{n} / {total}', label: '7 / 12' },
+  { value: '{n} of {total}', label: '7 of 12' },
+];
+
+/**
+ * The brand's page-number rule. It lives in the design system, not on a deck:
+ * a deck only decides WHETHER it shows numbers (the toolbar's # button), while
+ * where they sit, what they say and what ink they take is brand truth, so
+ * editing it here re-flows every deck at once.
+ */
+function PageNumbersSection({
+  style,
+  onChange,
+}: {
+  style: PageNumberStyle;
+  onChange: (next: Partial<PageNumberStyle>) => void;
+}) {
+  const inches = (emu: number) => Math.round((emu / EMU_PER_INCH) * 100) / 100;
+  const field =
+    'rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800';
+
+  return (
+    <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="mb-1 flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold">Page numbers</h3>
+        <span className="text-[11px] text-zinc-400">
+          Turned on per deck from the editor toolbar
+        </span>
+      </div>
+      <p className="mb-3 text-[11px] text-zinc-400">
+        Numbers are drawn from each slide&rsquo;s position, so decks renumber themselves as
+        slides are added, removed or reordered.
+      </p>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={style.font}
+          onChange={(e) => onChange({ font: e.target.value as FontFamily })}
+          className={field}
+          title="Font"
+        >
+          {ALLOWED_FONTS.map((f) => (
+            <option key={f} value={f}>
+              {f}
+            </option>
+          ))}
+        </select>
+        <input
+          type="number"
+          value={style.sizePt}
+          onChange={(e) => onChange({ sizePt: parseFloat(e.target.value) || 1 })}
+          className={`w-16 ${field}`}
+          title="Size (pt)"
+        />
+        <label className="flex items-center gap-1 text-xs text-zinc-500">
+          <input
+            type="checkbox"
+            checked={!!style.bold}
+            onChange={(e) => onChange({ bold: e.target.checked })}
+          />
+          Bold
+        </label>
+        <select
+          value={style.position}
+          onChange={(e) => onChange({ position: e.target.value as PageNumberPosition })}
+          className={field}
+          title="Position"
+        >
+          {POSITIONS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={style.format}
+          onChange={(e) => onChange({ format: e.target.value })}
+          className={field}
+          title="Format"
+        >
+          {FORMATS.map((f) => (
+            <option key={f.value} value={f.value}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+        <label className="flex items-center gap-1 text-xs text-zinc-500">
+          <input
+            type="checkbox"
+            checked={style.skipFirst}
+            onChange={(e) => onChange({ skipFirst: e.target.checked })}
+          />
+          Skip title slide
+        </label>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+          Side margin
+          <input
+            type="number"
+            step={0.05}
+            value={inches(style.marginXEmu)}
+            onChange={(e) => onChange({ marginXEmu: inchesToEmu(parseFloat(e.target.value) || 0) })}
+            className={`w-16 ${field}`}
+          />
+          in
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+          Bottom margin
+          <input
+            type="number"
+            step={0.05}
+            value={inches(style.marginYEmu)}
+            onChange={(e) => onChange({ marginYEmu: inchesToEmu(parseFloat(e.target.value) || 0) })}
+            className={`w-16 ${field}`}
+          />
+          in
+        </label>
+        {/* Two inks, picked per slide from its own background — that's why this
+            is a pair rather than one color token. */}
+        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+          On light
+          <input
+            type="color"
+            value={style.onLightHex}
+            onChange={(e) => onChange({ onLightHex: e.target.value })}
+            className="h-7 w-7 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700"
+          />
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+          On dark
+          <input
+            type="color"
+            value={style.onDarkHex}
+            onChange={(e) => onChange({ onDarkHex: e.target.value })}
+            className="h-7 w-7 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700"
+          />
+        </label>
+      </div>
+
+      {/* Both cases side by side: the same slide on white and on near-black. */}
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        {['#FFFFFF', '#0A0A0A'].map((bg) => (
+          <PageNumberPreview key={bg} style={style} backgroundHex={bg} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** A miniature slide corner showing where the number lands and in which ink. */
+function PageNumberPreview({
+  style,
+  backgroundHex,
+}: {
+  style: PageNumberStyle;
+  backgroundHex: string;
+}) {
+  const label = pageNumberLabel({ ...style, skipFirst: false }, 6, 12);
+  const justify =
+    style.position === 'bottom-center'
+      ? 'center'
+      : style.position === 'bottom-left'
+        ? 'flex-start'
+        : 'flex-end';
+  // 16:9 at a fixed 240px-wide mental slide, so the inset and type size shrink
+  // in the same proportion the real renderer uses.
+  const scale = 240 / SLIDE_SIZE.w;
+  return (
+    <div
+      className="flex overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
+      style={{
+        background: backgroundHex,
+        aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}`,
+        alignItems: 'flex-end',
+        justifyContent: justify,
+        padding: `0 ${style.marginXEmu * scale}px ${style.marginYEmu * scale}px`,
+      }}
+    >
+      <span
+        style={{
+          fontFamily: FONTS[style.font].cssStack,
+          fontSize: Math.max(7, style.sizePt * EMU_PER_POINT * scale),
+          lineHeight: FONTS[style.font].singleLineFactor,
+          fontWeight: style.bold ? 700 : 400,
+          color: pageNumberInk(style, backgroundHex),
+        }}
+      >
+        {label}
+      </span>
     </div>
   );
 }
