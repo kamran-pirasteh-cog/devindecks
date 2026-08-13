@@ -8,12 +8,19 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { type Deck } from '@/model';
 import {
+  countDocsByFolder,
+  deleteDoc,
   listAllOwners,
   listAllTags,
   listDeletedDocs,
   listDocs,
+  purgeAllDeleted,
+  restoreDoc,
   seedIfFirstRun,
+  setDocFolder,
 } from '@/docs/repository';
+import { listFolders, type DocFolder } from '@/docs/folders';
+import { FolderRail, type FolderScope } from './FolderRail';
 import { DocCard } from './DocCard';
 import { NewDocModal } from './NewDocModal';
 import { Reports } from './Reports';
@@ -176,6 +183,9 @@ function NewMenu({ onNewDeck, onNewReport }: { onNewDeck: () => void; onNewRepor
 
 export function Home() {
   const [docs, setDocs] = useState<Deck[]>([]);
+  const [folders, setFolders] = useState<DocFolder[]>([]);
+  const [folderCounts, setFolderCounts] = useState<Record<string, number>>({});
+  const [scope, setScope] = useState<FolderScope>({ kind: 'all' });
   const [allTags, setAllTags] = useState<string[]>([]);
   const [allOwners, setAllOwners] = useState<string[]>([]);
   const [modal, setModal] = useState(false);
@@ -190,23 +200,48 @@ export function Home() {
   const [tab, setTab] = useState<Tab>(
     searchParams.get('tab') === 'reports' ? 'reports' : 'documents',
   );
-  // "Deleted items" swaps the grid for the recycle bin.
-  const [showTrash, setShowTrash] = useState(false);
   const [deleted, setDeleted] = useState<Deck[]>([]);
-
-  useEffect(() => {
-    seedIfFirstRun();
-    setDocs(listDocs());
-    setAllTags(listAllTags());
-    setAllOwners(listAllOwners());
-    setDeleted(listDeletedDocs());
-  }, []);
+  // The rail's "Deleted" row swaps the grid for the recycle bin — it's one of
+  // the places documents can be, so it lives with the folders rather than as a
+  // button off in the toolbar.
+  const showTrash = scope.kind === 'deleted';
 
   const refreshDocs = () => {
     setDocs(listDocs());
     setAllTags(listAllTags());
     setAllOwners(listAllOwners());
     setDeleted(listDeletedDocs());
+    setFolders(listFolders());
+    setFolderCounts(countDocsByFolder());
+  };
+
+  useEffect(() => {
+    seedIfFirstRun();
+    refreshDocs();
+  }, []);
+
+  /** Drop-onto-a-folder, and the card menu's "Move to folder", land here. */
+  const fileDoc = (docId: string, folderId: string | undefined) => {
+    setDocFolder(docId, folderId);
+    refreshDocs();
+  };
+
+  /** Dropped onto the rail's Deleted row: recoverable, same as the card menu. */
+  const trashDoc = (docId: string) => {
+    deleteDoc(docId);
+    refreshDocs();
+  };
+
+  /** The rail's Deleted menu — the bin view's own two controls, reachable
+      without going into the bin first. */
+  const restoreAllDeleted = () => {
+    deleted.forEach((deck) => restoreDoc(deck.id));
+    refreshDocs();
+  };
+
+  const emptyDeleted = () => {
+    purgeAllDeleted();
+    refreshDocs();
   };
 
   // The search box counts as a filter here: it narrows the same grid, so
@@ -238,6 +273,10 @@ export function Home() {
 
   const filteredDocs = docs
     .filter((deck) => {
+      // Folder scope first: it's a location, not a filter — "Clear" and Escape
+      // leave it alone, and the empty state below reads differently inside a
+      // folder than it does under a search that matched nothing.
+      if (scope.kind === 'folder' && deck.folderId !== scope.id) return false;
       const q = query.trim().toLowerCase();
       if (q) {
         const titleMatch = deck.title.toLowerCase().includes(q);
@@ -292,7 +331,9 @@ export function Home() {
             <NewMenu
               onNewDeck={() => setModal(true)}
               onNewReport={() => {
-                setShowTrash(false);
+                // Leaving the bin behind: coming back to Documents should show
+                // documents, not whatever was in Deleted.
+                if (showTrash) setScope({ kind: 'all' });
                 setTab('reports');
                 window.history.replaceState(null, '', '/?tab=reports');
               }}
@@ -302,7 +343,7 @@ export function Home() {
         <PrimaryTabs
           active={tab}
           onSelect={(t) => {
-            setShowTrash(false);
+            if (showTrash) setScope({ kind: 'all' });
             setTab(t);
             // Keep the URL matching the visible tab so a reload (or a link
             // copied out of the address bar) comes back to the same place.
@@ -318,14 +359,37 @@ export function Home() {
 
         {/* Hidden rather than unmounted, so a search/filter survives a trip
             through Reports and back. */}
-        <section className={tab === 'documents' ? '' : 'hidden'}>
-          {/* One toolbar row: search + owner filter on the left, sort and the
-              Deleted items button on the right, all sharing a baseline. The
-              row's right edge lines up with the grid's, so that button sits
-              flush with the rightmost card. The tab strip above already says
-              "Documents", so there's no second heading. */}
+        <section className={tab === 'documents' ? 'flex items-start gap-6' : 'hidden'}>
+          {/* The rail is a place, not a filter, so it stays put as you search —
+              and it stays visible inside Deleted, which is one of its rows. */}
+          <FolderRail
+            folders={folders}
+            counts={folderCounts}
+            deletedCount={deleted.length}
+            scope={scope}
+            onSelect={setScope}
+            onFileDoc={fileDoc}
+            onTrashDoc={trashDoc}
+            onRestoreAllDeleted={restoreAllDeleted}
+            onEmptyDeleted={emptyDeleted}
+            onFoldersChange={refreshDocs}
+          />
+
+          <div className="min-w-0 flex-1">
+          {/* Says where you are. Skipped on "All documents", where the tab strip
+              above already reads "Documents". */}
+          {scope.kind !== 'all' ? (
+            <h2 className="mb-3 text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              {scope.kind === 'deleted'
+                ? 'Deleted'
+                : (folders.find((f) => f.id === scope.id)?.name ?? 'Folder')}
+            </h2>
+          ) : null}
+          {/* One toolbar row: search + filters on the left, sort on the right,
+              all sharing a baseline. The whole row is gone inside Deleted,
+              which has its own controls. */}
+          {showTrash ? null : (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            {showTrash ? null : (
               <div className="flex items-center gap-2">
                 <div className="relative w-72">
                   <input
@@ -383,42 +447,25 @@ export function Home() {
                   </button>
                 ) : null}
               </div>
-            )}
 
-            {/* ml-auto, not justify-end: in the bin the left group is gone and
-                these still belong on the right. */}
-            <div className="ml-auto flex items-center gap-3">
-              {showTrash ? null : (
-                <label className="flex items-center gap-1.5 text-xs text-zinc-400">
-                  Sort by
-                  <ToolbarSelect
-                    label="Sort by"
-                    value={sortBy}
-                    onChange={(v) => setSortBy(v as SortBy)}
-                  >
-                    {SORT_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </ToolbarSelect>
-                </label>
-              )}
-
-              <button
-                onClick={() => setShowTrash((v) => !v)}
-                className={`rounded-md px-2.5 py-1.5 text-sm font-medium ${
-                  showTrash
-                    ? 'bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100'
-                    : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
-                }`}
+            {/* ml-auto, not justify-end: sort belongs at the grid's right edge
+                whatever the left group's width comes out to. */}
+            <label className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400">
+              Sort by
+              <ToolbarSelect
+                label="Sort by"
+                value={sortBy}
+                onChange={(v) => setSortBy(v as SortBy)}
               >
-                {showTrash
-                  ? '← Back to documents'
-                  : `Deleted${deleted.length ? ` (${deleted.length})` : ''}`}
-              </button>
-            </div>
+                {SORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </ToolbarSelect>
+            </label>
           </div>
+          )}
 
           {showTrash ? (
             <DeletedItems docs={deleted} onChange={refreshDocs} />
@@ -427,7 +474,11 @@ export function Home() {
 
           {filteredDocs.length === 0 ? (
             <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
-              No documents match your search.
+              {hasFilters
+                ? 'No documents match your search.'
+                : scope.kind === 'all'
+                  ? 'No documents yet.'
+                  : 'This folder is empty. Drag a document onto it, or use “Move to folder”.'}
             </div>
           ) : (
             // Now the grid is full-bleed, the column COUNT is what should grow
@@ -436,16 +487,27 @@ export function Home() {
             // no breakpoints to keep in sync.
             <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
               {filteredDocs.map((deck) => (
-                <DocCard key={deck.id} deck={deck} onChange={refreshDocs} />
+                <DocCard
+                  key={deck.id}
+                  deck={deck}
+                  onChange={refreshDocs}
+                  folders={folders}
+                />
               ))}
             </div>
           )}
             </>
           )}
+          </div>
         </section>
       </main>
 
-      {modal ? <NewDocModal onClose={() => setModal(false)} /> : null}
+      {modal ? (
+        <NewDocModal
+          onClose={() => setModal(false)}
+          folderId={scope.kind === 'folder' ? scope.id : undefined}
+        />
+      ) : null}
 
     </div>
   );

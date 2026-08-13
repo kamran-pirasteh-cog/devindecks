@@ -18,6 +18,7 @@ import {
   EMU_PER_POINT,
   expandSelection,
   marginBox,
+  marginGuides,
   outerGroupId,
   selectionUnits,
   unionRect,
@@ -33,6 +34,7 @@ import {
   type SlideChartConfig,
   type SlideElement,
   type TextRun,
+  type VerticalAnchor,
 } from '@/model';
 import { buildChartElements } from '@/templates/charts';
 import { clampLevel } from '@/render/bullets';
@@ -87,6 +89,15 @@ interface EditorState {
    */
   showGuides: boolean;
 
+  /**
+   * A just-inserted text box whose model rect is still the factory's default.
+   * `autofit: 'resize'` means "the box is the text's size", but only the canvas
+   * can measure type, so it does the fit as soon as the node exists and clears
+   * this. Transient view state — never in the deck, never undone on its own.
+   */
+  pendingFitId: string | null;
+  clearPendingFit: () => void;
+
   // selection
   /** Select these ids, grown so no group is ever half-selected. */
   select: (ids: string[], additive?: boolean) => void;
@@ -115,11 +126,23 @@ interface EditorState {
     transient?: boolean,
   ) => void;
   moveBy: (ids: string[], dx: EMU, dy: EMU, transient?: boolean) => void;
+  /**
+   * Grow or shrink each box by the same amount, top-left pinned — the keyboard
+   * counterpart to dragging the bottom-right handle.
+   */
+  resizeBy: (ids: string[], dw: EMU, dh: EMU, transient?: boolean) => void;
   duplicateBy: (ids: string[], dx: EMU, dy: EMU) => void;
   setFill: (ids: string[], fill: Fill) => void;
+  /**
+   * Fill opacity, 0..1. Separate from `setFill` so changing it doesn't have to
+   * know each element's color: an unfilled box gains no fill from this.
+   */
+  setFillAlpha: (ids: string[], alpha: number) => void;
   setOutline: (ids: string[], outline: Outline | undefined) => void;
   patchRuns: (ids: string[], patch: Partial<TextRun>) => void;
   patchParagraphs: (ids: string[], patch: Partial<Omit<Paragraph, 'runs'>>) => void;
+  /** Vertical anchor of the text inside its box (PowerPoint's bodyPr anchor). */
+  setAnchor: (ids: string[], anchor: VerticalAnchor) => void;
   /** Turn a list style on for the selected boxes, or off if already on. */
   toggleBullet: (ids: string[], kind: BulletKind) => void;
   /** Nudge list indent level, clamped to the model's 0..4. */
@@ -168,6 +191,12 @@ interface EditorState {
 }
 
 const HISTORY_LIMIT = 100;
+
+/**
+ * Floor for a keyboard resize, ~1/20". Shrinking stops here rather than
+ * inverting the box, so holding the key down can't lose an object.
+ */
+const MIN_SIZE: EMU = EMU_PER_POINT * 3.6;
 
 function slideById(deck: Deck, id: string): Slide | undefined {
   return deck.slides.find((s) => s.id === id);
@@ -218,6 +247,13 @@ export const useEditor = create<EditorState>()(
     future: [],
     formatClipboard: null,
     showGuides: true,
+    pendingFitId: null,
+
+    clearPendingFit() {
+      set((s) => {
+        s.pendingFitId = null;
+      });
+    },
 
     toggleGuides() {
       set((s) => {
@@ -430,11 +466,15 @@ export const useEditor = create<EditorState>()(
 
     addElement(el) {
       get().commit();
+      const body = el.type === 'text' || el.type === 'shape' ? el.body : undefined;
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (slide) slide.elements.push(el);
         s.selectedIds = [el.id];
         s.deck.updatedAt = new Date(0).toISOString();
+        // A text box arrives at a nominal size; the canvas measures the type and
+        // shrinks it onto the text, so the selection you land on hugs it.
+        s.pendingFitId = body?.autofit === 'resize' ? el.id : null;
       });
     },
 
@@ -489,6 +529,19 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    resizeBy(ids, dw, dh, transient = false) {
+      if (!transient) get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        for (const el of slide.elements) {
+          if (!ids.includes(el.id)) continue;
+          el.rect.w = Math.max(MIN_SIZE, el.rect.w + dw);
+          el.rect.h = Math.max(MIN_SIZE, el.rect.h + dh);
+        }
+      });
+    },
+
     duplicateBy(ids, dx, dy) {
       const slide = slideById(get().deck, get().currentSlideId);
       if (!slide?.elements.some((e) => ids.includes(e.id))) return;
@@ -526,6 +579,20 @@ export const useEditor = create<EditorState>()(
           if (ids.includes(el.id) && (el.type === 'text' || el.type === 'shape')) {
             el.fill = fill;
           }
+        }
+      });
+    },
+
+    setFillAlpha(ids, alpha) {
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        for (const el of slide.elements) {
+          if (!ids.includes(el.id)) continue;
+          if (el.type !== 'text' && el.type !== 'shape') continue;
+          if (el.fill?.kind !== 'solid') continue;
+          el.fill = { ...el.fill, alpha };
         }
       });
     },
@@ -572,6 +639,20 @@ export const useEditor = create<EditorState>()(
           const body = el.type === 'text' ? el.body : el.type === 'shape' ? el.body : undefined;
           if (!body) continue;
           for (const p of body.paragraphs) Object.assign(p, patch);
+        }
+      });
+    },
+
+    setAnchor(ids, anchor) {
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        for (const el of slide.elements) {
+          if (!ids.includes(el.id)) continue;
+          const body = el.type === 'text' || el.type === 'shape' ? el.body : undefined;
+          if (!body) continue;
+          body.anchor = anchor;
         }
       });
     },
@@ -659,14 +740,21 @@ export const useEditor = create<EditorState>()(
      * bodily to the edge, exactly as PowerPoint treats it. For a selection with
      * no groups in it this is the old element-wise behaviour unchanged.
      *
-     * The edge modes ESCALATE, so the same chord pressed repeatedly walks
-     * outward instead of going dead:
+     * The edge modes ESCALATE: the mode names a DIRECTION OF TRAVEL, and each
+     * press slides the selection to the next line it meets going that way.
      *
      *   1. objects not yet flush → line them up on their own outermost edge
-     *   2. already flush (or a single object, trivially flush) → the margin guide
-     *   3. already on the guide → the slide edge
-     *   4. already on the slide edge → back to the guide, so it's a way in as
-     *      well as a way out
+     *   2. flush (a single object always is) → travel to the next stop: a margin
+     *      guide, the content-top guide, or the slide edge, whichever comes first
+     *   3. …repeat, one line per press, until there is nothing further that way,
+     *      where it stops dead rather than cycling
+     *
+     * A stop counts when EITHER edge of the selection can land on it — an object
+     * overhanging the left guide moves right onto that guide (its left edge),
+     * and keeps going to the right guide (its right edge) and then the paper's
+     * right edge. A single object also stops centred on the slide, passing
+     * through the middle on its way across. Moves that would carry the selection
+     * off the slide are not offered, which is what makes the walk terminate.
      *
      * Every step past the first moves the whole selection by ONE shift (they
      * share the edge by then), so the layout inside it survives the trip.
@@ -703,30 +791,70 @@ export const useEditor = create<EditorState>()(
       /** Half a point — under this two edges are the same edge to any eye. */
       const EPS = EMU_PER_POINT / 2;
       const horizontal = mode === 'left' || mode === 'right';
-      const leading = mode === 'left' || mode === 'top';
+      /** −1 travels toward the top-left corner, +1 toward the bottom-right. */
+      const dir = mode === 'left' || mode === 'top' ? -1 : 1;
       const edgeOf = (r: Rect) =>
         mode === 'left' ? r.x : mode === 'right' ? r.x + r.w : mode === 'top' ? r.y : r.y + r.h;
+      const shift = (d: number) =>
+        boxes.map((b) => (horizontal ? { ids: b.ids, dx: d, dy: 0 } : { ids: b.ids, dx: 0, dy: d }));
 
+      // Step 1: pull the selection flush before it starts travelling.
       const edges = boxes.map((b) => edgeOf(b.r));
-      const flush = Math.max(...edges) - Math.min(...edges) <= EPS;
-
-      let target: number;
-      if (!flush) {
-        target = leading ? Math.min(...edges) : Math.max(...edges);
-      } else {
-        const guide = horizontal
-          ? (leading ? frame.x : frame.x + frame.w)
-          : (leading ? frame.y : frame.y + frame.h);
-        const slideEdge = leading ? 0 : horizontal ? s.deck.slideSize.w : s.deck.slideSize.h;
-        target = Math.abs(edges[0] - guide) <= EPS ? slideEdge : guide;
+      if (Math.max(...edges) - Math.min(...edges) > EPS) {
+        const target = dir < 0 ? Math.min(...edges) : Math.max(...edges);
+        get().commit();
+        set(shiftUnits(boxes.map((b) => {
+          const d = target - edgeOf(b.r);
+          return horizontal ? { ids: b.ids, dx: d, dy: 0 } : { ids: b.ids, dx: 0, dy: d };
+        })));
+        return;
       }
 
-      const shifts = boxes.map((b) => {
-        const d = target - edgeOf(b.r);
-        return horizontal ? { ids: b.ids, dx: d, dy: 0 } : { ids: b.ids, dx: 0, dy: d };
-      });
+      // Steps 2+: the lines the selection can come to rest on, in this axis.
+      //
+      // Every line has a SIDE — the side its content belongs on — and takes the
+      // selection edge that lands it there: the left guide and the paper's left
+      // edge take the left edge, the right guide and right paper edge take the
+      // right, and going down the page the top and content-top guides take the
+      // top edge while the bottom guide takes the bottom. Without that, both
+      // edges would want each line and the selection would stop on every guide
+      // twice, once hanging off each side of it.
+      //
+      // The slide's centre line is a stop too, met by the object's own centre —
+      // but only for a single object, where "centred" is unambiguous. With
+      // several units selected the chord is about their shared edge, and a
+      // centre stop would slide the block off that reading.
+      const guides = marginGuides(s.deck.slideSize);
+      const size = horizontal ? s.deck.slideSize.w : s.deck.slideSize.h;
+      const lines = horizontal ? guides.vertical : guides.horizontal;
+      type Stop = { at: number; on: 'lo' | 'hi' | 'centre' };
+      const stops: Stop[] = [
+        { at: 0, on: 'lo' },
+        // The last guide on each axis (right / bottom) closes the frame; the
+        // ones before it (left, and top + content-top) open it.
+        ...lines.map((at, i): Stop => ({ at, on: i < lines.length - 1 ? 'lo' : 'hi' })),
+        { at: size, on: 'hi' },
+        ...(boxes.length === 1 ? [{ at: size / 2, on: 'centre' } as Stop] : []),
+      ];
+
+      const lo = Math.min(...boxes.map((b) => (horizontal ? b.r.x : b.r.y)));
+      const hi = Math.max(...boxes.map((b) => (horizontal ? b.r.x + b.r.w : b.r.y + b.r.h)));
+      // Anything bigger than the slide can never sit inside it, so it is exempt
+      // from the containment rule — otherwise it could never move at all.
+      const oversized = hi - lo > size;
+
+      let best: number | null = null;
+      for (const stop of stops) {
+        const from = stop.on === 'lo' ? lo : stop.on === 'hi' ? hi : (lo + hi) / 2;
+        const d = stop.at - from;
+        if (d * dir <= EPS) continue; // not a move, or not the way we're going
+        if (!oversized && (lo + d < -EPS || hi + d > size + EPS)) continue;
+        if (best === null || Math.abs(d) < Math.abs(best)) best = d;
+      }
+      if (best === null) return; // nothing further that way — stay put
+
       get().commit();
-      set(shiftUnits(shifts));
+      set(shiftUnits(shift(best)));
     },
 
     /**

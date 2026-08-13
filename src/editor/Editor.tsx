@@ -10,7 +10,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEditor, loadDeck, nextFontSize, type AlignMode } from '@/store/editorStore';
 import { SAMPLE_DECK } from '@/model/sample';
-import { expandSelection, inchesToEmu, type Deck } from '@/model';
+import { expandSelection, inchesToEmu, unionRect, type Deck } from '@/model';
 import { getDoc, saveDoc } from '@/docs/repository';
 import { getStoredTemplate, saveTemplateFromDeck, templateAsDeck } from '@/templates/repository';
 import { getStoredLayout, layoutAsDeck, saveLayoutFromSlide } from '@/templates/layoutRepository';
@@ -24,6 +24,8 @@ import { EditorCanvas } from './EditorCanvas';
 import { fontSizeDirection } from './fontSizeShortcut';
 import { formatPainterAction } from './formatShortcut';
 import { isCommentShortcut } from './commentShortcut';
+import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
+import { NAV_KEYS, nextInDirection } from './spatialNav';
 import { TemplateDrawer } from './TemplateDrawer';
 import { ExportMenu } from './ExportMenu';
 
@@ -43,6 +45,17 @@ const ALIGN_KEYS: Record<string, AlignMode | undefined> = {
   ArrowLeft: 'left',
   ArrowDown: 'bottom',
   ArrowRight: 'right',
+};
+
+/**
+ * Unit vector per arrow, shared by the nudge and the ⇧ resize: the same
+ * direction that moves a box one step also grows it by one step.
+ */
+const ARROWS: Record<string, [number, number] | undefined> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
 };
 
 export function Editor({
@@ -115,9 +128,10 @@ export function Editor({
 
   useEffect(() => {
     const NUDGE = inchesToEmu(0.083);
-    const NUDGE_LARGE = NUDGE * 10;
-    /** PowerPoint drops a duplicate slightly down-right of the original. */
-    const DUP_OFFSET = inchesToEmu(0.2);
+    /** One press of ⇧ + arrow, matched to the nudge so the two feel the same. */
+    const RESIZE_STEP = NUDGE;
+    /** Breathing room between an object and the copy that lands under it. */
+    const DUP_GAP = inchesToEmu(0.1);
 
     const onKey = (e: KeyboardEvent) => {
       const s = useEditor.getState();
@@ -135,15 +149,15 @@ export function Editor({
       const alignMode = mod && !e.altKey && !e.shiftKey ? ALIGN_KEYS[e.key] : undefined;
       const sizeDir = fontSizeDirection(e);
       const painter = formatPainterAction(e);
+      const textEdge = textAlignEdge(e);
 
       const slide = s.currentSlide();
       const primary = slide.elements.find(
         (el) => s.selectedIds.includes(el.id) && (el.type === 'text' || (el.type === 'shape' && el.body)),
       );
-      const firstRun =
-        primary && (primary.type === 'text' || (primary.type === 'shape' && primary.body))
-          ? primary.body?.paragraphs[0]?.runs[0]
-          : undefined;
+      const primaryBody =
+        primary && (primary.type === 'text' || primary.type === 'shape') ? primary.body : undefined;
+      const firstRun = primaryBody?.paragraphs[0]?.runs[0];
 
       // Format painter first: its chords carry Alt/Shift, so they must not be
       // read as a plain mod+C/V by anything below.
@@ -154,6 +168,17 @@ export function Editor({
       } else if (alignMode && s.selectedIds.length) {
         e.preventDefault();
         s.align(alignMode);
+      } else if (textEdge && primaryBody) {
+        // Ahead of the restack and nudge branches, both of which take arrows
+        // with fewer modifiers and would otherwise swallow this chord.
+        e.preventDefault();
+        if (textEdge === 'left' || textEdge === 'right') {
+          s.patchParagraphs(s.selectedIds, {
+            align: nextParaAlign(textEdge, primaryBody.paragraphs[0]?.align),
+          });
+        } else {
+          s.setAnchor(s.selectedIds, nextAnchor(textEdge, primaryBody.anchor));
+        }
       } else if (isCommentShortcut(e)) {
         // Google Slides' insert-comment chord. With something selected the
         // thread pins to it (the first object, as the format painter does);
@@ -169,15 +194,14 @@ export function Editor({
         e.preventDefault();
         s.redo();
       } else if (mod && e.altKey && (e.code === 'KeyG' || key === 'g' || key === '©')) {
-        // Guides gave up ⌘⇧G to ungroup, which is where PowerPoint puts it.
         // ⌥ rewrites the character on macOS (⌥G arrives as "©"), so `code` is
         // the half of the match to trust.
         e.preventDefault();
-        s.toggleGuides();
+        s.ungroup();
       } else if (mod && e.shiftKey && (e.code === 'KeyG' || key === 'g')) {
         e.preventDefault();
-        s.ungroup();
-      } else if (mod && !e.shiftKey && (e.code === 'KeyG' || key === 'g')) {
+        s.toggleGuides();
+      } else if (mod && !e.altKey && !e.shiftKey && (e.code === 'KeyG' || key === 'g')) {
         e.preventDefault();
         s.group();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -192,14 +216,35 @@ export function Editor({
         if (s.selectedIds.length && grown.length > s.selectedIds.length) s.select(s.selectedIds);
         else s.clearSelection();
       } else if (
-        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+        mod &&
+        e.altKey &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
         s.selectedIds.length
       ) {
+        // Restack rather than nudge: ⌘⌥↑/↓ walks the selection one step through
+        // z-order, and ⇧ takes it all the way to the front or back.
         e.preventDefault();
-        const step = e.shiftKey ? NUDGE_LARGE : NUDGE;
-        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
-        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        s.moveBy(s.selectedIds, dx, dy);
+        const up = e.key === 'ArrowUp';
+        s.reorder(e.shiftKey ? (up ? 'front' : 'back') : up ? 'forward' : 'backward');
+      } else if (e.altKey && !mod && NAV_KEYS[e.key]) {
+        // ⌥ + arrow walks the selection between objects instead of moving one,
+        // the way arrows alone do in PowerPoint. Matched ahead of both the
+        // nudge and the page-the-deck branches, which take bare arrows.
+        e.preventDefault();
+        const next = nextInDirection(slide.elements, s.selectedIds, NAV_KEYS[e.key]!);
+        if (next) s.select(next);
+      } else if (e.shiftKey && !mod && !e.altKey && ARROWS[e.key] && s.selectedIds.length) {
+        // PowerPoint's ⇧ + arrow: the selection grows and shrinks instead of
+        // moving, top-left pinned, so → widens and ← narrows from the right
+        // edge (↓ / ↑ likewise for height). Reached only with no other
+        // modifier — the restack and align chords carry ⇧ too and match above.
+        e.preventDefault();
+        const [ax, ay] = ARROWS[e.key]!;
+        s.resizeBy(s.selectedIds, ax * RESIZE_STEP, ay * RESIZE_STEP);
+      } else if (ARROWS[e.key] && s.selectedIds.length) {
+        e.preventDefault();
+        const [ax, ay] = ARROWS[e.key]!;
+        s.moveBy(s.selectedIds, ax * NUDGE, ay * NUDGE);
       } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         // Nothing selected, so the arrows page the deck instead of nudging.
         e.preventDefault();
@@ -235,7 +280,10 @@ export function Editor({
         s.select(slide.elements.map((el) => el.id));
       } else if (mod && !e.shiftKey && key === 'd' && s.selectedIds.length) {
         e.preventDefault();
-        s.duplicateBy(s.selectedIds, DUP_OFFSET, DUP_OFFSET);
+        // The copy lands directly under the original, left edges lined up, so a
+        // ⌘D-⌘D-⌘D run builds an evenly spaced stack instead of a staircase.
+        const box = unionRect(slide.elements, expandSelection(slide.elements, s.selectedIds));
+        if (box) s.duplicateBy(s.selectedIds, 0, box.h + DUP_GAP);
       } else if (mod && key === 's') {
         // Nothing to save — the deck persists as it changes. Swallowed so the
         // browser's save-page dialog never lands on top of the editor.

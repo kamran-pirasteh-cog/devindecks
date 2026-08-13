@@ -41,6 +41,9 @@ const WEIGHTS_PT = [0.5, 0.75, 1, 1.5, 2.25, 3, 4.5, 6];
 
 const FONT_SIZES_PT = [8, 10, 11, 12, 14, 18, 20, 24, 28, 32, 40, 48, 54, 60, 72, 96];
 
+/** Fill transparency, as percentages — PowerPoint's own 10% ladder. */
+const TRANSPARENCY_PCT = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+
 /** The outline a border control edits when the target has none yet. */
 const OUTLINE_FALLBACK: Outline = {
   color: token('ink.strong'),
@@ -178,25 +181,40 @@ function bodyElementOf(selected: SlideElement[]) {
 }
 
 /** Bullet/numbering icons, drawn rather than typed so they scale with the bar. */
+/**
+ * Rows sit inset from the 14×14 box: the marker's radius and the rules' round
+ * caps both grow past their nominal coordinates, so rows flush to the edges
+ * clip against the button.
+ */
+const ROWS = [3, 7, 11];
+
 function ListIcon({ numbered }: { numbered: boolean }) {
   return (
     <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden fill="none">
-      {[1.5, 6.5, 11.5].map((y, i) =>
+      {ROWS.map((y, i) =>
         numbered ? (
-          <text key={y} x={0} y={y + 4} fontSize={5} fill="currentColor">
+          <text
+            key={y}
+            x={2.2}
+            y={y}
+            fontSize={5}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fill="currentColor"
+          >
             {i + 1}
           </text>
         ) : (
-          <circle key={y} cx={2} cy={y + 2} r={1.4} fill="currentColor" />
+          <circle key={y} cx={2.2} cy={y} r={1.4} fill="currentColor" />
         ),
       )}
-      {[1.5, 6.5, 11.5].map((y) => (
+      {ROWS.map((y) => (
         <line
           key={y}
           x1={6}
-          y1={y + 2}
-          x2={14}
-          y2={y + 2}
+          y1={y}
+          x2={13.2}
+          y2={y}
           stroke="currentColor"
           strokeWidth={1.4}
           strokeLinecap="round"
@@ -230,6 +248,10 @@ export function SelectionFormatBar() {
 
   const fillPrimary = selected.find((e) => e.type === 'text' || e.type === 'shape');
   const fill = fillPrimary?.type === 'text' || fillPrimary?.type === 'shape' ? fillPrimary.fill : undefined;
+  // Rounded because the model stores opacity: a value nudged elsewhere still
+  // needs to land on an integer percentage to match an <option>.
+  const fillTransparencyPct =
+    fill?.kind === 'solid' ? Math.round((1 - (fill.alpha ?? 1)) * 100) : 0;
   const borderPrimary = selected.find((e) => e.type !== 'picture');
   const outline = outlineOf(borderPrimary);
   // A line's outline is structural, so its color and weight can be changed but
@@ -344,16 +366,47 @@ export function SelectionFormatBar() {
       {hasText && (hasFillable || hasBorder) ? <Divider /> : null}
 
       {hasFillable ? (
-        <Group label="Fill">
-          <ColorPicker
-            label="Fill"
-            value={fill?.kind === 'solid' ? fill.color : undefined}
-            colors={ds.colors}
-            ds={ds}
-            onPick={(id) => store().setFill(selectedIds, { kind: 'solid', color: token(id) })}
-            onNone={() => store().setFill(selectedIds, { kind: 'none' })}
-          />
-        </Group>
+        <>
+          <Group label="Fill">
+            <ColorPicker
+              label="Fill"
+              value={fill?.kind === 'solid' ? fill.color : undefined}
+              colors={ds.colors}
+              ds={ds}
+              // Recoloring keeps whatever transparency is already set — the two
+              // are independent controls, so one shouldn't reset the other.
+              onPick={(id) =>
+                store().setFill(selectedIds, {
+                  kind: 'solid',
+                  color: token(id),
+                  alpha: fill?.kind === 'solid' ? fill.alpha : undefined,
+                })
+              }
+              onNone={() => store().setFill(selectedIds, { kind: 'none' })}
+            />
+          </Group>
+          <Group label="Transparency">
+            <select
+              value={fillTransparencyPct}
+              onChange={(e) =>
+                store().setFillAlpha(selectedIds, 1 - parseFloat(e.target.value) / 100)
+              }
+              aria-label="Fill transparency"
+              title="Fill transparency"
+              // Nothing to make see-through until there's a fill to see through.
+              disabled={fill?.kind !== 'solid'}
+              className={`${FIELD_CLASS} disabled:opacity-40`}
+            >
+              {[...new Set([...TRANSPARENCY_PCT, fillTransparencyPct])]
+                .sort((a, b) => a - b)
+                .map((p) => (
+                  <option key={p} value={p}>
+                    {p}%
+                  </option>
+                ))}
+            </select>
+          </Group>
+        </>
       ) : null}
 
       {hasBorder ? (

@@ -131,6 +131,43 @@ export function setDocOwner(id: string, owner: string): void {
   }
 }
 
+/**
+ * File a document into a folder, or pass `undefined` to send it back to
+ * Unfiled. Filing isn't editing, so `updatedAt` is left alone — the same
+ * reasoning as `deleteDoc`.
+ */
+export function setDocFolder(id: string, folderId: string | undefined): void {
+  const map = read();
+  if (!map[id]) return;
+  const { folderId: _folderId, ...rest } = map[id];
+  map[id] = folderId ? { ...rest, folderId } : rest;
+  write(map);
+}
+
+/**
+ * Live-document counts per folder id, plus the unfiled count under `''`, for
+ * the rail's badges. One pass over the store rather than a filter per folder.
+ */
+export function countDocsByFolder(): Record<string, number> {
+  const counts: Record<string, number> = { '': 0 };
+  for (const doc of listDocs()) {
+    const key = doc.folderId ?? '';
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/** Clear a folder off every document in it, before the folder itself goes. */
+export function unfileFolder(folderId: string): void {
+  const map = read();
+  for (const doc of Object.values(map)) {
+    if (doc.folderId !== folderId) continue;
+    const { folderId: _folderId, ...rest } = doc;
+    map[doc.id] = rest;
+  }
+  write(map);
+}
+
 /** All distinct owners across every document, for building the owner filter. */
 export function listAllOwners(): string[] {
   const set = new Set<string>();
