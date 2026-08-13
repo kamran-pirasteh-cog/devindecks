@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { resolveColor, token, type DashStyle } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { DEFAULT_LINE_OPTIONS, makeLine, type LineOptions } from './factories';
+import { OVERLAY_Z } from './layers';
 
 const ORIENTATIONS: { value: LineOptions['orientation']; label: string }[] = [
   { value: 'horizontal', label: 'Horizontal' },
@@ -111,7 +112,8 @@ export function LinePopover({
       ref={ref}
       role="dialog"
       aria-label="Insert line"
-      className="absolute top-full left-0 z-30 mt-1.5 w-64 rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+      style={{ zIndex: OVERLAY_Z }}
+      className="absolute top-full left-0 mt-1.5 w-64 rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
     >
       <div className="flex flex-col gap-3">
         <Row label="Direction">

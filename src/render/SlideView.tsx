@@ -7,9 +7,13 @@
  * and the export are all literally the same rendering of the same model.
  */
 import {
+  DEFAULT_TEXT_INSETS,
   EMU_PER_POINT,
   FONTS,
+  pageNumberInk,
+  pageNumberLabel,
   resolveColor,
+  runWeight,
   type DesignSystem,
   type EMU,
   type Fill,
@@ -21,6 +25,7 @@ import {
   type TextBody,
 } from '@/model';
 import { ShapeGeom } from './geometry';
+import { bulletMarkers, indentMetricsPt } from './bullets';
 
 const dashArray = (dash: Outline['dash'], stroke: number): string | undefined => {
   if (dash === 'dash') return `${stroke * 3} ${stroke * 2}`;
@@ -58,10 +63,10 @@ export function TextBodyView({
       style={{
         position: 'absolute',
         inset: 0,
-        paddingLeft: (body.insets?.l ?? 91440) * scale,
-        paddingTop: (body.insets?.t ?? 45720) * scale,
-        paddingRight: (body.insets?.r ?? 91440) * scale,
-        paddingBottom: (body.insets?.b ?? 45720) * scale,
+        paddingLeft: (body.insets?.l ?? DEFAULT_TEXT_INSETS.l) * scale,
+        paddingTop: (body.insets?.t ?? DEFAULT_TEXT_INSETS.t) * scale,
+        paddingRight: (body.insets?.r ?? DEFAULT_TEXT_INSETS.r) * scale,
+        paddingBottom: (body.insets?.b ?? DEFAULT_TEXT_INSETS.b) * scale,
         display: 'flex',
         flexDirection: 'column',
         justifyContent: justify,
@@ -76,9 +81,14 @@ export function TextBodyView({
         pointerEvents: 'none',
       }}
     >
-      {body.paragraphs.map((p, i) => (
-        <ParagraphView key={i} p={p} ds={ds} scale={scale} />
-      ))}
+      {(() => {
+        // Numbering is a property of the body, not of one paragraph — see
+        // bulletMarkers — so it is resolved once here and handed down.
+        const markers = bulletMarkers(body.paragraphs);
+        return body.paragraphs.map((p, i) => (
+          <ParagraphView key={i} p={p} ds={ds} scale={scale} marker={markers[i]} />
+        ));
+      })()}
     </div>
   );
 }
@@ -87,10 +97,13 @@ function ParagraphView({
   p,
   ds,
   scale,
+  marker,
 }: {
   p: Paragraph;
   ds: DesignSystem;
   scale: number;
+  /** Bullet glyph or number label, resolved body-wide by <TextBodyView>. */
+  marker?: string | null;
 }) {
   const textAlign = (p.align ?? 'left') as 'left' | 'center' | 'right' | 'justify';
   // The paragraph must carry its own font-size and line-height, both taken from
@@ -112,6 +125,11 @@ function ParagraphView({
   );
   const linePt = largest.pt || ds.type.body.sizePt;
   const lineHeight = ((p.lineSpacingPct ?? 100) / 100) * FONTS[largest.font].singleLineFactor;
+  // Hanging indent: the paragraph is indented, the first line pulled back by
+  // the gutter the marker then fills, so wrapped lines align under the text
+  // rather than under the bullet — what PowerPoint's marL/indent pair does.
+  const { indentPt, hangPt } = indentMetricsPt(p);
+  const markerRun = p.runs[0];
   return (
     <p
       style={{
@@ -121,9 +139,26 @@ function ParagraphView({
         textAlign,
         fontSize: linePt * EMU_PER_POINT * scale,
         lineHeight,
+        paddingLeft: indentPt * EMU_PER_POINT * scale,
+        textIndent: -hangPt * EMU_PER_POINT * scale,
       }}
     >
-      {p.bullet === 'bullet' ? '• ' : null}
+      {marker ? (
+        <span
+          style={{
+            display: 'inline-block',
+            width: hangPt * EMU_PER_POINT * scale,
+            // The marker wears the paragraph's own type, not the browser
+            // default, so a 40pt heading's bullet isn't a 16pt speck.
+            fontFamily: FONTS[markerRun?.font ?? ds.fonts.body].cssStack,
+            fontSize: (markerRun?.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale,
+            color: resolveColor(markerRun?.color, ds),
+            textIndent: 0,
+          }}
+        >
+          {marker}
+        </span>
+      ) : null}
       {p.runs.map((r, i) => {
         const font = FONTS[r.font ?? ds.fonts.body];
         return (
@@ -132,7 +167,7 @@ function ParagraphView({
             style={{
               fontFamily: font.cssStack,
               fontSize: (r.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale,
-              fontWeight: r.bold ? 700 : 400,
+              fontWeight: runWeight(r),
               fontStyle: r.italic ? 'italic' : 'normal',
               textDecoration: r.underline ? 'underline' : 'none',
               color: resolveColor(r.color, ds),
@@ -257,6 +292,64 @@ export function ElementVisual({
   }
 }
 
+/** A slide's painted background color — the same rule <SlideView> applies. */
+export function slideBackgroundHex(slide: Slide, ds: DesignSystem): string {
+  return slide.background?.kind === 'solid'
+    ? resolveColor(slide.background.color, ds)
+    : '#ffffff';
+}
+
+/**
+ * The page number, drawn from the slide's LIVE position in the deck — never
+ * stored on the slide. Reordering or deleting slides renumbers by re-rendering.
+ *
+ * Shared by the static renderer below and the editor canvas, so the number on
+ * the canvas is pixel-identical to the one in the thumbnail and the export.
+ */
+export function PageNumber({
+  index,
+  count,
+  backgroundHex,
+  ds,
+  scale,
+}: {
+  /** 0-based slide position. */
+  index: number;
+  count: number;
+  backgroundHex: string;
+  ds: DesignSystem;
+  scale: number;
+}) {
+  const style = ds.pageNumbers;
+  const label = pageNumberLabel(style, index, count);
+  if (!label) return null;
+  const edge = style.marginXEmu * scale;
+  const centered = style.position === 'bottom-center';
+  return (
+    <div
+      className="dd-page-number"
+      style={{
+        position: 'absolute',
+        bottom: style.marginYEmu * scale,
+        left: centered || style.position === 'bottom-left' ? edge : undefined,
+        right: centered || style.position === 'bottom-right' ? edge : undefined,
+        textAlign: centered ? 'center' : style.position === 'bottom-left' ? 'left' : 'right',
+        fontFamily: FONTS[style.font].cssStack,
+        fontSize: style.sizePt * EMU_PER_POINT * scale,
+        lineHeight: FONTS[style.font].singleLineFactor,
+        fontWeight: style.bold ? 700 : 400,
+        // Black on light slides, off-white on dark ones — decided per slide
+        // from its own background, so a dark slide mid-deck stays legible.
+        color: pageNumberInk(style, backgroundHex),
+        whiteSpace: 'nowrap',
+        pointerEvents: 'none',
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
 function PositionedElement({
   el,
   ds,
@@ -289,6 +382,11 @@ interface SlideViewProps {
   designSystem: DesignSystem;
   width: number;
   className?: string;
+  /**
+   * Where this slide sits in its deck. Present only when the deck has page
+   * numbers on — a lone slide (a layout card, a chart preview) has no number.
+   */
+  page?: { index: number; count: number };
 }
 
 export function SlideView({
@@ -297,6 +395,7 @@ export function SlideView({
   designSystem,
   width,
   className,
+  page,
 }: SlideViewProps) {
   const scale = width / slideSize.w;
   const height = slideSize.h * scale;
@@ -308,16 +407,22 @@ export function SlideView({
         position: 'relative',
         width,
         height,
-        background:
-          slide.background?.kind === 'solid'
-            ? resolveColor(slide.background.color, designSystem)
-            : '#ffffff',
+        background: slideBackgroundHex(slide, designSystem),
         overflow: 'hidden',
       }}
     >
       {slide.elements.map((el) => (
         <PositionedElement key={el.id} el={el} ds={designSystem} scale={scale} />
       ))}
+      {page ? (
+        <PageNumber
+          index={page.index}
+          count={page.count}
+          backgroundHex={slideBackgroundHex(slide, designSystem)}
+          ds={designSystem}
+          scale={scale}
+        />
+      ) : null}
     </div>
   );
 }

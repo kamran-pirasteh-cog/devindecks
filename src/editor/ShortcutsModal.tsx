@@ -10,6 +10,7 @@
  * drifts from the code is worse than none.
  */
 import { useEffect } from 'react';
+import { MODAL_Z } from './layers';
 
 interface Shortcut {
   keys: string[];
@@ -37,14 +38,19 @@ const buildGroups = (MOD: string): Group[] => [
     title: 'General',
     items: [
       { keys: [MOD, 'Z'], label: 'Undo' },
-      { keys: [MOD, '⇧', 'Z'], label: 'Redo' },
       { keys: [MOD, 'Y'], label: 'Redo' },
+      { keys: [MOD, 'A'], label: 'Select everything on the slide' },
+      { keys: [MOD, 'M'], label: 'New slide', note: 'after the current one' },
       { keys: ['Delete'], label: 'Delete selection' },
       { keys: ['Esc'], label: 'Clear selection', note: 'exits text editing first' },
       { keys: ['Double-click'], label: 'Edit text in place' },
       { keys: ['⇧', 'Click'], label: 'Add or remove from selection' },
       { keys: ['Click'], label: 'Select only what you clicked', note: 'empty space clears' },
-      { keys: ['Ctrl', 'Scroll'], label: 'Zoom the slide in or out' },
+      { keys: [MOD, 'Scroll'], label: 'Zoom the slide in or out' },
+      { keys: [MOD, '⌥', 'C'], label: 'Copy formatting', note: `also ${MOD}⇧C` },
+      { keys: [MOD, '⌥', 'V'], label: 'Paste formatting', note: `also ${MOD}⇧V` },
+      { keys: [MOD, '⌥', 'M'], label: 'Comment', note: 'on the selection, or the slide' },
+      { keys: [MOD, '↵'], label: 'Post comment or reply', note: 'in the comments panel' },
     ],
   },
   {
@@ -58,6 +64,10 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: [MOD, 'R'], label: 'Align right' },
       { keys: [MOD, '⇧', '>'], label: 'Increase font size', note: `also ${MOD}⌥>` },
       { keys: [MOD, '⇧', '<'], label: 'Decrease font size', note: `also ${MOD}⌥<` },
+      { keys: [MOD, '⇧', '8'], label: 'Bulleted list', note: 'while editing text' },
+      { keys: [MOD, '⇧', '7'], label: 'Numbered list', note: 'while editing text' },
+      { keys: ['Tab'], label: 'Indent list item', note: 'while editing text' },
+      { keys: ['⇧', 'Tab'], label: 'Outdent list item', note: 'while editing text' },
       { keys: [MOD, '↵'], label: 'Finish editing', note: 'while editing text' },
     ],
   },
@@ -66,19 +76,25 @@ const buildGroups = (MOD: string): Group[] => [
     items: [
       { keys: ['↑', '↓', '←', '→'], label: 'Nudge' },
       { keys: ['⇧', 'Arrow'], label: 'Nudge further' },
-      { keys: [MOD, 'A'], label: 'Align left edges', note: '2+ selected' },
-      { keys: [MOD, 'D'], label: 'Align right edges', note: '2+ selected' },
-      { keys: [MOD, 'W'], label: 'Align top edges', note: '2+ selected' },
-      { keys: [MOD, 'S'], label: 'Align bottom edges', note: '2+ selected' },
+      { keys: [MOD, 'D'], label: 'Duplicate selection' },
+      { keys: [MOD, 'G'], label: 'Group', note: '2+ objects' },
+      { keys: [MOD, '⇧', 'G'], label: 'Ungroup', note: 'one level at a time' },
+      { keys: ['Click'], label: 'Select a member of a group', note: 'with the group selected' },
+      { keys: ['Esc'], label: 'Step back out to the group', note: 'inside a group' },
+      { keys: [MOD, 'Arrow'], label: 'Align edges that way', note: '2+ selected' },
+      { keys: ['Ctrl', 'Arrow'], label: 'Snap to that margin guide', note: 'one object' },
+      { keys: ['…', 'again'], label: 'Margin guide, then slide edge', note: 'once edges are flush' },
     ],
   },
   {
     title: 'Drag & resize',
     items: [
       { keys: ['⇧', 'Drag'], label: 'Lock to one axis' },
-      { keys: ['⇧', 'Ctrl', 'Drag'], label: 'Duplicate as you drag' },
+      { keys: [MOD, 'Drag'], label: 'Duplicate as you drag' },
+      { keys: [MOD, '⇧', 'Drag'], label: 'Duplicate, locked to one axis' },
+      { keys: [MOD, '⌥', 'G'], label: 'Show or hide margin guides', note: 'snapping stays on' },
       { keys: ['⇧', 'Resize'], label: 'Keep aspect ratio' },
-      { keys: ['Ctrl', 'Resize'], label: 'Resize from centre' },
+      { keys: [MOD, 'Resize'], label: 'Resize from centre' },
       { keys: ['Double-click'], label: 'Reset rotation to 0°', note: 'on the rotation handle' },
       {
         keys: ['Double-click'],
@@ -127,7 +143,8 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
       aria-modal="true"
       aria-label="Keyboard shortcuts"
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+      style={{ zIndex: MODAL_Z }}
+      className="fixed inset-0 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
     >
       <div
         onClick={(e) => e.stopPropagation()}

@@ -10,6 +10,7 @@ import { nanoid } from 'nanoid';
 import { SLIDE_16x9, type Deck } from '@/model';
 import { TEMPLATES } from '@/templates/registry';
 import { getTemplateSlides } from '@/templates/repository';
+import { copyThreads, purgeThreads } from '@/comments/repository';
 
 /** Stand-in for the signed-in user until Phase 5 brings real auth. */
 export const DEFAULT_OWNER = 'Me';
@@ -81,18 +82,26 @@ export function restoreDoc(id: string): void {
   write(map);
 }
 
-/** Delete for good, from Deleted items. This is the only unrecoverable path. */
+/**
+ * Delete for good, from Deleted items. This is the only unrecoverable path —
+ * and the document's discussion goes with it, since comments are stored beside
+ * the deck rather than inside it.
+ */
 export function purgeDoc(id: string): void {
   const map = read();
   delete map[id];
   write(map);
+  purgeThreads(id);
 }
 
 /** Empty Deleted items entirely. */
 export function purgeAllDeleted(): void {
   const map = read();
   for (const doc of Object.values(map)) {
-    if (doc.deletedAt) delete map[doc.id];
+    if (doc.deletedAt) {
+      delete map[doc.id];
+      purgeThreads(doc.id);
+    }
   }
   write(map);
 }
@@ -214,6 +223,11 @@ export function duplicateDoc(id: string, title?: string): Deck | null {
   const src = getDoc(id);
   if (!src) return null;
   const clone = structuredClone(src) as Deck;
+  // Every slide and element is re-keyed, so the id maps are built as we go and
+  // handed to the comments store — a copy keeps its discussion, still pinned to
+  // the right objects.
+  const slideIds: Record<string, string> = {};
+  const elementIds: Record<string, string> = {};
   const deck: Deck = {
     ...clone,
     id: `doc-${nanoid(10)}`,
@@ -221,13 +235,22 @@ export function duplicateDoc(id: string, title?: string): Deck | null {
     owner: DEFAULT_OWNER,
     createdAt: now(),
     updatedAt: now(),
-    slides: clone.slides.map((s) => ({
-      ...s,
-      id: `s-${nanoid(8)}`,
-      elements: s.elements.map((e) => ({ ...e, id: `${e.type}-${nanoid(6)}` })),
-    })),
+    slides: clone.slides.map((s) => {
+      const sid = `s-${nanoid(8)}`;
+      slideIds[s.id] = sid;
+      return {
+        ...s,
+        id: sid,
+        elements: s.elements.map((e) => {
+          const eid = `${e.type}-${nanoid(6)}`;
+          elementIds[e.id] = eid;
+          return { ...e, id: eid };
+        }),
+      };
+    }),
   };
   saveDoc(deck);
+  copyThreads(id, deck.id, { slides: slideIds, elements: elementIds });
   return deck;
 }
 

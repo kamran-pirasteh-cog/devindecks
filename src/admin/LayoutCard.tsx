@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DesignSystem } from '@/model';
-import { SlideView } from '@/render/SlideView';
+import { FitSlideView } from '@/render/FitSlideView';
 import { SLIDE_LAYOUT_CATEGORIES, type SlideLayoutCategory } from '@/templates/registry';
 import {
   deleteLayout,
@@ -72,8 +72,8 @@ export function LayoutCard({
         menuOpen ? 'z-20' : ''
       }`}
     >
-      <div className="overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-        <SlideView slide={layout.slide} slideSize={SLIDE_SIZE} designSystem={designSystem} width={320} />
+      <div className="overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800">
+        <FitSlideView slide={layout.slide} slideSize={SLIDE_SIZE} designSystem={designSystem} />
       </div>
       <div className="px-3 py-2">
         <div className="flex items-center justify-between gap-1">

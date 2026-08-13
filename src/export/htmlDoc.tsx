@@ -32,9 +32,15 @@ export function escapeHtml(s: string): string {
 function renderSlides(deck: Deck, ds: DesignSystem, widthPx: number, className: string): string {
   return deck.slides
     .map(
-      (slide) =>
+      (slide, i) =>
         `<section class="${className}">${renderToStaticMarkup(
-          <SlideView slide={slide} slideSize={deck.slideSize} designSystem={ds} width={widthPx} />,
+          <SlideView
+            slide={slide}
+            slideSize={deck.slideSize}
+            designSystem={ds}
+            width={widthPx}
+            page={deck.pageNumbers ? { index: i, count: deck.slides.length } : undefined}
+          />,
         )}</section>`,
     )
     .join('\n');

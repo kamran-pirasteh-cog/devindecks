@@ -1,9 +1,11 @@
 'use client';
 
 /** Slide navigator — thumbnails via the same SlideView renderer, scaled down. */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SlideView } from '@/render/SlideView';
 import { useEditor } from '@/store/editorStore';
+import { useComments } from '@/store/commentStore';
+import { unresolvedCounts } from '@/comments/types';
 import { useResizableWidth } from './useResizableWidth';
 import { useContentWidth } from './useContentWidth';
 import { ResizeHandle } from './ResizeHandle';
@@ -27,11 +29,21 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
   const duplicateSlide = useEditor((s) => s.duplicateSlide);
   const deleteSlides = useEditor((s) => s.deleteSlides);
   const moveSlides = useEditor((s) => s.moveSlides);
+  const threads = useComments((s) => s.threads);
+  const commentCounts = unresolvedCounts(threads);
   const { width, startDrag } = useResizableWidth(196, 180, 320, 'right');
   // Measured, not derived: the thumbnail column scrolls, so its usable width is
   // the panel width minus padding *and* the scrollbar. See useContentWidth.
   const listRef = useRef<HTMLDivElement>(null);
   const thumbWidth = useContentWidth(listRef);
+
+  // Keep the active thumbnail in view when the slide changes from outside the
+  // strip (arrow keys, canvas scroll) — 'nearest' makes a click on an already
+  // visible thumbnail a no-op.
+  const activeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [currentSlideId]);
 
   const [draggingIds, setDraggingIds] = useState<string[] | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -62,9 +74,11 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
             </button>
           )}
         </div>
+        {/* pt-1: the active thumbnail's ring and the drop indicator are drawn
+            outside the box, so the scroll container needs slack or they clip. */}
         <div
           ref={listRef}
-          className="flex-1 space-y-2 overflow-y-auto px-3 pb-3"
+          className="flex-1 space-y-2 overflow-y-auto px-3 pb-3 pt-1"
           onKeyDown={(e) => {
             if (singleSlide) return;
             if (e.key !== 'Backspace' && e.key !== 'Delete') return;
@@ -87,6 +101,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
             return (
               <div
                 key={slide.id}
+                ref={isActive ? activeRef : undefined}
                 className={`group relative rounded ${isMultiSelected ? 'bg-indigo-500/10' : ''} ${
                   isDragging ? 'opacity-40' : ''
                 }`}
@@ -146,12 +161,30 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                       slideSize={deck.slideSize}
                       designSystem={ds}
                       width={thumbWidth}
+                      page={
+                        deck.pageNumbers ? { index: i, count: deck.slides.length } : undefined
+                      }
                     />
                   )}
                 </button>
-                <span className="absolute left-1 top-1 rounded bg-black/50 px-1 text-[9px] text-white">
+                {/* Bottom-right: out of the way of the hover actions up top, and
+                    clear of the title area most slides put in the top-left. */}
+                <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-black/50 px-1 text-[9px] text-white">
                   {i + 1}
                 </span>
+                {/* Open threads on this slide — the same signal Google Slides
+                    puts on a thumbnail, so a comment on slide 14 is findable
+                    without paging through the deck. */}
+                {commentCounts[slide.id] ? (
+                  <span
+                    title={`${commentCounts[slide.id]} open ${
+                      commentCounts[slide.id] === 1 ? 'comment' : 'comments'
+                    }`}
+                    className="pointer-events-none absolute bottom-1 left-1 flex h-4 items-center gap-0.5 rounded bg-amber-400 px-1 text-[9px] font-semibold text-amber-950"
+                  >
+                    💬 {commentCounts[slide.id]}
+                  </span>
+                ) : null}
                 {singleSlide ? null : (
                   <>
                     <div className="absolute right-1 top-1 hidden gap-1 group-hover:flex">

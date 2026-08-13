@@ -16,18 +16,45 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Moveable from 'react-moveable';
 import Selecto from 'react-selecto';
-import { ElementVisual } from '@/render/SlideView';
-import { pxToEmu, resolveColor, type Rect } from '@/model';
+import { ElementVisual, PageNumber, slideBackgroundHex } from '@/render/SlideView';
+import {
+  isShape,
+  isText,
+  marginGuides,
+  outerGroupId,
+  pxToEmu,
+  resolveColor,
+  selectionUnit,
+  textInsetBox,
+  type Rect,
+} from '@/model';
 import { useEditor } from '@/store/editorStore';
-import { ShapeContextMenu } from './ShapeContextMenu';
+import { SelectionFormatBar } from './SelectionFormatBar';
+import { ArrangeBar } from './ArrangeBar';
 import { TextEditor } from './TextEditor';
 import { ChartEditorModal } from './ChartEditorModal';
+import { CommentPins } from './CommentPins';
 import { measureTextFitPx } from './fitToText';
 
 const CANVAS_PAD = 48;
 
+/**
+ * Editor chrome that floats over the slide — the format/arrange bars and the
+ * comment pins. A press on any of it acts ON the selection, so it must never
+ * change it, and must never be read as the start of a marquee.
+ */
+const CHROME_SELECTOR = '.dd-format-bar, .dd-comment-pin';
+
 /** Rotations are stored 0–359, so 1° and 361° are the same stored value. */
 const normalizeDeg = (d: number) => ((Math.round(d) % 360) + 360) % 360;
+
+/**
+ * What a mousedown on an already-selected object means once the mouse comes
+ * back up without having dragged: 'only' collapses a multi-selection to the
+ * object (its group, if it has one), 'toggle' is the shift-click case, and
+ * 'member' reaches INTO a selected group to pick out the one object clicked.
+ */
+type DeferredSelect = 'toggle' | 'only' | 'member';
 
 export function EditorCanvas() {
   const deck = useEditor((s) => s.deck);
@@ -35,6 +62,7 @@ export function EditorCanvas() {
   const currentSlideId = useEditor((s) => s.currentSlideId);
   const selectedIds = useEditor((s) => s.selectedIds);
   const editingId = useEditor((s) => s.editingId);
+  const showGuides = useEditor((s) => s.showGuides);
 
   const slide = deck.slides.find((s) => s.id === currentSlideId) ?? deck.slides[0];
 
@@ -43,24 +71,30 @@ export function EditorCanvas() {
   const moveableRef = useRef<Moveable>(null);
   const selectoRef = useRef<Selecto>(null);
   const nodeMap = useRef<Map<string, HTMLElement>>(new Map());
+  // Bumped to re-render after `nodeMap` gains a node the current render needed
+  // but couldn't see — see the layout effect below.
+  const [, setNodeTick] = useState(0);
 
   const [width, setWidth] = useState(900);
   // Selecto reads dragContainer once, when it is constructed, so the marquee
   // root has to be a real node on the render that mounts it — not a ref.
   const [dragRoot, setDragRoot] = useState<HTMLElement | null>(null);
-  const [liveResize, setLiveResize] = useState<{
-    id: string;
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  } | null>(null);
-  const [contextMenu, setContextMenu] = useState<{
-    ids: string[];
-    primaryId: string;
-    x: number;
-    y: number;
-  } | null>(null);
+  // Per-element boxes painted during a resize, keyed by element id. A single
+  // resize writes one entry; a group resize writes one per selected element,
+  // since dragging one group handle rescales all of them together.
+  const [liveResize, setLiveResize] = useState<Record<
+    string,
+    { x: number; y: number; w: number; h: number }
+  > | null>(null);
+  // The latest frame of a group resize, kept as a ref so onResizeGroupEnd can
+  // commit exactly what was painted without depending on child lastEvents.
+  const groupResizeRef = useRef<{ id: string; rect: Rect }[]>([]);
+  // Each member's box as it was when the group resize began, in canvas px.
+  // Every frame is computed from these rather than from the previous frame, so
+  // scaling stays exact instead of accumulating rounding drift.
+  const groupResizeStartRef = useRef<
+    { id: string; x: number; y: number; w: number; h: number }[]
+  >([]);
   // PowerPoint-style resize modifiers: Shift keeps aspect ratio (keepRatio prop,
   // must be a live value so react-moveable re-reads it every frame), Ctrl
   // resizes from the center (via onBeforeResize's per-frame setFixedDirection).
@@ -68,14 +102,20 @@ export function EditorCanvas() {
   const resizeFromCenterRef = useRef(false);
   const resizeModifierCleanupRef = useRef<(() => void) | null>(null);
   // PowerPoint-style drag modifiers: Shift constrains movement to the
-  // horizontal/vertical axis; Ctrl+Shift does the same while dropping a copy
-  // instead of moving the original.
+  // horizontal/vertical axis; ⌘/Ctrl drops a copy instead of moving the
+  // original, and the two combine (⌘⇧-drag = duplicate along one axis).
   const dragAxisLockRef = useRef(false);
   const dragDuplicateRef = useRef(false);
   const dragModifierCleanupRef = useRef<(() => void) | null>(null);
+  // Live previews of the copies a ⌘-drag is about to drop: DOM clones of the
+  // dragged elements that follow the cursor while the originals stay put. Held
+  // in a layer React renders empty and never reconciles, so appending to it
+  // can't fight the reconciler.
+  const ghostLayerRef = useRef<HTMLDivElement>(null);
+  const dragGhostsRef = useRef<Map<HTMLElement, HTMLElement>>(new Map());
   // A selection change that mousedown on an already-selected element implies,
   // held until mouseup so it can be dropped if the gesture turns into a drag.
-  const pendingSelectRef = useRef<{ id: string; mode: 'toggle' | 'only' } | null>(null);
+  const pendingSelectRef = useRef<{ id: string; mode: DeferredSelect } | null>(null);
   const [editingChart, setEditingChart] = useState(false);
   // Live rotation angle during a rotate gesture — rendered instead of the
   // model's value so the object turns under the cursor, not on mouseup.
@@ -194,6 +234,35 @@ export function EditorCanvas() {
   const displayWidth = deck.slideSize.w * scale;
   const height = deck.slideSize.h * scale;
 
+  // The brand safe area, in canvas px. Objects snap to these lines whether or
+  // not they're painted, so a hidden guide still lays the slide out correctly.
+  const margins = marginGuides(deck.slideSize);
+  const marginX = margins.vertical.map((x) => x * scale);
+  const marginY = margins.horizontal.map((y) => y * scale);
+
+  // Every shape's text area, as snap lines — so a text box dragged onto a shape
+  // clicks into the same thin inset the shape's own text would use, and text
+  // sits identically inside every shape on the deck.
+  //
+  // Only while text is what's being dragged: for a shape or picture these lines
+  // are meaningless, and four extra lines per shape would fight the ordinary
+  // edge snapping on a busy slide.
+  const draggingText =
+    selectedIds.length > 0 &&
+    selectedIds.every((id) => {
+      const el = slide?.elements.find((e) => e.id === id);
+      return el ? isText(el) : false;
+    });
+  const shapeInset = { x: [] as number[], y: [] as number[] };
+  if (draggingText && slide) {
+    for (const el of slide.elements) {
+      if (!isShape(el) || selectedIds.includes(el.id) || el.rotation) continue;
+      const box = textInsetBox(el.rect, el.body?.insets);
+      shapeInset.x.push(box.x * scale, (box.x + box.w) * scale);
+      shapeInset.y.push(box.y * scale, (box.y + box.h) * scale);
+    }
+  }
+
   // Keep the overlay glued to the element after ANY model change — inspector
   // edits, undo/redo, a drag commit — so handles never drift from the object.
   useEffect(() => {
@@ -211,6 +280,19 @@ export function EditorCanvas() {
         .filter(Boolean) as HTMLElement[]
     : [];
 
+  // `nodeMap` is a ref, so an element that is created and selected in the same
+  // commit (duplicate, paste, insert) has no node yet when `selectedNodes` is
+  // computed — its ref callback only runs after the render. Moveable is gated
+  // on `selectedNodes`, so it wouldn't mount at all, and pressing the new
+  // object couldn't move it: Selecto's replay path only fires for objects that
+  // AREN'T selected yet, and this one already is. Render once more now that the
+  // refs have landed. Self-limiting — the next pass finds every node.
+  useLayoutEffect(() => {
+    if (selectedIds.filter((id) => nodeMap.current.has(id)).length !== selectedNodes.length) {
+      setNodeTick((t) => t + 1);
+    }
+  });
+
   const store = useEditor.getState;
 
   const findEl = (id: string) =>
@@ -218,7 +300,7 @@ export function EditorCanvas() {
       .deck.slides.find((s) => s.id === currentSlideId)
       ?.elements.find((x) => x.id === id);
 
-  const deferSelect = (id: string, mode: 'toggle' | 'only') => {
+  const deferSelect = (id: string, mode: DeferredSelect) => {
     pendingSelectRef.current = { id, mode };
     const finalize = () => {
       const pending = pendingSelectRef.current;
@@ -226,6 +308,7 @@ export function EditorCanvas() {
       window.removeEventListener('mouseup', finalize);
       if (pending?.id !== id) return;
       if (pending.mode === 'toggle') store().toggleSelect(id);
+      else if (pending.mode === 'member') store().selectExact([id]);
       else store().select([id]);
     };
     window.addEventListener('mouseup', finalize);
@@ -233,12 +316,17 @@ export function EditorCanvas() {
 
   const attachDragModifiers = (inputEvent: any) => {
     dragModifierCleanupRef.current?.();
-    const sync = (ke: KeyboardEvent) => {
-      dragAxisLockRef.current = ke.shiftKey;
-      dragDuplicateRef.current = ke.shiftKey && ke.ctrlKey;
+    // ⌘ (Ctrl off Apple platforms) rather than Ctrl everywhere: Ctrl-drag on a
+    // Mac is a right-click, so it can't be held through a drag.
+    const apply = (shift: boolean, mod: boolean) => {
+      dragAxisLockRef.current = shift;
+      dragDuplicateRef.current = mod;
+      // PowerPoint's copy cursor. Set on <body> so it wins over the element's
+      // own `cursor: move` for the whole gesture, wherever the pointer goes.
+      document.body.style.cursor = mod ? 'copy' : '';
     };
-    dragAxisLockRef.current = !!inputEvent?.shiftKey;
-    dragDuplicateRef.current = !!inputEvent?.shiftKey && !!inputEvent?.ctrlKey;
+    const sync = (ke: KeyboardEvent) => apply(ke.shiftKey, ke.metaKey || ke.ctrlKey);
+    apply(!!inputEvent?.shiftKey, !!(inputEvent?.metaKey || inputEvent?.ctrlKey));
     window.addEventListener('keydown', sync);
     window.addEventListener('keyup', sync);
     dragModifierCleanupRef.current = () => {
@@ -251,6 +339,7 @@ export function EditorCanvas() {
     dragModifierCleanupRef.current = null;
     dragAxisLockRef.current = false;
     dragDuplicateRef.current = false;
+    document.body.style.cursor = '';
   };
   /**
    * Hand the dragged element to the compositor for the length of the gesture.
@@ -301,8 +390,132 @@ export function EditorCanvas() {
     moveableRef.current?.updateRect();
   };
 
+  /**
+   * Start tracking the resize modifiers (Shift = keep ratio, ⌘/Ctrl = resize
+   * about the centre) for the length of a gesture. Shared by the single and
+   * group paths so a multi-selection honours the same keys.
+   */
+  const beginResize = (inputEvent: any) => {
+    pendingSelectRef.current = null;
+    resizeModifierCleanupRef.current?.();
+    const syncModifiers = (ke: KeyboardEvent) => {
+      setKeepRatioActive(ke.shiftKey);
+      resizeFromCenterRef.current = ke.metaKey || ke.ctrlKey;
+    };
+    setKeepRatioActive(!!inputEvent?.shiftKey);
+    resizeFromCenterRef.current = !!(inputEvent?.metaKey || inputEvent?.ctrlKey);
+    window.addEventListener('keydown', syncModifiers);
+    window.addEventListener('keyup', syncModifiers);
+    resizeModifierCleanupRef.current = () => {
+      window.removeEventListener('keydown', syncModifiers);
+      window.removeEventListener('keyup', syncModifiers);
+    };
+  };
+  const endResize = () => {
+    resizeModifierCleanupRef.current?.();
+    resizeModifierCleanupRef.current = null;
+    setKeepRatioActive(false);
+    resizeFromCenterRef.current = false;
+  };
+
+  /**
+   * Paint one element's frame of a resize and report the box in canvas px, so
+   * the same code serves a lone element and each member of a group resize.
+   */
+  const paintResizeFrame = (ev: any) => {
+    const target = ev.target as HTMLElement;
+    const id = target.dataset.id;
+    const el = id ? findEl(id) : undefined;
+    if (!id || !el) return null;
+    target.style.width = `${ev.width}px`;
+    target.style.height = `${ev.height}px`;
+    target.style.transform = ev.drag.transform;
+    const [dx, dy] = ev.drag.dist as [number, number];
+    return {
+      id,
+      box: {
+        x: el.rect.x * scale + dx,
+        y: el.rect.y * scale + dy,
+        w: ev.width as number,
+        h: ev.height as number,
+      },
+    };
+  };
+
   const lockAxis = (dx: number, dy: number): [number, number] =>
     Math.abs(dx) >= Math.abs(dy) ? [dx, 0] : [0, dy];
+
+  /**
+   * Repaint a node at its committed position.
+   *
+   * Needed after a ⌘-drag: the dragged node IS the original, which stays where
+   * it was, so its React props are unchanged and React never rewrites the style
+   * attribute — leaving the transform the drag painted, i.e. the original
+   * sitting on top of the copy that was just dropped there.
+   */
+  const restoreCommittedTransform = (target: HTMLElement) => {
+    const el = findEl(target.dataset.id!);
+    if (!el) return;
+    target.style.transform = `translate(${el.rect.x * scale}px, ${el.rect.y * scale}px)${
+      el.rotation ? ` rotate(${el.rotation}deg)` : ''
+    }`;
+  };
+
+  /**
+   * Paint the stand-in a duplicate-drag leaves behind: a clone of the object,
+   * pinned at the committed position it is being copied FROM.
+   *
+   * The real node keeps moving under the cursor, exactly as in a plain drag.
+   * That's what makes ⌘-drag feel like PowerPoint's: Moveable's selection box
+   * and its snap guides track the actual DOM node, so painting the copy instead
+   * left the indicator and every snap line behind on the stationary original.
+   * The commit in `onDragEnd` is what makes the moved node the original again
+   * and the object under the cursor the new copy — pixel-identical either way.
+   *
+   * Clones are created lazily on the first frame that ⌘ is held, so a plain
+   * drag never pays for them, and ⌘ can be pressed or released mid-drag.
+   */
+  const paintGhost = (target: HTMLElement) => {
+    const el = findEl(target.dataset.id!);
+    const layer = ghostLayerRef.current;
+    if (!el || !layer) return;
+    let ghost = dragGhostsRef.current.get(target);
+    if (!ghost) {
+      ghost = target.cloneNode(true) as HTMLElement;
+      // A clone is decoration only: it must not be hit-testable (Selecto and
+      // resolveMouseDown both look for `.dd-el`) and must not answer to an id.
+      ghost.classList.remove('dd-el');
+      delete ghost.dataset.id;
+      ghost.style.pointerEvents = 'none';
+      layer.appendChild(ghost);
+      dragGhostsRef.current.set(target, ghost);
+    }
+    // Recomputed every frame rather than only on create: a zoom step mid-drag
+    // changes `scale`, and a stale ghost would drift off its own origin.
+    ghost.style.transform = `translate(${el.rect.x * scale}px, ${el.rect.y * scale}px)${
+      el.rotation ? ` rotate(${el.rotation}deg)` : ''
+    }`;
+  };
+  const clearGhosts = () => {
+    dragGhostsRef.current.forEach((ghost) => ghost.remove());
+    dragGhostsRef.current.clear();
+  };
+
+  /**
+   * The element under a viewport point, or undefined for empty space.
+   *
+   * Walks UP from each hit node rather than looking for `.dd-el` in the list
+   * itself: a line's wrapper box is zero-thickness on its cross axis, and a
+   * zero-area box is never returned by elementsFromPoint even when its
+   * overflowing stroke is what got hit. Only the inner <svg>/<line> shows up, so
+   * matching the list directly picked whatever full-size element happened to sit
+   * under the line instead.
+   */
+  const elementAtPoint = (clientX: number, clientY: number) =>
+    document
+      .elementsFromPoint(clientX, clientY)
+      .map((n) => (n as HTMLElement).closest?.('.dd-el') as HTMLElement | null)
+      .find(Boolean) as HTMLElement | undefined;
 
   /**
    * Single source of truth for what a mousedown selects. It runs in the CAPTURE
@@ -319,18 +532,11 @@ export function EditorCanvas() {
     if (typeof target.className === 'string' && /moveable-(control|rotation|line)/.test(target.className)) {
       return;
     }
+    // The bars and comment pins act ON the selection, so using them must never
+    // change it — without this the click lands on empty workspace and clears.
+    if (target.closest?.(CHROME_SELECTOR)) return;
 
-    // Walk UP from each hit node rather than looking for `.dd-el` in the list
-    // itself: a line's wrapper box is zero-thickness on its cross axis, and a
-    // zero-area box is never returned by elementsFromPoint even when its
-    // overflowing stroke is what got hit. Only the inner <svg>/<line> shows up,
-    // so matching the list directly picked whatever full-size element happened
-    // to sit under the line instead.
-    const hit = document
-      .elementsFromPoint(e.clientX, e.clientY)
-      .map((n) => (n as HTMLElement).closest?.('.dd-el') as HTMLElement | null)
-      .find(Boolean) as HTMLElement | undefined;
-    const id = hit?.dataset.id;
+    const id = elementAtPoint(e.clientX, e.clientY)?.dataset.id;
 
     // Right-click opens the context menu on whatever is under the pointer; it
     // must never shrink an existing multi-selection the menu is about to act on.
@@ -346,11 +552,35 @@ export function EditorCanvas() {
     }
     if (id === editingId) return;
 
+    // Groups are one object to a click: `store().select` grows any id into its
+    // whole group. The two exceptions below are PowerPoint's way INTO a group —
+    // click the group, then click the member you want.
+    const els = slide?.elements ?? [];
+    const unit = selectionUnit(els, id);
+    const inGroup = unit.length > 1;
+    const wholeGroupSelected =
+      inGroup && selectedIds.length === unit.length && unit.every((x) => selectedIds.includes(x));
+    // Already reached inside this group (one member selected)? Then clicking a
+    // sibling picks that sibling, rather than bouncing back out to the group.
+    const drilledInHere =
+      inGroup &&
+      selectedIds.length === 1 &&
+      selectedIds[0] !== id &&
+      unit.includes(selectedIds[0]) &&
+      outerGroupId(els.find((x) => x.id === selectedIds[0])!) === outerGroupId(els.find((x) => x.id === id)!);
+
+    if (drilledInHere && !e.shiftKey) {
+      store().selectExact([id]);
+      return;
+    }
+
     // Mousedown on something already selected is ambiguous with the start of a
     // drag (a plain drag moves the whole group, a shift-drag axis-locks), so
     // defer the selection change to mouseup and drop it if a drag begins.
     if (selectedIds.includes(id)) {
-      if (e.shiftKey || selectedIds.length > 1) deferSelect(id, e.shiftKey ? 'toggle' : 'only');
+      if (e.shiftKey) deferSelect(id, 'toggle');
+      else if (wholeGroupSelected) deferSelect(id, 'member');
+      else if (selectedIds.length > 1) deferSelect(id, 'only');
     } else if (e.shiftKey) {
       store().toggleSelect(id);
     } else {
@@ -386,19 +616,77 @@ export function EditorCanvas() {
         }
       }}
     >
-      <div
-        ref={canvasRef}
-        className="dd-canvas group relative m-auto shrink-0 select-none shadow-xl ring-1 ring-black/10"
-        style={{
-          width: displayWidth,
-          height,
-          background:
-            slide.background?.kind === 'solid' ? resolveColor(slide.background.color, ds) : '#ffffff',
-        }}
-        onContextMenu={(e) => {
-          if (e.target === canvasRef.current) e.preventDefault();
-        }}
-      >
+      {/* The slide plus its two floating bars: format above the top-right
+          corner, arrange down the right edge. Both are absolutely positioned so
+          selecting something doesn't shove the slide around; they sit in the
+          workspace padding, which is why the arrange bar is a single narrow
+          column. */}
+      <div className="relative m-auto shrink-0" style={{ width: displayWidth }}>
+        <div className="absolute bottom-full right-0 z-30 mb-2 flex justify-end">
+          <SelectionFormatBar />
+        </div>
+        <div className="absolute left-full top-0 z-30 ml-1.5 flex">
+          <ArrangeBar />
+        </div>
+        <div
+          ref={canvasRef}
+          className="dd-canvas group relative shrink-0 select-none shadow-xl ring-1 ring-black/10"
+          style={{
+            width: displayWidth,
+            height,
+            background:
+              slide.background?.kind === 'solid'
+                ? resolveColor(slide.background.color, ds)
+                : '#ffffff',
+          }}
+          // Objects and empty canvas carry no menu of their own — the format and
+          // arrange bars cover that — so the browser's is suppressed everywhere
+          // on the slide. Text being edited is the exception: the native menu is
+          // how you reach spellcheck and paste-as-plain-text.
+          onContextMenu={(e) => {
+            if (!(e.target as HTMLElement).closest?.('[contenteditable="true"]')) {
+              e.preventDefault();
+            }
+          }}
+        >
+        {/* The margin frame. Painted under the elements (DOM order — the element
+            boxes carry no z-index) and never hit-testable, so it can't eat a
+            marquee drag on empty canvas. The content-top line is dashed to read
+            as the softer of the two: a suggestion, not the safe-area edge. */}
+        {showGuides ? (
+          <div className="pointer-events-none absolute inset-0">
+            {marginX.map((x) => (
+              <div
+                key={`gx-${x}`}
+                className="absolute top-0 bottom-0 w-px bg-sky-400/45"
+                style={{ left: x }}
+              />
+            ))}
+            {marginY.map((y, i) => (
+              <div
+                key={`gy-${y}`}
+                className={`absolute right-0 left-0 h-px ${
+                  i === 1 ? 'bg-sky-400/25' : 'bg-sky-400/45'
+                }`}
+                style={{
+                  top: y,
+                  ...(i === 1
+                    ? {
+                        background:
+                          'repeating-linear-gradient(to right, rgb(56 189 248 / 0.45) 0 6px, transparent 6px 12px)',
+                      }
+                    : null),
+                }}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {/* Empty in JSX on purpose: `paintGhost` appends duplicate-drag previews
+            here, and React never reconciles the children of a node it renders
+            childless. Shares the elements' coordinate origin. */}
+        <div ref={ghostLayerRef} className="pointer-events-none absolute inset-0 z-10" />
+
         {slide.chart ? (
           <button
             onClick={() => setEditingChart(true)}
@@ -410,7 +698,7 @@ export function EditorCanvas() {
         ) : null}
         {slide.elements.map((el) => {
           const isEditing = editingId === el.id;
-          const live = liveResize && liveResize.id === el.id ? liveResize : null;
+          const live = liveResize?.[el.id] ?? null;
           const boxX = live ? live.x : el.rect.x * scale;
           const boxY = live ? live.y : el.rect.y * scale;
           const boxW = live ? live.w : el.rect.w * scale;
@@ -445,14 +733,6 @@ export function EditorCanvas() {
                   store().setEditing(el.id);
                 }
               }}
-              onContextMenu={(e) => {
-                if (isEditing) return;
-                e.preventDefault();
-                e.stopPropagation();
-                const ids = selectedIds.includes(el.id) ? selectedIds : [el.id];
-                if (!selectedIds.includes(el.id)) store().select([el.id]);
-                setContextMenu({ ids, primaryId: el.id, x: e.clientX, y: e.clientY });
-              }}
             >
               <ElementVisual
                 el={el}
@@ -467,6 +747,23 @@ export function EditorCanvas() {
             </div>
           );
         })}
+
+        {/* The page number, if the deck has them on. Deliberately NOT an
+            element: it isn't selectable, movable or deletable, and it re-reads
+            the slide's index every render, so the deck renumbers as you add,
+            delete and reorder slides. */}
+        {deck.pageNumbers ? (
+          <PageNumber
+            index={deck.slides.findIndex((s) => s.id === slide.id)}
+            count={deck.slides.length}
+            backgroundHex={slideBackgroundHex(slide, ds)}
+            ds={ds}
+            scale={scale}
+          />
+        ) : null}
+
+        {/* Comment markers for this slide, above the elements they annotate. */}
+        <CommentPins slide={slide} scale={scale} />
 
         {/* Live angle readout, pinned above the object being rotated. */}
         {(() => {
@@ -504,8 +801,8 @@ export function EditorCanvas() {
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             snapThreshold={6}
             elementGuidelines={guidelineNodes}
-            verticalGuidelines={[0, displayWidth / 2, displayWidth]}
-            horizontalGuidelines={[0, height / 2, height]}
+            verticalGuidelines={[0, displayWidth / 2, displayWidth, ...marginX, ...shapeInset.x]}
+            horizontalGuidelines={[0, height / 2, height, ...marginY, ...shapeInset.y]}
             // During interaction we only paint the transform for smoothness; the
             // model is written once on end from the delta (dist), then React
             // re-renders the authoritative transform. No baking, no leftover.
@@ -523,6 +820,10 @@ export function EditorCanvas() {
               const [dx, dy] = dragAxisLockRef.current
                 ? lockAxis(e.dist[0], e.dist[1])
                 : (e.dist as [number, number]);
+              // ⌘ held: pin a stand-in at the origin, then move the node itself
+              // as usual, so the selection box and snap guides come along.
+              if (dragDuplicateRef.current) paintGhost(e.target as HTMLElement);
+              else clearGhosts();
               e.target.style.transform = `translate(${el.rect.x * scale + dx}px, ${el.rect.y * scale + dy}px)${
                 el.rotation ? ` rotate(${el.rotation}deg)` : ''
               }`;
@@ -531,6 +832,7 @@ export function EditorCanvas() {
               const wasDuplicate = dragDuplicateRef.current;
               const wasAxisLocked = dragAxisLockRef.current;
               detachDragModifiers();
+              clearGhosts();
               demoteAfterGesture([e.target as HTMLElement]);
               const last = e.lastEvent;
               if (!last) return;
@@ -539,8 +841,12 @@ export function EditorCanvas() {
                 ? lockAxis(last.dist[0], last.dist[1])
                 : (last.dist as [number, number]);
               if (wasDuplicate) {
-                if (!dx && !dy) return;
+                if (!dx && !dy) {
+                  restoreCommittedTransform(e.target as HTMLElement);
+                  return;
+                }
                 store().duplicateBy([id], pxToEmu(dx, scale), pxToEmu(dy, scale));
+                restoreCommittedTransform(e.target as HTMLElement);
               } else {
                 store().moveBy([id], pxToEmu(dx, scale), pxToEmu(dy, scale));
               }
@@ -556,6 +862,9 @@ export function EditorCanvas() {
               const [dx, dy] = dragAxisLockRef.current
                 ? lockAxis(first.dist[0], first.dist[1])
                 : (first.dist as [number, number]);
+              if (dragDuplicateRef.current)
+                e.events.forEach((ev) => paintGhost(ev.target as HTMLElement));
+              else clearGhosts();
               e.events.forEach((ev) => {
                 const id = (ev.target as HTMLElement).dataset.id!;
                 const el = findEl(id);
@@ -569,6 +878,7 @@ export function EditorCanvas() {
               const wasDuplicate = dragDuplicateRef.current;
               const wasAxisLocked = dragAxisLockRef.current;
               detachDragModifiers();
+              clearGhosts();
               demoteAfterGesture(e.events.map((ev) => ev.target as HTMLElement));
               const last = e.events[0]?.lastEvent;
               if (!last) return;
@@ -576,70 +886,138 @@ export function EditorCanvas() {
                 ? lockAxis(last.dist[0], last.dist[1])
                 : (last.dist as [number, number]);
               if (wasDuplicate) {
-                if (!dx && !dy) return;
-                store().duplicateBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
+                if (dx || dy)
+                  store().duplicateBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
+                e.events.forEach((ev) => restoreCommittedTransform(ev.target as HTMLElement));
               } else {
                 store().moveBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
               }
             }}
             onResizeStart={(e) => {
-              pendingSelectRef.current = null;
-              resizeModifierCleanupRef.current?.();
-              const syncModifiers = (ke: KeyboardEvent) => {
-                setKeepRatioActive(ke.shiftKey);
-                resizeFromCenterRef.current = ke.ctrlKey;
-              };
-              setKeepRatioActive(!!e.inputEvent?.shiftKey);
-              resizeFromCenterRef.current = !!e.inputEvent?.ctrlKey;
-              window.addEventListener('keydown', syncModifiers);
-              window.addEventListener('keyup', syncModifiers);
-              resizeModifierCleanupRef.current = () => {
-                window.removeEventListener('keydown', syncModifiers);
-                window.removeEventListener('keyup', syncModifiers);
-              };
+              beginResize(e.inputEvent);
             }}
             onBeforeResize={(e) => {
               e.setFixedDirection(resizeFromCenterRef.current ? [0, 0] : e.startFixedDirection);
             }}
             onResize={(e) => {
-              e.target.style.width = `${e.width}px`;
-              e.target.style.height = `${e.height}px`;
-              e.target.style.transform = e.drag.transform;
-              const id = (e.target as HTMLElement).dataset.id!;
-              const el = store()
-                .deck.slides.find((s) => s.id === currentSlideId)
-                ?.elements.find((x) => x.id === id);
-              if (!el) return;
-              const [dx, dy] = e.drag.dist as [number, number];
-              setLiveResize({
-                id,
-                x: el.rect.x * scale + dx,
-                y: el.rect.y * scale + dy,
-                w: e.width,
-                h: e.height,
-              });
+              const painted = paintResizeFrame(e);
+              if (painted) setLiveResize({ [painted.id]: painted.box });
             }}
             onResizeEnd={(e) => {
-              resizeModifierCleanupRef.current?.();
-              resizeModifierCleanupRef.current = null;
-              setKeepRatioActive(false);
-              resizeFromCenterRef.current = false;
+              endResize();
               const last = e.lastEvent;
               setLiveResize(null);
               if (!last) return;
               const id = (e.target as HTMLElement).dataset.id!;
-              const el = store()
-                .deck.slides.find((s) => s.id === currentSlideId)
-                ?.elements.find((x) => x.id === id);
+              const el = findEl(id);
               if (!el) return;
               const [dx, dy] = last.drag.dist as [number, number];
-              const rect: Rect = {
+              store().setRect(id, {
                 x: el.rect.x + pxToEmu(dx, scale),
                 y: el.rect.y + pxToEmu(dy, scale),
                 w: pxToEmu(last.width, scale),
                 h: pxToEmu(last.height, scale),
-              };
-              store().setRect(id, rect);
+              });
+            }}
+            // Group resize, PowerPoint-style: dragging ONE handle of a
+            // multi-selection applies the SAME scale factors to every selected
+            // object, but each one is scaled about its OWN anchor corner — so
+            // the objects change size in place and never move relative to each
+            // other. (Google Slides instead rescales the selection's bounding
+            // box, which slides the objects around; that is not what we want.)
+            //
+            // Moveable's per-target child events describe exactly that bounding
+            // box behaviour, so they're deliberately unused here: only the group
+            // box's own dimensions are read, to derive the scale factors.
+            onResizeGroupStart={(e) => {
+              beginResize(e.inputEvent);
+              groupResizeRef.current = [];
+              groupResizeStartRef.current = e.targets
+                .map((t) => {
+                  const id = (t as HTMLElement).dataset.id;
+                  const el = id ? findEl(id) : undefined;
+                  return el
+                    ? {
+                        id: el.id,
+                        x: el.rect.x * scale,
+                        y: el.rect.y * scale,
+                        w: el.rect.w * scale,
+                        h: el.rect.h * scale,
+                      }
+                    : null;
+                })
+                .filter(Boolean) as typeof groupResizeStartRef.current;
+            }}
+            onBeforeResizeGroup={(e) => {
+              e.setFixedDirection(resizeFromCenterRef.current ? [0, 0] : e.startFixedDirection);
+            }}
+            onResizeGroup={(e) => {
+              // The group box's start size, recovered from this frame rather
+              // than measured up front: `dist` is the change since the gesture
+              // began, so `width - dist` is exactly where it started.
+              const [distW, distH] = e.dist as [number, number];
+              const startW = e.width - distW;
+              const startH = e.height - distH;
+              const sx = startW > 0 ? e.width / startW : 1;
+              const sy = startH > 0 ? e.height / startH : 1;
+              // Which edges the drag holds still. A handle on an edge (dir 0 on
+              // that axis) only scales that axis when Shift forces the ratio, so
+              // there's no meaningful edge to pin — grow about the centre, as
+              // ⌘/Ctrl does on both axes.
+              const [dirX, dirY] = e.direction as [number, number];
+              const fromCenter = resizeFromCenterRef.current;
+              const anchor = (dir: number, from: number, size: number, next: number) =>
+                fromCenter || dir === 0
+                  ? from + (size - next) / 2
+                  : dir > 0
+                    ? from
+                    : from + size - next;
+
+              const boxes: Record<string, { x: number; y: number; w: number; h: number }> = {};
+              const rects: { id: string; rect: Rect }[] = [];
+              groupResizeStartRef.current.forEach((start) => {
+                const w = Math.max(4, start.w * sx);
+                const h = Math.max(4, start.h * sy);
+                const box = {
+                  x: anchor(dirX, start.x, start.w, w),
+                  y: anchor(dirY, start.y, start.h, h),
+                  w,
+                  h,
+                };
+                boxes[start.id] = box;
+                rects.push({
+                  id: start.id,
+                  rect: {
+                    x: pxToEmu(box.x, scale),
+                    y: pxToEmu(box.y, scale),
+                    w: pxToEmu(box.w, scale),
+                    h: pxToEmu(box.h, scale),
+                  },
+                });
+                // Paint immediately as well as through `liveResize`, so the
+                // boxes track the handle without waiting on a React commit.
+                const node = nodeMap.current.get(start.id);
+                const el = findEl(start.id);
+                if (!node) return;
+                node.style.width = `${box.w}px`;
+                node.style.height = `${box.h}px`;
+                node.style.transform = `translate(${box.x}px, ${box.y}px)${
+                  el?.rotation ? ` rotate(${el.rotation}deg)` : ''
+                }`;
+              });
+              groupResizeRef.current = rects;
+              setLiveResize(boxes);
+            }}
+            onResizeGroupEnd={() => {
+              endResize();
+              setLiveResize(null);
+              const rects = groupResizeRef.current;
+              groupResizeRef.current = [];
+              groupResizeStartRef.current = [];
+              store().setRects(rects);
+              // The selection's bounds moved with the objects, and Moveable's
+              // own group box was tracking the drag rather than the result.
+              moveableRef.current?.updateRect();
             }}
             onRotateStart={() => {
               pendingSelectRef.current = null;
@@ -654,6 +1032,44 @@ export function EditorCanvas() {
               if (!last) return;
               const id = (e.target as HTMLElement).dataset.id!;
               store().updateElement(id, { rotation: normalizeDeg(last.rotation) });
+            }}
+            // Group rotate: the selection turns about ITS OWN centre, so each
+            // member both spins and orbits. Moveable works out each member's
+            // angle and offset; these handlers paint them and commit the pair
+            // (position + rotation) in one history step.
+            onRotateGroupStart={() => {
+              pendingSelectRef.current = null;
+            }}
+            onRotateGroup={(e) => {
+              e.events.forEach((ev) => {
+                const target = ev.target as HTMLElement;
+                const el = findEl(target.dataset.id!);
+                if (!el) return;
+                const [dx, dy] = ev.drag.dist as [number, number];
+                target.style.transform = `translate(${el.rect.x * scale + dx}px, ${
+                  el.rect.y * scale + dy
+                }px) rotate(${ev.rotation}deg)`;
+              });
+            }}
+            onRotateGroupEnd={(e) => {
+              const rects: { id: string; rect: Rect; rotation: number }[] = [];
+              e.events.forEach((ev) => {
+                const last = ev.lastEvent;
+                const id = (ev.target as HTMLElement).dataset.id;
+                const el = id ? findEl(id) : undefined;
+                if (!last || !id || !el) return;
+                const [dx, dy] = last.drag.dist as [number, number];
+                rects.push({
+                  id,
+                  rect: {
+                    ...el.rect,
+                    x: el.rect.x + pxToEmu(dx, scale),
+                    y: el.rect.y + pxToEmu(dy, scale),
+                  },
+                  rotation: normalizeDeg(last.rotation),
+                });
+              });
+              store().setRects(rects);
             }}
           />
         ) : null}
@@ -673,11 +1089,29 @@ export function EditorCanvas() {
             onDragStart={(e) => {
               const inp = e.inputEvent as MouseEvent;
               const target = inp.target as HTMLElement;
+              // Hit-test the point, not `target`: Moveable's own overlay covers
+              // the element it targets, so `target` is the overlay rather than
+              // the element on every press that lands on the selection.
+              const hitId = elementAtPoint(inp.clientX, inp.clientY)?.dataset.id;
               if (
                 moveableRef.current?.isMoveableElement(target) ||
+                target.closest?.(CHROME_SELECTOR) ||
+                hitId ||
                 selectedNodes.some((n) => n === target || n.contains(target))
               ) {
+                // A press on an object is a move, never a marquee.
                 e.stop();
+              }
+              // Pressing an object that wasn't selected yet is the case that
+              // used to need two clicks: `resolveMouseDown` selects it, but
+              // Moveable is gated on there being a selection, so it only mounts
+              // on the render that follows and never saw this mousedown. Replay
+              // the press into it once it exists — otherwise the gesture is
+              // dropped and the object doesn't move until you release and press
+              // again. Deferred by a frame because the selection state has to
+              // commit (and Moveable mount) first.
+              if (hitId && !selectedIds.includes(hitId) && hitId !== editingId) {
+                requestAnimationFrame(() => moveableRef.current?.dragStart(inp));
               }
             }}
             onSelectEnd={(e) => {
@@ -692,23 +1126,8 @@ export function EditorCanvas() {
             }}
           />
         ) : null}
+        </div>
       </div>
-
-      {contextMenu
-        ? (() => {
-            const primary = slide.elements.find((e) => e.id === contextMenu.primaryId);
-            if (!primary) return null;
-            return (
-              <ShapeContextMenu
-                x={contextMenu.x}
-                y={contextMenu.y}
-                elementIds={contextMenu.ids}
-                primary={primary}
-                onClose={() => setContextMenu(null)}
-              />
-            );
-          })()
-        : null}
 
       {editingChart && slide.chart ? (
         <ChartEditorModal
