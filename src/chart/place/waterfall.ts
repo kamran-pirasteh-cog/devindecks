@@ -47,7 +47,20 @@ export function placeWaterfall(input: WaterfallInput): Mark[] {
   const band = waterfallBand(spec, derived.data.length);
   const marks: Mark[] = [];
 
+  const itemFormat = new Map(spec.data.items.map((i) => [i.key, i.format]));
+
+  /**
+   * The role colours are the DEFAULT, not the last word: an item's own format
+   * wins over them.
+   *
+   * A waterfall has no series, so recolouring one bar has nowhere to go but
+   * `WaterfallItem.format` — which is where `applyChartFormat` writes it. Read
+   * it here or that write is inert and the bar snaps back to its role colour on
+   * the next recompile.
+   */
   const colorFor = (d: WaterfallDerived['data'][number]): ColorRef => {
+    const own = itemFormat.get(d.key)?.fill;
+    if (own?.kind === 'solid') return own.color;
     if (d.role === 'total' || d.role === 'subtotal' || d.role === 'start') return spec.colors.total;
     return d.negative ? spec.colors.decrease : spec.colors.increase;
   };
@@ -98,6 +111,7 @@ export function placeWaterfall(input: WaterfallInput): Mark[] {
       name: d.label,
       rect,
       fill: { kind: 'solid', color: colorFor(d) },
+      outline: itemFormat.get(d.key)?.outline,
     });
   }
 

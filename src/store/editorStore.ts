@@ -25,10 +25,12 @@ import {
   marginBox,
   marginGuides,
   outerGroupId,
+  ROUNDABLE_PRESETS,
   selectionUnits,
   supportsTurn,
   unionRect,
   type BulletKind,
+  type Crop,
   type Deck,
   type DesignSystem,
   type EMU,
@@ -51,16 +53,20 @@ import {
   applyChartFormat,
   chartById,
   chartElementRects,
+  chartElementIdsBefore,
   chartsForElements,
   detachChartFrom,
   insertChartInto,
   recompileInto,
   removeChartFrom,
+  repairChartSelection,
+  resizeChartFrames,
   syncChartGeometry,
   translateChartFrames,
 } from './chartActions';
 import { clampLevel } from '@/render/bullets';
 import { applyFormat, extractFormat, type ElementFormat } from '@/editor/elementFormat';
+import { formatRange, locateRun } from '@/editor/textRange';
 
 export type AlignMode =
   | 'left'
@@ -75,7 +81,7 @@ export const FONT_SIZE_STEPS = [
   8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96,
 ];
 
-export function nextFontSize(current: number, dir: 'up' | 'down'): number {
+function nextFontSize(current: number, dir: 'up' | 'down'): number {
   if (dir === 'up') {
     const next = FONT_SIZE_STEPS.find((n) => n > current);
     return next ?? current;
@@ -128,6 +134,21 @@ interface EditorState {
   pendingFitId: string | null;
   clearPendingFit: () => void;
 
+  /**
+   * The picture currently in crop mode, if any. View state, like `editingId`:
+   * the crop itself lives on the element and is undoable, but "the crop handles
+   * are showing" is not something you undo into.
+   */
+  croppingId: string | null;
+  setCropping: (id: string | null) => void;
+  /**
+   * Commit a crop. Rect and insets always move together — dragging a handle
+   * trims the picture without shifting the pixels that survive — so they're one
+   * action and one history step. `crop` of `undefined` clears back to the plain
+   * cover fit.
+   */
+  setCrop: (id: string, crop: Crop | undefined, rect?: Rect, transient?: boolean) => void;
+
   // selection
   /** Select these ids, grown so no group is ever half-selected. */
   select: (ids: string[], additive?: boolean) => void;
@@ -169,7 +190,20 @@ interface EditorState {
    */
   setFillAlpha: (ids: string[], alpha: number) => void;
   setOutline: (ids: string[], outline: Outline | undefined) => void;
+  /**
+   * Round or square the corners of rectangular shapes. Rounding is a preset
+   * swap rather than a radius field: the model's geometry vocabulary is the
+   * preset list, and both exporters speak it, so a rounded rect stays rounded
+   * in PowerPoint instead of becoming a custom path.
+   */
+  setCornersRounded: (ids: string[], rounded: boolean) => void;
   patchRuns: (ids: string[], patch: Partial<TextRun>) => void;
+  /**
+   * PowerPoint's grow/shrink font. Each run steps from ITS OWN size, so a
+   * selection holding a 40pt title and 14pt body keeps that relationship
+   * instead of collapsing to one size.
+   */
+  stepFontSize: (ids: string[], dir: 'up' | 'down') => void;
   patchParagraphs: (ids: string[], patch: Partial<Omit<Paragraph, 'runs'>>) => void;
   /** Vertical anchor of the text inside its box (PowerPoint's bodyPr anchor). */
   setAnchor: (ids: string[], anchor: VerticalAnchor) => void;
@@ -182,6 +216,10 @@ interface EditorState {
   // format painter
   copyFormat: (id?: string) => void;
   pasteFormat: (ids?: string[]) => void;
+  /** Sample the format of the run at a character offset inside one text body. */
+  copyTextFormat: (id: string, offset: number, bias?: 'before' | 'after') => void;
+  /** Stamp the buffered format onto the characters in `[start, end)`. */
+  pasteTextFormat: (id: string, start: number, end: number) => void;
 
   // arrangement
   align: (mode: AlignMode) => void;
@@ -266,6 +304,7 @@ function landOn(
     currentSlideId: string;
     selectedIds: string[];
     editingId: string | null;
+    croppingId: string | null;
     selectedSlideIds: string[];
     slideSelectionAnchor: string | null;
   },
@@ -276,6 +315,7 @@ function landOn(
   }
   s.selectedIds = [];
   s.editingId = null;
+  s.croppingId = null;
   s.selectedSlideIds = [];
   s.slideSelectionAnchor = null;
 }
@@ -292,6 +332,25 @@ function pushPast(s: { past: Deck[]; future: Deck[] }, entry: Deck): void {
  * inverting the box, so holding the key down can't lose an object.
  */
 const MIN_SIZE: EMU = EMU_PER_POINT * 3.6;
+
+/**
+ * Run a mutation that relayouts charts, and carry the selection across it.
+ *
+ * Every recompile can change which of a chart's elements exist, and the canvas
+ * reads "the whole chart is selected" as "every one of its ids is selected", so
+ * a selection left untouched here silently degrades into a drill-in on the
+ * parts that happened to survive — see `repairChartSelection`.
+ */
+function withChartSelection(
+  s: { selectedIds: string[] },
+  slide: Slide,
+  chartIds: string[],
+  run: () => void,
+): void {
+  const before = chartElementIdsBefore(slide, chartIds);
+  run();
+  s.selectedIds = repairChartSelection(slide, before, s.selectedIds);
+}
 
 function slideById(deck: Deck, id: string): Slide | undefined {
   return deck.slides.find((s) => s.id === id);
@@ -352,6 +411,7 @@ export const useEditor = create<EditorState>()(
     currentSlideId: '',
     selectedIds: [],
     editingId: null,
+    croppingId: null,
     selectedSlideIds: [],
     slideSelectionAnchor: null,
     past: [],
@@ -364,6 +424,26 @@ export const useEditor = create<EditorState>()(
     clearPendingFit() {
       set((s) => {
         s.pendingFitId = null;
+      });
+    },
+
+    setCropping(id) {
+      set((s) => {
+        s.croppingId = id;
+        // Cropping acts on one picture, so entering the mode selects it — the
+        // format bar and the overlay would otherwise disagree about the target.
+        if (id && !s.selectedIds.includes(id)) s.selectedIds = [id];
+      });
+    },
+
+    setCrop(id, crop, rect, transient = false) {
+      get().beginChange(transient);
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        const el = slide?.elements.find((e) => e.id === id);
+        if (!el || el.type !== 'picture') return;
+        el.crop = crop;
+        if (rect) el.rect = rect;
       });
     },
 
@@ -398,6 +478,7 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         s.selectedIds = ids;
         s.editingId = null;
+        s.croppingId = null;
       });
     },
 
@@ -417,6 +498,7 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         s.selectedIds = [];
         s.editingId = null;
+        s.croppingId = null;
       });
     },
 
@@ -432,6 +514,7 @@ export const useEditor = create<EditorState>()(
         s.currentSlideId = id;
         s.selectedIds = [];
         s.editingId = null;
+        s.croppingId = null;
         s.selectedSlideIds = [id];
         s.slideSelectionAnchor = id;
       });
@@ -461,6 +544,7 @@ export const useEditor = create<EditorState>()(
         s.currentSlideId = id;
         s.selectedIds = [];
         s.editingId = null;
+        s.croppingId = null;
       });
     },
 
@@ -521,6 +605,7 @@ export const useEditor = create<EditorState>()(
           .filter((e) => e.chartRef?.chartId === chart.id)
           .map((e) => e.id);
         s.editingId = null;
+        s.croppingId = null;
       });
     },
 
@@ -531,7 +616,9 @@ export const useEditor = create<EditorState>()(
         const chart = slide && chartById(slide, chartId);
         if (!slide || !chart) return;
         chart.spec = spec;
-        recompileInto(slide, chartId, s.designSystem);
+        withChartSelection(s, slide, [chartId], () =>
+          recompileInto(slide, chartId, s.designSystem),
+        );
       });
     },
 
@@ -542,7 +629,9 @@ export const useEditor = create<EditorState>()(
         const chart = slide && chartById(slide, chartId);
         if (!slide || !chart) return;
         fn(chart.spec);
-        recompileInto(slide, chartId, s.designSystem);
+        withChartSelection(s, slide, [chartId], () =>
+          recompileInto(slide, chartId, s.designSystem),
+        );
       });
     },
 
@@ -553,7 +642,12 @@ export const useEditor = create<EditorState>()(
         const chart = slide && chartById(slide, chartId);
         if (!slide || !chart) return;
         chart.frame = frame;
-        recompileInto(slide, chartId, s.designSystem);
+        // The relayout is what breaks the selection: a taller plot wants a
+        // different number of ticks, so the ids the drag started on are not the
+        // ids it ends on.
+        withChartSelection(s, slide, [chartId], () =>
+          recompileInto(slide, chartId, s.designSystem),
+        );
       });
     },
 
@@ -575,14 +669,19 @@ export const useEditor = create<EditorState>()(
         const chart = slide && chartById(slide, chartId);
         if (!slide || !chart) return;
         chart.rotation = rotation || undefined;
-        recompileInto(slide, chartId, s.designSystem);
+        withChartSelection(s, slide, [chartId], () =>
+          recompileInto(slide, chartId, s.designSystem),
+        );
       });
     },
 
     recompileChart(chartId) {
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
-        if (slide) recompileInto(slide, chartId, s.designSystem);
+        if (!slide) return;
+        withChartSelection(s, slide, [chartId], () =>
+          recompileInto(slide, chartId, s.designSystem),
+        );
       });
     },
 
@@ -747,9 +846,14 @@ export const useEditor = create<EditorState>()(
           if (rotation !== undefined) el.rotation = rotation;
         }
 
+        // Captured before the relayout, which changes the element set.
+        const owned = chartElementIdsBefore(slide, charts.map((c) => c.id));
+
         for (const chart of charts) {
           syncChartGeometry(slide, chart.id, before.get(chart.id) ?? [], s.designSystem);
         }
+
+        s.selectedIds = repairChartSelection(slide, owned, s.selectedIds);
       });
     },
 
@@ -775,18 +879,24 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
+        // A chart is resized through its FRAME, not by inflating each of its
+        // parts and inferring the frame back from them — see `resizeChartFrames`
+        // for why that inference belongs only to the drag path.
         const charts = chartsForElements(slide, ids);
-        const before = new Map(charts.map((c) => [c.id, chartElementRects(slide, c.id)]));
+        const chartIds = new Set(charts.map((c) => c.id));
+        // Which ids each chart owned before the relayout renames its parts out
+        // from under the selection — see `repairChartSelection`.
+        const owned = chartElementIdsBefore(slide, charts.map((c) => c.id));
 
         for (const el of slide.elements) {
           if (!ids.includes(el.id)) continue;
+          if (el.chartRef && chartIds.has(el.chartRef.chartId)) continue;
           el.rect.w = Math.max(MIN_SIZE, el.rect.w + dw);
           el.rect.h = Math.max(MIN_SIZE, el.rect.h + dh);
         }
 
-        for (const chart of charts) {
-          syncChartGeometry(slide, chart.id, before.get(chart.id) ?? [], s.designSystem);
-        }
+        resizeChartFrames(slide, ids, dw, dh, s.designSystem, MIN_SIZE);
+        s.selectedIds = repairChartSelection(slide, owned, s.selectedIds);
       });
     },
 
@@ -846,9 +956,15 @@ export const useEditor = create<EditorState>()(
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
         if (applyChartFormat(slide, ids, { fill })) {
-          for (const chart of chartsForElements(slide, ids)) {
-            recompileInto(slide, chart.id, s.designSystem);
-          }
+          const charts = chartsForElements(slide, ids);
+          withChartSelection(
+            s,
+            slide,
+            charts.map((c) => c.id),
+            () => {
+              for (const chart of charts) recompileInto(slide, chart.id, s.designSystem);
+            },
+          );
           return;
         }
         for (const el of slide.elements) {
@@ -879,9 +995,15 @@ export const useEditor = create<EditorState>()(
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
         if (applyChartFormat(slide, ids, { outline })) {
-          for (const chart of chartsForElements(slide, ids)) {
-            recompileInto(slide, chart.id, s.designSystem);
-          }
+          const charts = chartsForElements(slide, ids);
+          withChartSelection(
+            s,
+            slide,
+            charts.map((c) => c.id),
+            () => {
+              for (const chart of charts) recompileInto(slide, chart.id, s.designSystem);
+            },
+          );
           return;
         }
         for (const el of slide.elements) {
@@ -891,6 +1013,21 @@ export const useEditor = create<EditorState>()(
           } else if (el.type === 'text' || el.type === 'shape' || el.type === 'picture') {
             el.outline = outline;
           }
+        }
+      });
+    },
+
+    setCornersRounded(ids, rounded) {
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        for (const el of slide.elements) {
+          if (!ids.includes(el.id) || el.type !== 'shape') continue;
+          if (!ROUNDABLE_PRESETS.includes(el.preset)) continue;
+          // A pill is already as round as a rectangle gets, so rounding leaves
+          // it alone; squaring it flattens it like any other rounded box.
+          el.preset = rounded ? (el.preset === 'pill' ? 'pill' : 'roundRect') : 'rect';
         }
       });
     },
@@ -906,6 +1043,24 @@ export const useEditor = create<EditorState>()(
           if (!body) continue;
           for (const p of body.paragraphs) {
             for (const r of p.runs) Object.assign(r, patch);
+          }
+        }
+      });
+    },
+
+    stepFontSize(ids, dir) {
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        for (const el of slide.elements) {
+          if (!ids.includes(el.id)) continue;
+          const body = el.type === 'text' ? el.body : el.type === 'shape' ? el.body : undefined;
+          if (!body) continue;
+          for (const p of body.paragraphs) {
+            for (const r of p.runs) {
+              r.sizePt = nextFontSize(r.sizePt ?? s.designSystem.type.body.sizePt, dir);
+            }
           }
         }
       });
@@ -1005,6 +1160,43 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    /**
+     * The in-editor half of the painter: sample the run the cursor is in, not
+     * the box's first run, so ⌘⌥C over an italic word picks up that word.
+     */
+    copyTextFormat(id, offset, bias = 'after') {
+      const s = get();
+      const el = slideById(s.deck, s.currentSlideId)?.elements.find((e) => e.id === id);
+      if (!el) return;
+      const body = el.type === 'text' || el.type === 'shape' ? el.body : undefined;
+      const at = body ? locateRun(body.paragraphs, offset, bias) : null;
+      set((d) => {
+        d.formatClipboard = extractFormat(el, at ?? undefined);
+      });
+    },
+
+    /**
+     * Restyle a character range instead of the whole box. Only the character
+     * and paragraph halves of the buffered format travel — fill, outline and
+     * the text-box properties describe the box, which a selection isn't.
+     */
+    pasteTextFormat(id, start, end) {
+      const s = get();
+      const fmt = s.formatClipboard;
+      if (!fmt?.run || end <= start) return;
+      const el = slideById(s.deck, s.currentSlideId)?.elements.find((e) => e.id === id);
+      const body = el && (el.type === 'text' || el.type === 'shape') ? el.body : undefined;
+      if (!body) return;
+      const paragraphs = formatRange(body.paragraphs, start, end, fmt);
+      if (JSON.stringify(paragraphs) === JSON.stringify(body.paragraphs)) return;
+      get().commit();
+      set((d) => {
+        const target = slideById(d.deck, d.currentSlideId)?.elements.find((e) => e.id === id);
+        const live = target && 'body' in target ? target.body : undefined;
+        if (live) live.paragraphs = paragraphs;
+      });
+    },
+
     deleteSelected() {
       const { selectedIds } = get();
       if (selectedIds.length === 0) return;
@@ -1021,6 +1213,7 @@ export const useEditor = create<EditorState>()(
         slide.elements = slide.elements.filter((e) => !selectedIds.includes(e.id));
         s.selectedIds = [];
         s.editingId = null;
+        s.croppingId = null;
       });
     },
 
@@ -1275,6 +1468,7 @@ export const useEditor = create<EditorState>()(
         sl.elements = rest;
         d.selectedIds = moved.map((el) => el.id);
         d.editingId = null;
+        d.croppingId = null;
       });
     },
 
@@ -1459,6 +1653,7 @@ export function loadDeck(deck: Deck, ds?: DesignSystem) {
     currentSlideId: migrated.slides[0]?.id ?? '',
     selectedIds: [],
     editingId: null,
+    croppingId: null,
     selectedSlideIds: [],
     slideSelectionAnchor: null,
     past: [],

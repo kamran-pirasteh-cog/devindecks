@@ -59,6 +59,7 @@ export const textStyle = (
   bold: role.bold,
   weight: role.weight,
   color: role.color,
+  caps: role.caps,
   align,
   anchor,
   rotation,

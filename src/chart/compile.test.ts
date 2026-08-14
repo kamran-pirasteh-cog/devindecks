@@ -230,7 +230,8 @@ describe('compileChart — values and formatting', () => {
       ),
     );
     expect(ticks).toEqual(['0', '1', '2', '3', '4']);
-    expect(texts(elements)).toContain('in $M');
+    // Uppercased on the way out — axis furniture is set in caps.
+    expect(texts(elements)).toContain('IN $M');
   });
 
   it('keeps the gridline count in business-chart range', () => {
@@ -423,14 +424,16 @@ describe('compileChart — label legibility', () => {
 
   it('uses the design system’s ink for labels that sit on the slide, not on a mark', () => {
     // A clustered chart labels outside the tip, where the background is the
-    // slide — flipping to white there would make the label disappear.
+    // slide — flipping to white there would make the label disappear. On the
+    // slide the label is an annotation, so it takes the muted token rather than
+    // the ink a label inside a mark is forced to.
     const els = compile(chart(() => {}, 'column', 'clustered')).elements;
     const inks = els
       .filter(isText)
       .filter((e) => e.chartRef?.part === 'label')
       .map((e) => e.body.paragraphs[0].runs[0].color);
     expect(inks.length).toBeGreaterThan(0);
-    for (const ink of inks) expect(ink).toEqual({ kind: 'token', token: 'ink.strong' });
+    for (const ink of inks) expect(ink).toEqual({ kind: 'token', token: 'ink.muted' });
   });
 });
 
@@ -543,9 +546,14 @@ describe('compileChart — sankey', () => {
     const { elements } = sankey();
     const nodeRect = (name: string) =>
       elements.filter(isShape).find((e) => e.name === name)!.rect;
+    // Labels are emitted uppercase, so match case-insensitively: this test is
+    // about where a label sits, not how it's cased.
     const labelRect = (starts: string) =>
-      elements.filter(isText).find((e) => e.body.paragraphs[0].runs[0].text.startsWith(starts))!
-        .rect;
+      elements
+        .filter(isText)
+        .find((e) =>
+          e.body.paragraphs[0].runs[0].text.toUpperCase().startsWith(starts.toUpperCase()),
+        )!.rect;
 
     // The source labels backwards into the left gutter...
     expect(labelRect('Total').x + labelRect('Total').w).toBeLessThanOrEqual(
@@ -561,8 +569,10 @@ describe('compileChart — sankey', () => {
     const labels = texts(
       sankey().elements.filter((e) => e.chartRef?.part === 'label'),
     );
-    expect(labels.some((t) => t.startsWith('Total'))).toBe(true);
-    expect(labels.some((t) => t.startsWith('Segment A'))).toBe(true);
+    const named = (name: string) =>
+      labels.some((t) => t.toUpperCase().startsWith(name.toUpperCase()));
+    expect(named('Total')).toBe(true);
+    expect(named('Segment A')).toBe(true);
   });
 
   it('keeps everything inside the frame, labels included', () => {
@@ -764,9 +774,30 @@ describe('compileChart — line and area', () => {
   };
 
   it('draws one path per line series', () => {
-    const lines = build('line').filter((e) => e.chartRef?.part === 'mark');
+    // Plus the dot on the emphasised line's last point, which is a mark too.
+    const marks = build('line').filter((e) => e.chartRef?.part === 'mark');
+    const lines = marks.filter((e) => e.type === 'path');
     expect(lines).toHaveLength(3);
-    expect(lines.every((e) => e.type === 'path')).toBe(true);
+    expect(marks).toHaveLength(4);
+  });
+
+  it('emphasises one line and recedes the rest', () => {
+    const lines = build('line').filter(
+      (e) => e.chartRef?.part === 'mark' && e.type === 'path',
+    );
+    const widths = lines.map((e) => (e.type === 'path' ? e.outline?.widthEmu : 0));
+    // The subject reads as the subject: thicker than every comparator.
+    expect(widths[0]).toBeGreaterThan(widths[1] ?? 0);
+    expect(widths[1]).toBe(widths[2]);
+    // Comparators are told apart by dash rather than by another colour.
+    const dashes = lines.map((e) => (e.type === 'path' ? e.outline?.dash : undefined));
+    expect(dashes).toEqual(['solid', 'solid', 'dash']);
+  });
+
+  it('puts the last value in the end label, so the legend and data labels can go', () => {
+    const labels = texts(build('line').filter((e) => e.role === 'chart.label'));
+    expect(labels).toContain('Enterprise · 640');
+    expect(build('line').filter((e) => e.role === 'chart.legend')).toHaveLength(0);
   });
 
   it('breaks a line at a gap rather than joining across it', () => {
@@ -781,7 +812,9 @@ describe('compileChart — line and area', () => {
       metricMeasurer(),
     ).elements;
     // The trailing single point can't form a path, so exactly one run draws.
-    expect(els.filter((e) => e.chartRef?.part === 'mark')).toHaveLength(1);
+    expect(
+      els.filter((e) => e.chartRef?.part === 'mark' && e.type === 'path'),
+    ).toHaveLength(1);
   });
 
   it('fills an area as a closed path', () => {

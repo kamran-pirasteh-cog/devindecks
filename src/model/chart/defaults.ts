@@ -240,9 +240,17 @@ export function defaultChartSpec(
         // an end label puts the series name where the line already led them.
         endLabels: true,
         legend: { ...b.legend, show: false },
-        // Every point carrying a number turns a trend line into a table with a
-        // shape; the end label plus the axis is enough.
-        decorations: { ...b.decorations, labels: { ...b.decorations.labels, show: false } },
+        decorations: {
+          ...b.decorations,
+          // The one chart family that wants gridlines. A column's height is
+          // read against the baseline it stands on; a line's level is read
+          // across the plot, and without a rule to carry the eye the reader is
+          // measuring with a finger against the screen.
+          gridlines: { major: { show: true } },
+          // Every point carrying a number turns a trend line into a table with a
+          // shape; the end label plus the axis is enough.
+          labels: { ...b.decorations.labels, show: false },
+        },
         data: sampleGridData(),
       };
     case 'area':

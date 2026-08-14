@@ -31,10 +31,20 @@ export interface MarkTextStyle {
   /** Face between regular and bold, e.g. Medium 500 for a data label. */
   weight?: number;
   color: ColorRef;
+  /** Uppercase the text — see `displayText` in `render/measureText`. */
+  caps?: boolean;
   align: ParaAlign;
   anchor: VerticalAnchor;
   /** Clockwise degrees; used for rotated axis titles and tick labels. */
   rotation?: number;
+  /**
+   * Set `false` for a label whose box is measured to its own text: the chart
+   * engine has already decided this string sits on one line, and letting the
+   * renderer's real font metrics wrap it — half a point wider than the measure —
+   * breaks "Enterprise · 640" across two lines. Defaults to wrapping, which is
+   * what a banded category label wants.
+   */
+  wrap?: boolean;
 }
 
 export type Mark =

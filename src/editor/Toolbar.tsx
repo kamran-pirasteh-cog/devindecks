@@ -13,6 +13,8 @@ import { LinePopover } from './LinePopover';
 import { TextPopover } from './TextPopover';
 import { ShortcutsModal } from './ShortcutsModal';
 import { ChartPopover } from './ChartPopover';
+import { ImportSlidesDialog } from './ImportSlidesDialog';
+import { commentAnchorId } from './commentAnchor';
 import { OVERLAY_Z } from './layers';
 import { FIT_TO_MARGINS_BUTTON } from '@/flags';
 import type { ShapePreset } from '@/model';
@@ -26,11 +28,14 @@ function Btn({
   onClick,
   title,
   disabled,
+  variant = 'ghost',
   children,
 }: {
   onClick: () => void;
   title: string;
   disabled?: boolean;
+  /** `primary` is the filled blue affordance — one per cluster at most. */
+  variant?: 'ghost' | 'primary';
   children: React.ReactNode;
 }) {
   return (
@@ -39,7 +44,11 @@ function Btn({
         onClick={onClick}
         aria-label={title}
         disabled={disabled}
-        className="flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-30 dark:text-zinc-200 dark:hover:bg-zinc-800"
+        className={`flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-sm disabled:opacity-30 ${
+          variant === 'primary'
+            ? 'bg-blue-600 font-semibold text-white hover:bg-blue-700'
+            : 'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800'
+        }`}
       >
         {children}
       </button>
@@ -57,10 +66,6 @@ const Divider = () => <div className="mx-1 h-5 w-px bg-zinc-200 dark:bg-zinc-700
 
 export function Toolbar() {
   const addElement = useEditor((s) => s.addElement);
-  const reorder = useEditor((s) => s.reorder);
-  const copyFormat = useEditor((s) => s.copyFormat);
-  const pasteFormat = useEditor((s) => s.pasteFormat);
-  const hasFormat = useEditor((s) => s.formatClipboard !== null);
   const showGuides = useEditor((s) => s.showGuides);
   const toggleGuides = useEditor((s) => s.toggleGuides);
   const pageNumbers = useEditor((s) => !!s.deck.pageNumbers);
@@ -83,10 +88,20 @@ export function Toolbar() {
   const [showLine, setShowLine] = useState(false);
   const [showText, setShowText] = useState(false);
   const lineAnchorRef = useRef<HTMLDivElement>(null);
+  const [showImport, setShowImport] = useState(false);
   const textAnchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="flex items-center gap-0.5 border-b border-zinc-200 bg-white px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-950">
+      <button
+        onClick={() => setShowImport(true)}
+        title="Import slides from a .pptx or PDF"
+        className="flex h-8 items-center rounded-md px-2.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+      >
+        Import Slides
+      </button>
+      {showImport ? <ImportSlidesDialog onClose={() => setShowImport(false)} /> : null}
+      <Divider />
       <div ref={textAnchorRef} className="relative flex">
         <Btn onClick={() => setShowText((v) => !v)} title="Add text">
           <span className="font-serif">T</span>
@@ -109,21 +124,6 @@ export function Toolbar() {
           {s.label}
         </Btn>
       ))}
-      <Divider />
-      <Btn
-        onClick={() => copyFormat()}
-        title="Copy formatting (⌘⌥C)"
-        disabled={selCount < 1}
-      >
-        🖌↑
-      </Btn>
-      <Btn
-        onClick={() => pasteFormat()}
-        title="Paste formatting (⌘⌥V)"
-        disabled={selCount < 1 || !hasFormat}
-      >
-        🖌↓
-      </Btn>
       <Divider />
       <Btn
         onClick={toggleGuides}
@@ -149,24 +149,6 @@ export function Toolbar() {
         title={pageNumbers ? 'Remove page numbers' : 'Add page numbers to all slides'}
       >
         <span className={pageNumbers ? 'text-sky-500' : undefined}>#</span>
-      </Btn>
-      <Divider />
-      <Btn
-        onClick={() => startDraft(currentSlideId, selectedIds[0])}
-        title={
-          selectedIds.length
-            ? 'Comment on selection (⌘⌥M)'
-            : 'Comment on this slide (⌘⌥M)'
-        }
-      >
-        💬
-      </Btn>
-      <Divider />
-      <Btn onClick={() => reorder('front')} title="Bring to front" disabled={selCount < 1}>
-        ⬆
-      </Btn>
-      <Btn onClick={() => reorder('back')} title="Send to back" disabled={selCount < 1}>
-        ⬇
       </Btn>
       <div className="flex-1" />
       <div className="relative">
@@ -204,6 +186,22 @@ export function Toolbar() {
           </span>
         ) : null}
       </button>
+      {/* New comment sits with the panel toggle rather than out among the
+          drawing tools: one is where comments live, the other how you add one. */}
+      <Btn
+        onClick={() =>
+          startDraft(
+            currentSlideId,
+            commentAnchorId(selectedIds, useEditor.getState().currentSlide().elements),
+          )
+        }
+        title={
+          selectedIds.length ? 'Comment on selection (⌘⌥M)' : 'Comment on this slide (⌘⌥M)'
+        }
+        variant="primary"
+      >
+        +
+      </Btn>
       <Divider />
       <button
         onClick={() => setShowShortcuts(true)}

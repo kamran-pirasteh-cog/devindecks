@@ -13,7 +13,7 @@
  * All geometry changes are converted from px back into EMU and written through
  * the store's command actions, so undo/redo and the model stay authoritative.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Moveable from 'react-moveable';
 import Selecto from 'react-selecto';
 import { ElementVisual, PageNumber, slideBackgroundHex } from '@/render/SlideView';
@@ -26,8 +26,10 @@ import {
   resolveColor,
   selectionUnit,
   textInsetBox,
+  unionRect,
   type Rect,
   isGridSpec,
+  legendSeriesKey,
   supportsTurn,
   type ChartInstance,
 } from '@/model';
@@ -35,19 +37,25 @@ import { useEditor } from '@/store/editorStore';
 import { SelectionFormatBar } from './SelectionFormatBar';
 import { ArrangeBar } from './ArrangeBar';
 import { TextEditor } from './TextEditor';
+import { CropOverlay } from './CropOverlay';
+import { CanvasContextMenu, contextMenuItems, type MenuItem } from './CanvasContextMenu';
 import { ChartDatasheetPanel } from './chart/ChartDatasheetPanel';
+import { ChartPartPopover } from './chart/ChartPartPopover';
 import { CommentPins } from './CommentPins';
+import { OVERLAY_Z } from './layers';
 import { measureTextFitPx } from './fitToText';
 import { layoutFrame, previewTurn, turnRect, readableAngle, snapQuarterTurn } from '@/chart/turn';
 
 const CANVAS_PAD = 48;
 
 /**
- * Editor chrome that floats over the slide — the format/arrange bars and the
- * comment pins. A press on any of it acts ON the selection, so it must never
- * change it, and must never be read as the start of a marquee.
+ * Editor chrome that floats over the slide — the format/arrange bars, the
+ * comment pins and the crop handles. A press on any of it acts ON the
+ * selection, so it must never change it, and must never be read as the start of
+ * a marquee.
  */
-const CHROME_SELECTOR = '.dd-format-bar, .dd-comment-pin';
+const CHROME_SELECTOR =
+  '.dd-format-bar, .dd-comment-pin, .dd-crop-overlay, .dd-context-menu';
 
 /** Rotations are stored 0–359, so 1° and 361° are the same stored value. */
 const normalizeDeg = (d: number) => ((Math.round(d) % 360) + 360) % 360;
@@ -66,6 +74,7 @@ export function EditorCanvas() {
   const currentSlideId = useEditor((s) => s.currentSlideId);
   const selectedIds = useEditor((s) => s.selectedIds);
   const editingId = useEditor((s) => s.editingId);
+  const croppingId = useEditor((s) => s.croppingId);
   const showGuides = useEditor((s) => s.showGuides);
   const pendingFitId = useEditor((s) => s.pendingFitId);
 
@@ -129,6 +138,19 @@ export function EditorCanvas() {
   const [openChartId, setOpenChartId] = useState<string | null>(null);
 
   /**
+   * The open right-click menu: where it sits, and the items the selection it
+   * was opened on offered. The items are snapshotted with the position because
+   * running one (crop, say) changes the state they were derived from.
+   */
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  // A menu describes one selection on one slide; either changing under it (an
+  // undo, a delete, arrow-keying to the next slide) leaves it describing
+  // nothing. Opening it can't trip this: the press that changes the selection
+  // renders before the contextmenu event that sets the menu.
+  useEffect(() => setMenu(null), [currentSlideId, selectedIds]);
+
+  /**
    * Dragging a data label moves it in the SPEC, as an offset from where the
    * layout put it, not in the element — the next recompile would otherwise
    * snap it straight back. The offset also pins the label, so the collision
@@ -181,26 +203,59 @@ export function EditorCanvas() {
       let acc = 0;
       let last = 0;
       let blocked = false;
-      return (e: WheelEvent): -1 | 0 | 1 => {
-        const px =
-          e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1);
-        const now = performance.now();
-        const gap = now - last;
-        last = now;
-        if (blocked) {
-          if (gap < QUIET) return 0;
+      return {
+        step(e: WheelEvent): -1 | 0 | 1 {
+          const px =
+            e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? window.innerHeight : 1);
+          const now = performance.now();
+          const gap = now - last;
+          last = now;
+          if (blocked) {
+            if (gap < QUIET) return 0;
+            blocked = false;
+          }
+          if (gap > 150 || (acc !== 0 && Math.sign(px) !== Math.sign(acc))) acc = 0;
+          acc += px;
+          if (Math.abs(acc) < 8) return 0;
+          const dir = acc > 0 ? 1 : -1;
+          acc = 0;
+          blocked = true;
+          return dir;
+        },
+        /** Drop whatever the stream had built up, as if the wheel went quiet. */
+        reset() {
+          acc = 0;
+          last = 0;
           blocked = false;
-        }
-        if (gap > 150 || (acc !== 0 && Math.sign(px) !== Math.sign(acc))) acc = 0;
-        acc += px;
-        if (Math.abs(acc) < 8) return 0;
-        const dir = acc > 0 ? 1 : -1;
-        acc = 0;
-        blocked = true;
-        return dir;
+        },
       };
     })(),
   );
+
+  // True while a mouse button is held anywhere: a drag, resize, rotate or
+  // marquee is in flight. Tracked here rather than in each Moveable/Selecto
+  // handler because every gesture on the canvas begins with a press, and the
+  // wheel has to be frozen for all of them — see `onWheel`.
+  const pointerHeldRef = useRef(false);
+  useEffect(() => {
+    const down = (e: PointerEvent) => {
+      if (e.button === 0) pointerHeldRef.current = true;
+    };
+    const up = () => {
+      pointerHeldRef.current = false;
+      // The press swallowed part of a wheel stream, so start the next gesture
+      // from zero instead of stepping the instant the button comes up.
+      wheelStepRef.current.reset();
+    };
+    window.addEventListener('pointerdown', down, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('pointercancel', up, true);
+    return () => {
+      window.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', up, true);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     setDragRoot(wrapRef.current);
@@ -226,6 +281,16 @@ export function EditorCanvas() {
     const el = wrapRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      // Mid-gesture the wheel is never a request to move: the deltas are a
+      // trackpad's inertial tail or a stray second finger, and acting on them
+      // yanks the slide out from under the drag — `stepSlide` switches slides
+      // AND clears the selection, so the objects being moved are simply gone.
+      // Zoom is out too: it rescales the canvas the gesture measured itself
+      // against. The workspace is frozen until the button comes up.
+      if (pointerHeldRef.current) {
+        e.preventDefault();
+        return;
+      }
       if (!e.ctrlKey && !e.metaKey) {
         // Zoomed in far enough that the slide overflows? Let the wheel pan it,
         // and only page the deck once that edge is reached.
@@ -233,7 +298,7 @@ export function EditorCanvas() {
         if (max > 1 && ((e.deltaY < 0 && el.scrollTop > 0) || (e.deltaY > 0 && el.scrollTop < max)))
           return;
         e.preventDefault();
-        const dir = wheelStepRef.current(e);
+        const dir = wheelStepRef.current.step(e);
         if (!dir) return;
         useEditor.getState().stepSlide(dir);
         return;
@@ -317,14 +382,72 @@ export function EditorCanvas() {
    * to the person looking at it, so it gets one target: its backdrop, which
    * covers the whole frame by construction.
    */
-  const soleChart =
+  /**
+   * Ids the selection names that still exist. A recompile can retire a part
+   * mid-selection, and a selection holding one dead id would otherwise stop
+   * looking like a chart selection at all.
+   */
+  const liveSelectedIds = slide
+    ? selectedIds.filter((id) => slide.elements.some((e) => e.id === id))
+    : [];
+
+  const selectionChart =
     slide?.charts?.find(
       (c) =>
-        selectedIds.length > 0 &&
-        selectedIds.every(
+        liveSelectedIds.length > 0 &&
+        liveSelectedIds.every(
           (id) => slide.elements.find((e) => e.id === id)?.chartRef?.chartId === c.id,
         ),
     ) ?? null;
+
+  /**
+   * True when the WHOLE chart is selected, rather than parts drilled into.
+   *
+   * think-cell's model, which is the one being copied: a chart is one object
+   * until you click into it, and from then on the thing under the cursor is a
+   * segment, a label, an axis — addressable on its own. So "the chart is the
+   * selection" has to mean every part, not merely "everything selected happens
+   * to belong to this chart"; the looser test made a single selected bar keep
+   * drawing the chart's own control box, so drilling in worked in the store and
+   * was invisible on the canvas.
+   */
+  /**
+   * Stated as "every part is selected" rather than "the counts match": a
+   * relayout can retire an id the selection still names (a tick fewer, a
+   * suppressed label), and comparing counts made that stale entry read as a
+   * drill-in — which is how a resize could leave the control box collapsed onto
+   * a single axis rule. `repairChartSelection` keeps the store's list honest;
+   * this keeps the canvas honest even if it lags by a commit.
+   */
+  const wholeChartSelected =
+    !!selectionChart &&
+    !!slide &&
+    slide.elements
+      .filter((e) => e.chartRef?.chartId === selectionChart.id)
+      .every((e) => selectedIds.includes(e.id));
+
+  const soleChart = wholeChartSelected ? selectionChart : null;
+
+  /** The chart being edited from the inside, if any. */
+  const chartPart = wholeChartSelected ? null : selectionChart;
+
+  /**
+   * A chart part's geometry is DERIVED — the compiler solves it from the data
+   * and the frame on every recompile. Dragging a bar or resizing a tick would
+   * write a rect that the next keystroke in the datasheet silently discards, so
+   * parts are selectable and formattable but not transformable. Data labels are
+   * the one exception: their offset is a real spec field (`labelOffset`), which
+   * is what `nudgeChartLabel` writes.
+   */
+  const chartPartLabelsOnly =
+    !!chartPart &&
+    !!slide &&
+    selectedIds.every(
+      (id) => slide.elements.find((e) => e.id === id)?.chartRef?.part === 'label',
+    );
+
+  /** Where the part panel hangs: the bounds of everything drilled into, in EMU. */
+  const chartPartBox = chartPart && slide ? unionRect(slide.elements, selectedIds) : null;
 
   const chartBackdropId = soleChart ? `${soleChart.id}::plot` : null;
 
@@ -355,12 +478,41 @@ export function EditorCanvas() {
       ? snapQuarterTurn(liveRotate.deg - (soleChart.rotation ?? 0))
       : null;
 
+  /** The picture in crop mode, if it's still on this slide. */
+  const croppingPicture = (() => {
+    const el = croppingId ? slide?.elements.find((e) => e.id === croppingId) : undefined;
+    return el?.type === 'picture' ? el : null;
+  })();
+
   /** What Moveable actually transforms: one node for a chart, else the selection. */
   const targetIds = chartBackdropId ? [chartBackdropId] : selectedIds;
 
   const selectedNodes = targetIds
     .map((id) => nodeMap.current.get(id))
     .filter(Boolean) as HTMLElement[];
+
+  /**
+   * Which handles a straight line gets.
+   *
+   * A line has zero extent on its cross axis (see `makeLine`), so the control
+   * box collapses onto it: all eight handles pile onto one segment, three of
+   * them two-deep, and the box reads as a stray blue rule rather than as a
+   * selection. Worse, the pile is ambiguous — grabbing "the top" of a
+   * horizontal line is a coin flip between `n` and `s`, and either one drags
+   * the line open into a rectangle it can never be again.
+   *
+   * A 1-D object only has ends, so it gets its ends and nothing else, which is
+   * also what PowerPoint puts on a line. Charts are excluded: their target is
+   * the backdrop, which always has both dimensions.
+   */
+  const lineHandles = (() => {
+    if (soleChart || selectedIds.length !== 1) return null;
+    const el = slide?.elements.find((e) => e.id === selectedIds[0]);
+    if (!el) return null;
+    if (el.rect.h === 0 && el.rect.w > 0) return ['w', 'e'];
+    if (el.rect.w === 0 && el.rect.h > 0) return ['n', 's'];
+    return null;
+  })();
 
   const guidelineNodes = slide
     ? slide.elements
@@ -389,6 +541,30 @@ export function EditorCanvas() {
       .deck.slides.find((s) => s.id === currentSlideId)
       ?.elements.find((x) => x.id === id);
 
+  /**
+   * What drilling into a chart actually selects.
+   *
+   * A legend key means "this series", the way it does in think-cell: the swatch
+   * stands for every bar of that series, so selecting the one rectangle in the
+   * legend would be a trap — recoloring it would repaint a 6px square and
+   * nothing else on the slide.
+   */
+  const chartDrillIds = (id: string): string[] => {
+    const els = slide?.elements ?? [];
+    const ref = els.find((e) => e.id === id)?.chartRef;
+    if (ref?.part !== 'legend.item') return [id];
+    const key = legendSeriesKey(ref);
+    const marks = els
+      .filter(
+        (e) =>
+          e.chartRef?.part === 'mark' &&
+          e.chartRef.chartId === ref.chartId &&
+          e.chartRef.series === key,
+      )
+      .map((e) => e.id);
+    return marks.length ? marks : [id];
+  };
+
   const deferSelect = (id: string, mode: DeferredSelect) => {
     pendingSelectRef.current = { id, mode };
     const finalize = () => {
@@ -397,7 +573,7 @@ export function EditorCanvas() {
       window.removeEventListener('mouseup', finalize);
       if (pending?.id !== id) return;
       if (pending.mode === 'toggle') store().toggleSelect(id);
-      else if (pending.mode === 'member') store().selectExact([id]);
+      else if (pending.mode === 'member') store().selectExact(chartDrillIds(id));
       else store().select([id]);
     };
     window.addEventListener('mouseup', finalize);
@@ -596,20 +772,34 @@ export function EditorCanvas() {
   };
 
   /**
-   * Hand the chart's nodes back to React.
+   * Hand the chart's nodes back to React, at the size the model now says.
    *
-   * `paintChartResize` writes `width`/`height` inline, and React never set
-   * those — it positions elements with `transform` alone — so it has no reason
-   * to rewrite them on the next render. Left behind, they pin every part at
-   * whatever size the drag ended on, which is the stale outline you see around
-   * labels after a resize.
+   * `paintChartResize` writes `width`/`height` inline, over the values React put
+   * there. React diffs its own props, not the DOM, so it only rewrites a size
+   * the recompile actually changed — and a resize on one axis leaves the other
+   * untouched. So neither leaving the paint nor deleting it works: the first
+   * pins parts at their drag size, the second collapses every part on the
+   * unchanged axis to zero. That's the selection box coming out of a resize as a
+   * bare line, and the stale outlines around labels; both are one desync.
+   *
+   * Writing the committed size back is what actually resolves it — the DOM and
+   * React's picture of it agree, whichever way the drag went. Must run AFTER the
+   * commit, or "committed" is still the size the drag started from.
    */
-  const clearChartResizePaint = () => {
+  const settleChartResizePaint = () => {
     const start = chartResizeStartRef.current;
     if (!start) return;
     for (const n of start.nodes) {
-      n.node.style.removeProperty('width');
-      n.node.style.removeProperty('height');
+      // A relayout retires parts (a tick fewer at a shorter height), and their
+      // nodes are on their way out — nothing to restore them to.
+      const el = findEl(n.node.dataset.id!);
+      if (!el) {
+        n.node.style.removeProperty('width');
+        n.node.style.removeProperty('height');
+        continue;
+      }
+      n.node.style.width = `${el.rect.w * scale}px`;
+      n.node.style.height = `${el.rect.h * scale}px`;
     }
     chartResizeStartRef.current = null;
   };
@@ -703,11 +893,23 @@ export function EditorCanvas() {
    * matching the list directly picked whatever full-size element happened to sit
    * under the line instead.
    */
-  const elementAtPoint = (clientX: number, clientY: number) =>
-    document
-      .elementsFromPoint(clientX, clientY)
-      .map((n) => (n as HTMLElement).closest?.('.dd-el') as HTMLElement | null)
-      .find(Boolean) as HTMLElement | undefined;
+  /**
+   * The object under a point — looking THROUGH Moveable's overlay, which covers
+   * whatever it targets, but never through the editor's own floating chrome.
+   *
+   * The distinction matters: a press on the format bar or the chart-part panel
+   * is aimed AT that panel, so reporting the bar sitting behind it would make
+   * every click on a control also reselect the thing it was about to format.
+   */
+  const elementAtPoint = (clientX: number, clientY: number): HTMLElement | undefined => {
+    for (const node of document.elementsFromPoint(clientX, clientY)) {
+      const n = node as HTMLElement;
+      if (n.closest?.(CHROME_SELECTOR)) return undefined;
+      const el = n.closest?.('.dd-el') as HTMLElement | null;
+      if (el) return el;
+    }
+    return undefined;
+  };
 
   /**
    * Single source of truth for what a mousedown selects. It runs in the CAPTURE
@@ -775,7 +977,7 @@ export function EditorCanvas() {
       outerGroupId(els.find((x) => x.id === selectedIds[0])!) === outerGroupId(els.find((x) => x.id === id)!);
 
     if (drilledInHere && !e.shiftKey) {
-      store().selectExact([id]);
+      store().selectExact(chartDrillIds(id));
       return;
     }
 
@@ -833,10 +1035,17 @@ export function EditorCanvas() {
           workspace padding, which is why the arrange bar is a single narrow
           column. */}
       <div className="relative m-auto shrink-0" style={{ width: displayWidth }}>
-        <div className="absolute bottom-full right-0 z-30 mb-2 flex justify-end">
+        {/* Both bars clear Moveable's control box (`OVERLAY_Z`, see `layers.ts`).
+            They are stacking contexts, so anything they open — the swatch
+            popovers — rides along instead of being sliced by the selection
+            outline of the object it is formatting. */}
+        <div
+          className="absolute bottom-full right-0 mb-2 flex justify-end"
+          style={{ zIndex: OVERLAY_Z }}
+        >
           <SelectionFormatBar onOpenChartData={setOpenChartId} />
         </div>
-        <div className="absolute left-full top-0 z-30 ml-1.5 flex">
+        <div className="absolute left-full top-0 ml-1.5 flex" style={{ zIndex: OVERLAY_Z }}>
           <ArrangeBar />
         </div>
         <div
@@ -850,14 +1059,29 @@ export function EditorCanvas() {
                 ? resolveColor(slide.background.color, ds)
                 : '#ffffff',
           }}
-          // Objects and empty canvas carry no menu of their own — the format and
-          // arrange bars cover that — so the browser's is suppressed everywhere
-          // on the slide. Text being edited is the exception: the native menu is
-          // how you reach spellcheck and paste-as-plain-text.
+          // The browser's menu is suppressed everywhere on the slide, and ours
+          // takes over for the selection that has commands worth reaching at the
+          // pointer (see `contextMenuItems`). Text being edited is the
+          // exception: the native menu is how you reach spellcheck and
+          // paste-as-plain-text.
           onContextMenu={(e) => {
-            if (!(e.target as HTMLElement).closest?.('[contenteditable="true"]')) {
-              e.preventDefault();
-            }
+            if ((e.target as HTMLElement).closest?.('[contenteditable="true"]')) return;
+            e.preventDefault();
+            // Mid-crop the handles own the picture; a menu offering "Crop"
+            // again would be noise.
+            if (croppingId) return;
+            // Only over an object. Right-clicking bare canvas leaves the
+            // selection alone (see `resolveMouseDown`), so without this the
+            // empty slide would offer to crop an image somewhere off under the
+            // pointer's elbow.
+            if (!elementAtPoint(e.clientX, e.clientY)) return;
+            // `resolveMouseDown` has already made the right-clicked object the
+            // selection, so this reads the selection the user is pointing at.
+            const els = slide?.elements ?? [];
+            const items = contextMenuItems(
+              store().selectedIds.map((id) => els.find((el) => el.id === id)).filter(Boolean) as typeof els,
+            );
+            if (items.length) setMenu({ x: e.clientX, y: e.clientY, items });
           }}
         >
         {/* The margin frame. Painted under the elements (DOM order — the element
@@ -900,6 +1124,10 @@ export function EditorCanvas() {
 
         {slide.elements.map((el) => {
           const isEditing = editingId === el.id;
+          // Mid-crop the overlay paints this picture itself, whole and dimmed
+          // outside the trim. Leaving the element painted too would show the
+          // pre-crop box at full strength through the dimmed part.
+          const isCropping = croppingId === el.id;
           const live = liveResize?.[el.id] ?? null;
           // A chart mid-turn: this primitive orbits the frame's centre and
           // spins by the same quarter turn, kept inside the frame so the chart
@@ -940,6 +1168,7 @@ export function EditorCanvas() {
                 }`,
                 transformOrigin: 'center center',
                 cursor: 'move',
+                visibility: isCropping ? 'hidden' : undefined,
               }}
               onDoubleClick={(e) => {
                 // A chart's parts are text and shapes too, but double-clicking
@@ -952,6 +1181,13 @@ export function EditorCanvas() {
                 if (el.type === 'text' || (el.type === 'shape' && el.body)) {
                   e.stopPropagation();
                   store().setEditing(el.id);
+                  return;
+                }
+                // Double-clicking a picture crops it — the same "go one level
+                // in" gesture that opens a text box or a chart's data.
+                if (el.type === 'picture') {
+                  e.stopPropagation();
+                  store().setCropping(el.id);
                 }
               }}
             >
@@ -986,6 +1222,25 @@ export function EditorCanvas() {
         {/* Comment markers for this slide, above the elements they annotate. */}
         <CommentPins slide={slide} scale={scale} />
 
+        {/* Formatting for whatever part of a chart the user drilled into. Sits
+            inside the slide, anchored to the part, so the controls arrive where
+            the eye already is — see `ChartPartPopover`. */}
+        {chartPart && chartPartBox ? (
+          <ChartPartPopover
+            chart={chartPart}
+            slide={slide}
+            selectedIds={selectedIds}
+            ds={ds}
+            anchor={{
+              x: chartPartBox.x * scale,
+              y: chartPartBox.y * scale,
+              w: chartPartBox.w * scale,
+              h: chartPartBox.h * scale,
+            }}
+            canvas={{ w: displayWidth, h: height }}
+          />
+        ) : null}
+
         {/* Live angle readout, pinned above the object being rotated. */}
         {(() => {
           if (!liveRotate) return null;
@@ -1004,24 +1259,34 @@ export function EditorCanvas() {
           );
         })()}
 
+        {/* Crop handles for the picture being cropped. Replaces the transform
+            box below — a crop trims the box, so the two would fight over the
+            same corners. */}
+        {croppingPicture ? <CropOverlay el={croppingPicture} scale={scale} /> : null}
+
         {/* Transform controls for the current selection. */}
-        {selectedNodes.length > 0 && !editingId ? (
+        {selectedNodes.length > 0 && !editingId && !croppingPicture ? (
           <Moveable
             ref={moveableRef}
             target={selectedNodes}
-            draggable
-            resizable
+            // See `chartPartLabelsOnly`: a drilled-into part is selectable and
+            // formattable, but its box belongs to the compiler.
+            draggable={!chartPart || chartPartLabelsOnly}
+            resizable={!chartPart}
             // A scatter or bubble plot has no side to lie on, so it gets no
             // rotate handle at all — see `supportsTurn`.
-            rotatable={!soleChart || supportsTurn(soleChart.spec.kind)}
+            rotatable={!chartPart && (!soleChart || supportsTurn(soleChart.spec.kind))}
             keepRatio={keepRatioActive}
+            renderDirections={lineHandles ?? ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']}
             origin={false}
             throttleDrag={0}
             throttleResize={0}
             // Charts snap to the four orientations — a chart at 37° is a
             // mistake, not a design. Everything else rotates freely.
             throttleRotate={soleChart ? 90 : 0}
-            snappable
+            // Snapping a bar to the slide's margins would be meaningless — the
+            // only thing a part can do is nudge a label a few px off its anchor.
+            snappable={!chartPart}
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             snapThreshold={6}
@@ -1184,13 +1449,18 @@ export function EditorCanvas() {
             }}
             onResizeEnd={(e) => {
               endResize();
-              clearChartResizePaint();
               const last = e.lastEvent;
               setLiveResize(null);
-              if (!last) return;
+              if (!last) {
+                settleChartResizePaint();
+                return;
+              }
               const id = (e.target as HTMLElement).dataset.id!;
               const el = findEl(id);
-              if (!el) return;
+              if (!el) {
+                settleChartResizePaint();
+                return;
+              }
               const [dx, dy] = last.drag.dist as [number, number];
               const rect = {
                 x: el.rect.x + pxToEmu(dx, scale),
@@ -1202,6 +1472,7 @@ export function EditorCanvas() {
                 // The backdrop IS the frame, so resizing it resizes the chart —
                 // which relayouts rather than stretching 9pt type to 14.
                 store().setChartFrame(soleChart.id, rect);
+                settleChartResizePaint();
               } else {
                 store().setRect(id, rect);
               }
@@ -1263,8 +1534,11 @@ export function EditorCanvas() {
               const boxes: Record<string, { x: number; y: number; w: number; h: number }> = {};
               const rects: { id: string; rect: Rect }[] = [];
               groupResizeStartRef.current.forEach((start) => {
-                const w = Math.max(4, start.w * sx);
-                const h = Math.max(4, start.h * sy);
+                // The 4px floor keeps an object grabbable, but a line is 0 on
+                // its cross axis by definition — floor that and the line comes
+                // out of the resize as a thin rectangle, permanently.
+                const w = start.w === 0 ? 0 : Math.max(4, start.w * sx);
+                const h = start.h === 0 ? 0 : Math.max(4, start.h * sy);
                 const box = {
                   x: anchor(dirX, start.x, start.w, w),
                   y: anchor(dirY, start.y, start.h, h),
@@ -1427,6 +1701,15 @@ export function EditorCanvas() {
         chart={slide.charts?.find((c) => c.id === openChartId) ?? null}
         onClose={() => setOpenChartId(null)}
       />
+
+      {menu ? (
+        <CanvasContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menu.items}
+          onClose={closeMenu}
+        />
+      ) : null}
 
     </div>
   );

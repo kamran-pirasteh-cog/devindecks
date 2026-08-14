@@ -16,6 +16,7 @@ import {
   type ChartRef,
   type ChartSpec,
   type DesignSystem,
+  type EMU,
   type Fill,
   type Outline,
   type PointOverride,
@@ -75,6 +76,64 @@ export function recompileInto(slide: Slide, chartId: string, ds: DesignSystem): 
   const snapshot: ChartInstance = JSON.parse(JSON.stringify(chart));
   const { elements } = compileChart(snapshot, ds, measurer());
   slide.elements = reconcileChartElements(slide.elements, chartId, elements);
+}
+
+/** Every element id a chart currently owns, in z-order. */
+export const chartElementIds = (slide: Slide, chartId: string): string[] =>
+  slide.elements.filter((e) => e.chartRef?.chartId === chartId).map((e) => e.id);
+
+/** Snapshot of which ids each chart owned, to repair a selection against. */
+export function chartElementIdsBefore(slide: Slide, chartIds: string[]): Map<string, string[]> {
+  return new Map(chartIds.map((id) => [id, chartElementIds(slide, id)]));
+}
+
+/**
+ * Repair a selection after a recompile changed which elements exist.
+ *
+ * A chart's ids are deterministic but its element SET is not: a relayout adds a
+ * tick, drops a suppressed label, splits a wrapped title. Whole-chart selection
+ * is "every id of this chart" (see `insertChart`), so any recompile under a
+ * live selection left it holding ids that no longer exist and — because the
+ * count no longer matched — no longer reading as the whole chart. The canvas
+ * then treated it as a drill-in of whatever parts survived, which is how
+ * resizing a chart could leave the control box collapsed onto a lone axis rule.
+ *
+ * So: a selection that was the whole chart stays the whole chart, and a drilled
+ * selection keeps the parts that are still there, falling back to the whole
+ * chart if every one of them went away.
+ */
+export function repairChartSelection(
+  slide: Slide,
+  before: Map<string, string[]>,
+  selectedIds: string[],
+): string[] {
+  let out = selectedIds;
+  for (const [chartId, beforeIds] of before) {
+    const was = new Set(beforeIds);
+    const mine = out.filter((id) => was.has(id));
+    if (!mine.length) continue;
+
+    const after = chartElementIds(slide, chartId);
+    const alive = new Set(after);
+    const whole = mine.length === beforeIds.length;
+    const next = whole ? after : mine.filter((id) => alive.has(id));
+    const replacement = next.length ? next : after;
+
+    // Splice in place, so the chart's parts keep their position in the
+    // selection rather than being shuffled to the end.
+    const rebuilt: string[] = [];
+    let done = false;
+    for (const id of out) {
+      if (!was.has(id)) {
+        rebuilt.push(id);
+      } else if (!done) {
+        rebuilt.push(...replacement);
+        done = true;
+      }
+    }
+    out = rebuilt;
+  }
+  return out;
 }
 
 export function insertChartInto(
@@ -180,6 +239,42 @@ export function translateChartFrames(slide: Slide, ids: string[], dx: number, dy
   }
 }
 
+/**
+ * Resize a chart's frame by a known delta — the ⇧ + arrow path.
+ *
+ * Deliberately NOT `syncChartGeometry`. That one infers the frame from what
+ * happened to the elements, which is the only option after a Moveable drag but
+ * is wrong here in three compounding ways: a keyboard resize inflates every one
+ * of the chart's thirty-odd elements by the same ABSOLUTE step rather than
+ * scaling them, the union it would measure includes labels that overflow the
+ * frame, and each recompile changes which elements exist at all (a tick more, a
+ * suppressed label fewer) so the next press measures a union that moved for
+ * reasons having nothing to do with the resize. The compounding error is what
+ * makes the chart appear to jump around instead of growing by a step.
+ *
+ * Here the delta is known exactly, so the frame takes it directly and the chart
+ * is laid out into it. Idempotent, and one press is always one step.
+ */
+export function resizeChartFrames(
+  slide: Slide,
+  ids: string[],
+  dw: EMU,
+  dh: EMU,
+  ds: DesignSystem,
+  minSize: EMU,
+): void {
+  for (const chart of chartsForElements(slide, ids)) {
+    // A frozen chart keeps the geometry someone deliberately pinned.
+    if (chart.frozen) continue;
+    chart.frame = {
+      ...chart.frame,
+      w: Math.max(minSize, chart.frame.w + dw),
+      h: Math.max(minSize, chart.frame.h + dh),
+    };
+    recompileInto(slide, chart.id, ds);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Formatting routed into the spec                                    */
 /* ------------------------------------------------------------------ */
@@ -239,6 +334,20 @@ export function applyChartFormat(
   for (const chart of slide.charts ?? []) {
     const mine = refs.filter((r) => r.chartId === chart.id);
     if (!mine.length) continue;
+
+    // A waterfall has no series — every bar is an item, and its format lives on
+    // the item. `seriesOf` returns nothing for one, so without this branch the
+    // loop below has nothing to write to and recoloring a waterfall bar is
+    // silently dropped.
+    if (isWaterfallSpec(chart.spec)) {
+      const wanted = new Set(mine.map((r) => r.point));
+      for (const item of chart.spec.data.items) {
+        if (!wanted.has(item.key)) continue;
+        item.format = { ...item.format, ...definedOnly(patch) };
+        wrote = true;
+      }
+      continue;
+    }
 
     const bySeries = new Map<string, Set<string>>();
     for (const r of mine) {

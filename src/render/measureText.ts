@@ -18,7 +18,20 @@ export interface TextStyleMetrics {
   font: FontFamily;
   sizePt: number;
   bold?: boolean;
+  /**
+   * Small-caps-free all-caps: the label is uppercased before it's measured and
+   * before it's emitted. It has to be BOTH, or the axis gutter gets sized for
+   * "FY24 revenue" and then renders "FY24 REVENUE" over the plot.
+   */
+  caps?: boolean;
 }
+
+/**
+ * The string a run actually shows. The single place the caps transform lives, so
+ * measurement, the canvas and the .pptx export can't disagree about it.
+ */
+export const displayText = (text: string, style: TextStyleMetrics): string =>
+  style.caps ? text.toUpperCase() : text;
 
 export interface TextMeasurer {
   measure(text: string, style: TextStyleMetrics): { wEmu: EMU; hEmu: EMU };
@@ -73,7 +86,8 @@ export function metricMeasurer(): TextMeasurer {
       // Defensive: this sits under every chart, and a single undefined label
       // from a malformed spec should degrade to a zero-width measurement, not
       // throw halfway through a render.
-      const s = typeof text === 'string' ? text : String(text ?? '');
+      const raw = typeof text === 'string' ? text : String(text ?? '');
+      const s = displayText(raw, style);
       let ratio = 0;
       for (const c of s) ratio += charRatio(c, style.font);
       if (style.bold) ratio *= BOLD_FACTOR;
@@ -142,7 +156,8 @@ export function canvasMeasurer(): TextMeasurer {
 
   return {
     measure(text, style) {
-      const key = `${style.font}|${style.bold ? 'b' : 'n'}|${text}`;
+      const shown = displayText(String(text ?? ''), style);
+      const key = `${style.font}|${style.bold ? 'b' : 'n'}|${shown}`;
       let widthAt100 = cache.get(key);
       if (widthAt100 === undefined) {
         let stack = stacks.get(style.font);
@@ -157,7 +172,7 @@ export function canvasMeasurer(): TextMeasurer {
         // An assignment the context refused leaves `ctx.font` unchanged; if
         // that happened, the measurement would be meaningless.
         if (!ctx.font.includes(`${MEASURE_PX}px`)) return fallback.measure(text, style);
-        widthAt100 = ctx.measureText(text).width;
+        widthAt100 = ctx.measureText(shown).width;
         cache.set(key, widthAt100);
       }
       if (!widthAt100) return fallback.measure(text, style);

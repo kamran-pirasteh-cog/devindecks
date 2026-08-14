@@ -233,6 +233,12 @@ export interface AxisSpec {
   /** e.g. "in $M" — rendered near the axis so the numbers aren't ambiguous. */
   unitNote?: string;
   numberFormat?: NumberFormat;
+  /**
+   * Per-chart type override for this axis's labels. The brand sets the size for
+   * every chart; one chart on a crowded slide sometimes needs its own, and
+   * without this the only way to get it was editing the design system.
+   */
+  font?: LabelFont;
   labelRotationDeg?: number;
   crossesAtZero?: boolean;
 }
@@ -378,6 +384,24 @@ export interface LineSpec extends SpecBase {
   smooth?: boolean;
   /** think-cell's series labels at the right-hand end of each line. */
   endLabels?: boolean;
+  /**
+   * End labels carry the series' last value as well as its name — "Peer C ·
+   * 4,533". Unset means yes: the number at the end of the line is the one the
+   * reader came for, and printing it there is what lets a line chart delete its
+   * legend AND its data labels and still answer "how big is it".
+   */
+  endLabelValues?: boolean;
+  /**
+   * The one line drawn in full colour; every other line recedes to grey with a
+   * dash pattern of its own.
+   *
+   * Unset means the FIRST series — a line chart is nearly always an argument
+   * about one line against a field of comparators, and colouring all of them
+   * equally makes the reader work out which one the slide is about. A series
+   * key names a different subject; `null` turns emphasis off and gives every
+   * line its own palette colour.
+   */
+  emphasis?: string | null;
   /** Unset means vertical. See `orientation.ts` for the flip across kinds. */
   orientation?: 'vertical' | 'horizontal';
   data: GridData;

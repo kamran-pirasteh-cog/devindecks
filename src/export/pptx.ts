@@ -16,6 +16,8 @@
  */
 import PptxGenJS from 'pptxgenjs';
 import {
+  cropScale,
+  isCropped,
   DEFAULT_TEXT_INSETS,
   emuToInches,
   emuToPoints,
@@ -33,6 +35,7 @@ import {
   type TextBody,
   type TextElement,
 } from '@/model';
+import { bulletGlyph } from '@/render/bullets';
 
 const hx = (ref: Parameters<typeof resolveColor>[0], ds: DesignSystem) =>
   resolveColor(ref, ds).replace('#', '');
@@ -95,7 +98,10 @@ function textRuns(body: TextBody, ds: DesignSystem) {
           align: p.align,
           bullet:
             p.bullet === 'bullet'
-              ? true
+              ? // The same square glyph the canvas draws, by code point, so the
+                // exported deck doesn't fall back to PowerPoint's round dot.
+                // (pptxgenjs has no buSzPct, so the size bump is canvas-only.)
+                { characterCode: bulletGlyph(p.level ?? 0).codePointAt(0)!.toString(16).toUpperCase() }
               : p.bullet === 'number'
                 ? { type: 'number' }
                 : undefined,
@@ -183,6 +189,35 @@ function xywh(el: SlideElement) {
     rotate: el.rotation || undefined,
     flipH: el.flipH || undefined,
     flipV: el.flipV || undefined,
+  };
+}
+
+/**
+ * A picture's crop, as pptxgenjs sizing options — which become `<a:srcRect>`.
+ *
+ * pptxgenjs derives the insets by comparing the sizing box against the image's
+ * DECLARED w/h, and then places the picture at the sizing box's size. So the
+ * declared size is the whole PLANE (the untrimmed source), and the sizing box is
+ * the element's rect on it: that yields exactly our insets, and an extent equal
+ * to the rect. No pixel dimensions needed — see `model/crop.ts`.
+ *
+ * An uncropped picture returns nothing at all, keeping today's plain stretch.
+ */
+function pictureCrop(el: Extract<SlideElement, { type: 'picture' }>) {
+  if (!isCropped(el.crop)) return {};
+  const s = cropScale(el.crop);
+  const w = emuToInches(el.rect.w);
+  const h = emuToInches(el.rect.h);
+  return {
+    w: w / s.x,
+    h: h / s.y,
+    sizing: {
+      type: 'crop' as const,
+      x: (el.crop.left / s.x) * w,
+      y: (el.crop.top / s.y) * h,
+      w,
+      h,
+    },
   };
 }
 
@@ -287,13 +322,11 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
         case 'path':
           addPathElement(slide, el, ds);
           break;
-        case 'picture':
-          slide.addImage(
-            el.src.startsWith('data:')
-              ? { data: el.src, ...xywh(el), rounding: false }
-              : { path: el.src, ...xywh(el), rounding: false },
-          );
+        case 'picture': {
+          const source = el.src.startsWith('data:') ? { data: el.src } : { path: el.src };
+          slide.addImage({ ...source, ...xywh(el), ...pictureCrop(el), rounding: false });
           break;
+        }
       }
     }
     if (deck.pageNumbers) addPageNumber(slide, deck, slideIndex, ds);

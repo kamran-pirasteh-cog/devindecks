@@ -93,9 +93,11 @@ export const DEFAULT_CHART_STYLE: ChartStyle = {
   },
   axis: {
     showX: true,
-    // The value axis is redundant once every bar carries its own number, and
-    // deleting it gives the plot back the width it was spending on ticks.
-    showY: false,
+    // Both axes labelled by default. think-cell's own house style deletes the
+    // value axis once every bar carries its own number — the tradeoff is real,
+    // and it's one control away in the datasheet — but a new chart showing its
+    // scale is the less surprising place to start.
+    showY: true,
     lineTokenId: 'line.default',
     tickMarks: 'none',
     zeroLine: true,

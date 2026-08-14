@@ -71,13 +71,33 @@ export interface SheetCaps {
   reorderRows: boolean;
   reorderSeries: boolean;
   maxSeries?: number;
+  maxRows?: number;
   minRows?: number;
 }
+
+/**
+ * What one ROW of the grid is.
+ *
+ * - `recordsDown` — a row is a record (a point, a ledger entry, a flow) and a
+ *   series is a column group. The only reading that makes sense for a
+ *   waterfall, a Sankey or a scatter, where there is no category × series
+ *   grid to turn around.
+ * - `seriesDown` — a row is a SERIES and a column is a category. think-cell's
+ *   datasheet, and the one a category grid is edited in here: the category
+ *   axis is nearly always time, and time reads left to right in the chart, so
+ *   it has to read left to right in the sheet under it.
+ */
+export type SheetLayout = 'recordsDown' | 'seriesDown';
 
 export interface SheetSchema {
   /** Also the contract id Devin echoes back. */
   id: string;
-  /** Leading non-series columns: Category / Point / Label / Date. */
+  /** Which dimension the rows enumerate — see `SheetLayout`. */
+  layout: SheetLayout;
+  /**
+   * Leading non-series columns: Category / Point / Label / Date — or, under
+   * `seriesDown`, the one column holding the series names.
+   */
   keyColumns: SheetColumn[];
   /** The shape of ONE series, repeated per series. */
   perSeries: SheetColumn[];
@@ -97,6 +117,11 @@ export interface SheetModel {
   schema: SheetSchema;
   /** keyColumns + (perSeries × series) + extraColumns, in display order. */
   columns: SheetColumn[];
+  /**
+   * One entry per column group. Under `seriesDown` these are the CATEGORIES —
+   * the grid is transposed, so every column-shaped operation (add, rename,
+   * reorder, delete) is a category operation and needs no separate code path.
+   */
   series: SheetSeries[];
   rows: CellValue[][];
   bandValues: Record<string, CellValue[]>;

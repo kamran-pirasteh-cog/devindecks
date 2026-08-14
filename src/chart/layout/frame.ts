@@ -67,6 +67,9 @@ const styleOf = (r: ChartTheme['text'][keyof ChartTheme['text']]): TextStyleMetr
   font: r.font,
   sizePt: r.sizePt,
   bold: r.bold,
+  // Carried, not dropped: the gutter this file solves is measured from these
+  // labels, and an uppercase label is wider than the one that was typed.
+  caps: r.caps,
 });
 
 const widestOf = (
@@ -193,11 +196,21 @@ export function solveFrame(input: FrameInput): FrameLayout {
   // These come before the tick gutters because they're measured against the
   // frame's edges, not against the axis furniture.
   if (endLabels?.length) {
-    right -= widestOf(endLabels, dataLabelStyle, measurer) + theme.sizes.labelGapEmu * 2;
+    // Measured in BOTH end-label faces and reserved for the wider: the frame is
+    // solved before anyone knows which series is emphasised, and mono at 10.5pt
+    // and sans at 11pt each win on different strings. Over-reserving by a hair
+    // beats a label hanging off the slide.
+    const endLabelStyle = styleOf(theme.text.endLabel);
+    const widest = Math.max(
+      widestOf(endLabels, endLabelStyle, measurer),
+      widestOf(endLabels, styleOf(theme.text.endLabelEmphasis), measurer),
+    );
+    // Three gaps of clearance plus the padding the placer adds to the text box.
+    right -= widest + theme.sizes.labelGapEmu * 3 + pointsToEmu(5);
     // Turned on its side, the last point is at the BOTTOM of the plot and its
     // label is centred on it, so half a line hangs below the plot as well as
     // the label's width hanging past its right.
-    if (horizontal) bottom -= lineHeightEmu(dataLabelStyle) / 2;
+    if (horizontal) bottom -= lineHeightEmu(endLabelStyle) / 2;
   }
   if (outsideValueLabels) {
     if (horizontal) {

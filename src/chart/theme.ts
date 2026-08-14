@@ -14,6 +14,7 @@ import type {
   DesignSystem,
   EMU,
   FontFamily,
+  LabelFont,
   TypeRoleRef,
 } from '@/model';
 import { pointsToEmu, resolveColor } from '@/model';
@@ -30,6 +31,8 @@ export interface ChartTextRole {
    */
   weight?: number;
   color: ColorRef;
+  /** Uppercased before measurement and emit — see `displayText`. */
+  caps?: boolean;
 }
 
 export interface ChartTheme {
@@ -44,12 +47,26 @@ export interface ChartTheme {
    */
   gridlines: { major: boolean; minor: boolean };
   plotBackground?: ColorRef;
+  /**
+   * The grey everything that isn't the point recedes to: annotations, and the
+   * comparator lines of a line chart.
+   */
+  mutedInk: ColorRef;
   text: {
     tick: ChartTextRole;
     category: ChartTextRole;
     axisTitle: ChartTextRole;
     dataLabel: ChartTextRole;
     totalLabel: ChartTextRole;
+    /**
+     * A series label at the end of a line. Mono and mixed-case, unlike the rest
+     * of the annotation set: it carries a NAME as well as a number, and a column
+     * of uppercased series names reads as shouting rather than as instrumentation.
+     * Its colour is overridden per series by the placer.
+     */
+    endLabel: ChartTextRole;
+    /** The end label of the emphasised line: the sans face, and heavy. */
+    endLabelEmphasis: ChartTextRole;
     legend: ChartTextRole;
     title: ChartTextRole;
   };
@@ -134,14 +151,40 @@ export const paletteColor = (palette: ColorRef[], i: number): ColorRef =>
   palette[((i % palette.length) + palette.length) % palette.length] ?? FALLBACK_PALETTE[0];
 
 /**
- * Chart text is always the sans face.
+ * Chart text is never the prose face.
  *
  * Type roles exist for prose — a serif body role is a deliberate choice for
  * paragraphs and a bad one for a column of axis numbers, where the job is to be
- * legible at 9pt and to disappear. Charts take their SIZE and COLOUR from the
- * design system and pin the family.
+ * legible at 9pt and to disappear. Charts take their SIZE from the design system
+ * and pin the family.
+ *
+ * Titles and legends get the sans; everything that annotates the data — ticks,
+ * category names, data labels, totals — gets MONO, UPPERCASE and MUTED. Mono
+ * because a column of figures that doesn't align digit-to-digit is harder to
+ * compare than one that does, and because it reads as instrumentation rather
+ * than as prose. Muted and uppercase because these are annotations on the data,
+ * not the data: the marks should carry the colour and the weight.
  */
 const CHART_FONT: FontFamily = 'Geist';
+const LABEL_FONT: FontFamily = 'Geist Mono';
+
+/** The annotation treatment, applied on top of a design-system role. */
+const ANNOTATION = { font: LABEL_FONT, caps: true } as const;
+
+/**
+ * A spec's own font override, as a partial role. Written out field by field
+ * because a spread of the whole `LabelFont` would set `color: undefined` and
+ * wipe the resolved token.
+ */
+function fontOver(font?: LabelFont): Partial<ChartTextRole> {
+  if (!font) return {};
+  return {
+    ...(font.sizePt !== undefined ? { sizePt: font.sizePt } : {}),
+    ...(font.bold !== undefined ? { bold: font.bold } : {}),
+    ...(font.color !== undefined ? { color: font.color } : {}),
+    ...(font.font !== undefined ? { font: font.font } : {}),
+  };
+}
 
 /** A design-system type role plus the style's local tweaks. */
 function textRole(ds: DesignSystem, ref: TypeRoleRef, over: Partial<ChartTextRole> = {}): ChartTextRole {
@@ -159,6 +202,9 @@ function textRole(ds: DesignSystem, ref: TypeRoleRef, over: Partial<ChartTextRol
 export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme {
   const style: ChartStyle = withChartStyleDefaults(ds.chart);
   const ink = ds.colors.some((c) => c.id === 'ink.strong') ? token('ink.strong') : token('brand.primary');
+  // Grey for every annotation. Falls back to the strong ink rather than
+  // inventing a hex, so a design system without a muted token still reads.
+  const muted = ds.colors.some((c) => c.id === 'ink.muted') ? token('ink.muted') : ink;
   const palette = resolvePalette(spec, ds);
   const resolve = (ref: ColorRef) => resolveColor(ref, ds);
 
@@ -167,25 +213,50 @@ export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme
     axisLine: token(style.axis.lineTokenId),
     gridline: token(style.gridlines.tokenId),
     gridlineDash: style.gridlines.dash,
+    mutedInk: muted,
     gridlines: {
       major: style.gridlines.horizontal !== 'none',
       minor: style.gridlines.horizontal === 'major+minor',
     },
     text: {
-      tick: textRole(ds, style.fonts.axis),
+      // The value axis's own font override reaches its ticks and its title; the
+      // category axis's reaches the category names. Both fall through to the
+      // brand when the chart has no opinion.
+      tick: textRole(ds, style.fonts.axis, {
+        ...ANNOTATION,
+        color: muted,
+        ...fontOver(spec.axes?.y?.font),
+      }),
       category: textRole(ds, style.fonts.axis, {
+        ...ANNOTATION,
         sizePt: (style.fonts.axis.sizePt ?? 9) + 1.5,
-        color: ink,
+        color: muted,
+        ...fontOver(spec.axes?.x?.font),
       }),
       axisTitle: textRole(ds, style.fonts.axis, {
+        ...ANNOTATION,
         sizePt: (style.fonts.axis.sizePt ?? 9) + 0.5,
         weight: 500,
+        color: muted,
+        ...fontOver(spec.axes?.y?.font),
       }),
-      dataLabel: textRole(ds, style.fonts.dataLabel, { color: ink }),
+      dataLabel: textRole(ds, style.fonts.dataLabel, { ...ANNOTATION, color: muted }),
+      endLabel: textRole(ds, style.fonts.dataLabel, {
+        font: LABEL_FONT,
+        weight: 500,
+        color: muted,
+      }),
+      endLabelEmphasis: textRole(ds, style.fonts.dataLabel, {
+        font: CHART_FONT,
+        sizePt: (style.fonts.dataLabel.sizePt ?? 10.5) + 0.5,
+        weight: 700,
+        color: ink,
+      }),
       totalLabel: textRole(ds, style.fonts.dataLabel, {
+        ...ANNOTATION,
         sizePt: (style.fonts.dataLabel.sizePt ?? 10.5) + 0.5,
         weight: 600,
-        color: ink,
+        color: muted,
       }),
       legend: textRole(ds, style.fonts.legend),
       title: textRole(ds, style.fonts.title, { color: ink }),

@@ -4,24 +4,30 @@ import {
   defaultChartSpec,
   inchesToEmu,
   isShape,
+  legendSeriesKey,
   migrateDeck,
   reidentifyCharts,
+  type ChartRef,
   type ColumnBarSpec,
   type Deck,
   type ShapeElement,
   type Slide,
   type SlideChartConfig,
   type SlideElement,
+  type WaterfallSpec,
 } from '@/model';
 import { compileChart } from '@/chart/compile';
 import {
   applyChartFormat,
+  chartElementIdsBefore,
   chartsForElements,
   detachChartFrom,
   insertChartInto,
   recompileInto,
+  repairChartSelection,
   removeChartFrom,
   chartElementRects,
+  resizeChartFrames,
   syncChartGeometry,
   translateChartFrames,
 } from './chartActions';
@@ -258,6 +264,42 @@ describe('applyChartFormat', () => {
     const slide = emptySlide();
     expect(applyChartFormat(slide, ['title-1'], { fill: { kind: 'none' } })).toBe(false);
   });
+
+  it('recolours a waterfall bar, which has an item rather than a series', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('waterfall'), FRAME, DS);
+    const bar = slide.elements.find((e) => e.chartRef?.part === 'mark')!;
+    const key = (bar.chartRef as Extract<ChartRef, { part: 'mark' }>).point;
+
+    expect(
+      applyChartFormat(slide, [bar.id], {
+        fill: { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } },
+      }),
+    ).toBe(true);
+
+    const spec = slide.charts![0].spec as WaterfallSpec;
+    expect(spec.data.items.find((i) => i.key === key)?.format?.fill).toMatchObject({
+      color: { kind: 'hex', hex: '#FF0000' },
+    });
+
+    // And it survives the recompile, same as the series path.
+    recompileInto(slide, chart.id, DS);
+    const after = slide.elements.find(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.point === key,
+    );
+    expect(fillOf(after)).toMatchObject({ color: { kind: 'hex', hex: '#FF0000' } });
+  });
+});
+
+describe('legendSeriesKey', () => {
+  it('strips the id-only suffix the legend TEXT carries', () => {
+    expect(legendSeriesKey({ chartId: 'c', part: 'legend.item', series: 's1' })).toBe('s1');
+    expect(legendSeriesKey({ chartId: 'c', part: 'legend.item', series: 's1.label' })).toBe('s1');
+  });
+
+  it('leaves a series whose own key merely contains "label" alone', () => {
+    expect(legendSeriesKey({ chartId: 'c', part: 'legend.item', series: 'labels' })).toBe('labels');
+  });
 });
 
 describe('chartsForElements', () => {
@@ -377,5 +419,130 @@ describe('migrateDeck', () => {
     const out = migrateDeck(deck, compile);
     expect(out.slides[0].elements).toEqual(deck.slides[0].elements);
     expect(out.schemaVersion).toBeGreaterThan(0);
+  });
+});
+
+describe('resizeChartFrames', () => {
+  const STEP = inchesToEmu(0.083);
+  const MIN = inchesToEmu(0.05);
+  const ids = (slide: Slide, chartId: string) =>
+    slide.elements.filter((e) => e.chartRef?.chartId === chartId).map((e) => e.id);
+
+  it('grows the frame by exactly the step it was given', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    resizeChartFrames(slide, ids(slide, chart.id), STEP, 0, DS, MIN);
+    expect(slide.charts![0].frame).toEqual({ ...FRAME, w: FRAME.w + STEP });
+  });
+
+  it('is exact over a run of presses — the bug that made charts jump', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    for (let i = 0; i < 10; i++) {
+      resizeChartFrames(slide, ids(slide, chart.id), STEP, STEP, DS, MIN);
+    }
+    // Ten presses, ten steps, and the origin never moved. Inferring the frame
+    // from the elements' union drifted on every press instead.
+    expect(slide.charts![0].frame).toEqual({
+      x: FRAME.x,
+      y: FRAME.y,
+      w: FRAME.w + STEP * 10,
+      h: FRAME.h + STEP * 10,
+    });
+  });
+
+  it('relayouts into the new frame rather than scaling the type', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const sizeOf = (s: Slide) => {
+      const label = s.elements.find((e) => e.chartRef?.part === 'label');
+      return label && 'body' in label ? label.body?.paragraphs[0]?.runs[0]?.sizePt : undefined;
+    };
+    const before = sizeOf(slide);
+    resizeChartFrames(slide, ids(slide, chart.id), inchesToEmu(2), inchesToEmu(1), DS, MIN);
+    expect(sizeOf(slide)).toBe(before);
+    // ...and the marks did move, so it really did lay out again.
+    expect(marksOf(slide, chart.id).length).toBeGreaterThan(0);
+  });
+
+  it('never shrinks past the minimum', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    resizeChartFrames(slide, ids(slide, chart.id), -FRAME.w * 2, -FRAME.h * 2, DS, MIN);
+    expect(slide.charts![0].frame.w).toBe(MIN);
+    expect(slide.charts![0].frame.h).toBe(MIN);
+  });
+
+  it('leaves a frozen chart alone', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    slide.charts![0].frozen = true;
+    resizeChartFrames(slide, ids(slide, chart.id), STEP, STEP, DS, MIN);
+    expect(slide.charts![0].frame).toEqual(FRAME);
+  });
+
+  it('ignores element ids that belong to no chart', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    resizeChartFrames(slide, ['title-1'], STEP, STEP, DS, MIN);
+    expect(slide.charts![0].frame).toEqual(FRAME);
+  });
+});
+
+describe('repairChartSelection', () => {
+  const ids = (slide: Slide, chartId: string) =>
+    slide.elements.filter((e) => e.chartRef?.chartId === chartId).map((e) => e.id);
+
+  it('keeps the whole chart selected across a relayout that changes its parts', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const before = chartElementIdsBefore(slide, [chart.id]);
+    const selected = ids(slide, chart.id);
+
+    // A much shorter frame fits fewer y ticks, so ids the selection was made
+    // against stop existing — the resize case from the bug report.
+    slide.charts![0].frame = { ...FRAME, h: inchesToEmu(2) };
+    recompileInto(slide, chart.id, DS);
+
+    const after = ids(slide, chart.id);
+    expect(after).not.toEqual(selected); // the premise: the part set really moved
+    expect(repairChartSelection(slide, before, selected).sort()).toEqual([...after].sort());
+  });
+
+  it('drops parts that no longer exist from a drilled-in selection', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const before = chartElementIdsBefore(slide, [chart.id]);
+    const mark = marksOf(slide, chart.id)[0].id;
+    const ghost = `${chart.id}::axis.y.tick.99`;
+    before.set(chart.id, [...before.get(chart.id)!, ghost]);
+
+    expect(repairChartSelection(slide, before, [mark, ghost])).toEqual([mark]);
+  });
+
+  it('falls back to the whole chart when every drilled part went away', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const ghost = `${chart.id}::axis.y.tick.99`;
+    const before = new Map([[chart.id, [ghost]]]);
+
+    expect(repairChartSelection(slide, before, [ghost]).sort()).toEqual(
+      [...ids(slide, chart.id)].sort(),
+    );
+  });
+
+  it('leaves a selection that never touched the chart alone', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const before = chartElementIdsBefore(slide, [chart.id]);
+    expect(repairChartSelection(slide, before, ['title-1'])).toEqual(['title-1']);
+  });
+
+  it('keeps non-chart neighbours in place around the repaired parts', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const before = chartElementIdsBefore(slide, [chart.id]);
+    const mark = marksOf(slide, chart.id)[0].id;
+    expect(repairChartSelection(slide, before, [mark, 'title-1'])).toEqual([mark, 'title-1']);
   });
 });

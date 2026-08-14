@@ -14,6 +14,7 @@ import { useComments, COMMENT_AUTHOR } from '@/store/commentStore';
 import { useEditor } from '@/store/editorStore';
 import type { CommentThread } from '@/comments/types';
 import type { SlideElement } from '@/model';
+import { elementLabel } from './commentAnchor';
 import { useResizableWidth } from './useResizableWidth';
 import { ResizeHandle } from './ResizeHandle';
 
@@ -35,20 +36,6 @@ export function relativeTime(iso: string): string {
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).slice(0, 2);
   return parts.map((p) => p[0]?.toUpperCase() ?? '').join('') || '?';
-}
-
-/**
- * What the thread says it's attached to. Prefers the object's own text (that's
- * what the reader is looking at), then its name/role, then its type.
- */
-export function elementLabel(el: SlideElement): string {
-  const body = el.type === 'text' || el.type === 'shape' ? el.body : undefined;
-  const text = body?.paragraphs
-    .flatMap((p) => p.runs.map((r) => r.text))
-    .join(' ')
-    .trim();
-  if (text) return text.length > 32 ? `${text.slice(0, 32)}…` : text;
-  return el.name ?? el.role ?? el.type;
 }
 
 function Avatar({ name }: { name: string }) {
@@ -322,6 +309,12 @@ export function CommentsPanel() {
     for (const s of slides) for (const el of s.elements) map.set(el.id, el);
     return map;
   }, [slides]);
+  /** An element's own slide, so a grouped anchor can borrow its group's text. */
+  const siblingsOf = useMemo(() => {
+    const map = new Map<string, SlideElement[]>();
+    for (const s of slides) for (const el of s.elements) map.set(el.id, s.elements);
+    return map;
+  }, [slides]);
 
   const visible = threads
     .filter((t) => (scope === 'slide' ? t.slideId === currentSlideId : true))
@@ -392,7 +385,9 @@ export function CommentsPanel() {
                   Slide {(slideIndex[draft.slideId] ?? 0) + 1}
                 </span>
                 <span className="truncate">
-                  {draftElement ? elementLabel(draftElement) : 'whole slide'}
+                  {draftElement
+                    ? elementLabel(draftElement, siblingsOf.get(draftElement.id))
+                    : 'whole slide'}
                 </span>
               </div>
               <div className="flex gap-2">
@@ -417,7 +412,13 @@ export function CommentsPanel() {
                 key={t.id}
                 thread={t}
                 slideIndex={slideIndex[t.slideId] ?? 0}
-                anchorLabel={t.elementId ? (el ? elementLabel(el) : 'deleted object') : 'whole slide'}
+                anchorLabel={
+                  t.elementId
+                    ? el
+                      ? elementLabel(el, siblingsOf.get(el.id))
+                      : 'deleted object'
+                    : 'whole slide'
+                }
                 detached={!!t.elementId && !el}
                 active={activeThreadId === t.id}
                 onActivate={() => {

@@ -7,6 +7,8 @@
  * and the export are all literally the same rendering of the same model.
  */
 import {
+  cropScale,
+  isCropped,
   DEFAULT_TEXT_INSETS,
   EMU_PER_POINT,
   FONTS,
@@ -25,7 +27,7 @@ import {
   type TextBody,
 } from '@/model';
 import { PathGeom, ShapeGeom } from './geometry';
-import { bulletMarkers, indentMetricsPt } from './bullets';
+import { bulletMarkers, indentMetricsPt, markerShiftEm, markerSizeScale } from './bullets';
 
 const dashArray = (dash: Outline['dash'], stroke: number): string | undefined => {
   if (dash === 'dash') return `${stroke * 3} ${stroke * 2}`;
@@ -94,7 +96,14 @@ export function TextBodyView({
         // bulletMarkers — so it is resolved once here and handed down.
         const markers = bulletMarkers(body.paragraphs);
         return body.paragraphs.map((p, i) => (
-          <ParagraphView key={i} p={p} ds={ds} scale={scale} marker={markers[i]} />
+          <ParagraphView
+            key={i}
+            p={p}
+            ds={ds}
+            scale={scale}
+            marker={markers[i]}
+            noWrap={body.wrap === false}
+          />
         ));
       })()}
     </div>
@@ -106,12 +115,19 @@ function ParagraphView({
   ds,
   scale,
   marker,
+  noWrap,
 }: {
   p: Paragraph;
   ds: DesignSystem;
   scale: number;
   /** Bullet glyph or number label, resolved body-wide by <TextBodyView>. */
   marker?: string | null;
+  /**
+   * `wrap: false` on the body — a box measured to its own single line, which the
+   * exporter already honours. Without it here the browser's real metrics wrap a
+   * chart label the engine sized to fit.
+   */
+  noWrap?: boolean;
 }) {
   const textAlign = (p.align ?? 'left') as 'left' | 'center' | 'right' | 'justify';
   // The paragraph must carry its own font-size and line-height, both taken from
@@ -149,6 +165,7 @@ function ParagraphView({
         lineHeight,
         paddingLeft: indentPt * EMU_PER_POINT * scale,
         textIndent: -hangPt * EMU_PER_POINT * scale,
+        ...(noWrap ? { whiteSpace: 'nowrap' as const } : {}),
       }}
     >
       {marker ? (
@@ -157,11 +174,22 @@ function ParagraphView({
             display: 'inline-block',
             width: hangPt * EMU_PER_POINT * scale,
             // The marker wears the paragraph's own type, not the browser
-            // default, so a 40pt heading's bullet isn't a 16pt speck.
+            // default, so a 40pt heading's bullet isn't a 16pt speck — and a
+            // square bullet is drawn up to read at the text's weight.
             fontFamily: FONTS[markerRun?.font ?? ds.fonts.body].cssStack,
-            fontSize: (markerRun?.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale,
+            fontSize:
+              (markerRun?.sizePt ?? ds.type.body.sizePt) *
+              markerSizeScale(p) *
+              EMU_PER_POINT *
+              scale,
             color: resolveColor(markerRun?.color, ds),
             textIndent: 0,
+            // Pinned to the paragraph's own line box: the enlarged glyph must
+            // not grow the first line and push the rest of the list down.
+            lineHeight: `${linePt * lineHeight * EMU_PER_POINT * scale}px`,
+            // A transform, so centring the glyph on the text can't shift the
+            // line box the way a baseline offset would.
+            transform: `translateY(${markerShiftEm(p) * linePt * EMU_PER_POINT * scale}px)`,
           }}
         >
           {marker}
@@ -179,7 +207,9 @@ function ParagraphView({
               fontStyle: r.italic ? 'italic' : 'normal',
               textDecoration: r.underline ? 'underline' : 'none',
               color: resolveColor(r.color, ds),
-              whiteSpace: 'pre-wrap',
+              // `pre` keeps the run's own spaces without letting it wrap — the
+              // <p>'s nowrap is otherwise overridden by this span.
+              whiteSpace: noWrap ? 'pre' : 'pre-wrap',
             }}
           >
             {r.text}
@@ -310,18 +340,57 @@ export function ElementVisual({
     }
 
     case 'picture':
-      return (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={el.src}
-          alt={el.name ?? ''}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-        />
-      );
+      return <PictureView el={el} />;
 
     default:
       return null;
   }
+}
+
+/**
+ * A picture, cropped or not.
+ *
+ * Uncropped is a plain cover fit — the source fills the box, overflow trimmed.
+ * Cropped positions the source on its PLANE (see `model/crop.ts`) inside an
+ * overflow-hidden box, with `fill` rather than `cover` so the surviving window
+ * lands on the rect exactly: the insets already say what to trim, and a second
+ * implicit trim on top of them would make the export disagree with the canvas.
+ */
+function PictureView({ el }: { el: Extract<SlideElement, { type: 'picture' }> }) {
+  const alt = el.name ?? '';
+  if (!isCropped(el.crop)) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={el.src}
+        alt={alt}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+      />
+    );
+  }
+  const s = cropScale(el.crop);
+  return (
+    <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={el.src}
+        alt={alt}
+        style={{
+          position: 'absolute',
+          left: `${(-el.crop.left / s.x) * 100}%`,
+          top: `${(-el.crop.top / s.y) * 100}%`,
+          width: `${(1 / s.x) * 100}%`,
+          height: `${(1 / s.y) * 100}%`,
+          objectFit: 'fill',
+          // The plane is deliberately BIGGER than its box, and the CSS reset's
+          // `img { max-width: 100% }` would squeeze it back to the box — which
+          // reads as a stretched picture rather than a cropped one.
+          maxWidth: 'none',
+          maxHeight: 'none',
+        }}
+      />
+    </div>
+  );
 }
 
 /** A slide's painted background color — the same rule <SlideView> applies. */

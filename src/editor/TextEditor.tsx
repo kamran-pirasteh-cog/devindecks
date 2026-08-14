@@ -27,10 +27,17 @@ import {
   type Paragraph,
   type TextRun,
 } from '@/model';
-import { bulletMarkers, clampLevel, indentMetricsPt } from '@/render/bullets';
-import { useEditor, nextFontSize } from '@/store/editorStore';
+import {
+  bulletMarkers,
+  clampLevel,
+  indentMetricsPt,
+  markerShiftEm,
+  markerSizeScale,
+} from '@/render/bullets';
+import { useEditor } from '@/store/editorStore';
 import { fontSizeDirection } from './fontSizeShortcut';
 import { formatPainterAction } from './formatShortcut';
+import { selectOffsets, selectionOffsets } from './textOffsets';
 import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
 
 /** Character-level formatting, as carried by the contentEditable DOM. */
@@ -243,8 +250,16 @@ export function TextEditor({
       span.style.fontStyle = 'normal';
       span.style.textDecoration = 'none';
       // Match the paragraph's own type — the block carries its first run's
-      // font, size and colour, so inheriting from it is enough.
-      span.style.fontSize = node.style.fontSize;
+      // font, size and colour, so inheriting from it is enough. A square
+      // bullet is then drawn up so it reads at the weight of that text, with
+      // the line height pinned so the bigger glyph can't grow the line box.
+      const blockPx = parseFloat(node.style.fontSize) || 0;
+      const sizeScale = markerSizeScale(listOf(node));
+      span.style.fontSize = sizeScale === 1 ? node.style.fontSize : `${blockPx * sizeScale}px`;
+      span.style.lineHeight = `${blockPx * (parseFloat(node.style.lineHeight) || 1)}px`;
+      // A transform, so centring the glyph on the text can't shift the line box.
+      const shift = markerShiftEm(listOf(node)) * blockPx;
+      span.style.transform = shift ? `translateY(${shift}px)` : '';
       span.textContent = marker;
       if (!existing) node.insertBefore(span, node.firstChild);
     });
@@ -288,24 +303,49 @@ export function TextEditor({
    * the props that CSS can't round-trip: color is a design-system token, not a
    * hex, and size/font live in model units.
    */
-  const runSpan = (r: TextRun, index: number) => {
-    const span = document.createElement('span');
-    span.dataset.run = String(index);
+  const applyRunStyle = (span: HTMLElement, r: TextRun) => {
     span.style.fontFamily = FONTS[r.font ?? ds.fonts.body].cssStack;
     span.style.fontSize = `${(r.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale}px`;
     span.style.fontWeight = String(runWeight(r));
     span.style.fontStyle = r.italic ? 'italic' : 'normal';
     span.style.textDecoration = r.underline ? 'underline' : 'none';
     span.style.color = resolveColor(r.color, ds);
+  };
+
+  const runSpan = (r: TextRun, index: number) => {
+    const span = document.createElement('span');
+    span.dataset.run = String(index);
+    applyRunStyle(span, r);
     span.textContent = r.text;
     return span;
   };
 
-  useEffect(() => {
+  /**
+   * Re-style the run spans inside one paragraph block from the model. The
+   * block's own strut only drives the LINE BOX, so restyling blocks alone made
+   * a font-size change while editing show up as lines opening up around type
+   * that hadn't changed size — the glyphs only jumped once the edit committed
+   * and the renderer took over. Style attributes only, never text: the caret
+   * and any half-typed word have to survive.
+   */
+  const applyRunStyles = (block: HTMLElement, p: Paragraph) => {
+    block.querySelectorAll<HTMLElement>('[data-run]').forEach((span) => {
+      const r = p.runs[Number(span.dataset.run)];
+      if (r) applyRunStyle(span, r);
+    });
+  };
+
+  /**
+   * Build the editable's contents from a set of paragraphs. Used on mount, and
+   * again whenever the model's RUN STRUCTURE changes under the open editor —
+   * splitting a run to restyle a selection renumbers `data-run`, which the
+   * restyle-only effect below can't follow.
+   */
+  const paint = (paragraphs: Paragraph[]) => {
     const node = ref.current;
     if (!node) return;
     node.replaceChildren(
-      ...body.paragraphs.map((p) => {
+      ...paragraphs.map((p) => {
         const line = document.createElement('div');
         applyParagraphStyle(line, p);
         // Index by position in p.runs, not in the filtered list — `data-run` is
@@ -318,6 +358,12 @@ export function TextEditor({
       }),
     );
     syncMarkers();
+  };
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    paint(body.paragraphs);
     node.focus();
     // Place caret at end.
     const range = document.createRange();
@@ -329,17 +375,20 @@ export function TextEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-apply paragraph styling when the model changes under an OPEN editor —
-  // Inspector edits, a caret-only B/I/U, a font-size shortcut. Only the blocks'
-  // style attributes are touched, never their text nodes, so the caret and any
-  // half-typed word survive; rebuilding children here would fling the caret to
-  // the end mid-sentence.
+  // Re-apply styling when the model changes under an OPEN editor — Inspector
+  // edits, a caret-only B/I/U, a font-size shortcut. Blocks and the run spans
+  // inside them both, since the block carries only the line box. Style
+  // attributes only, never text nodes, so the caret and any half-typed word
+  // survive; rebuilding children here would fling the caret to the end
+  // mid-sentence.
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
     Array.from(node.children).forEach((child, i) => {
       const p = body.paragraphs[i];
-      if (p && child instanceof HTMLElement) applyParagraphStyle(child, p);
+      if (!p || !(child instanceof HTMLElement)) return;
+      applyParagraphStyle(child, p);
+      applyRunStyles(child, p);
     });
     // applyParagraphStyle reseeds each block's list attributes from the model,
     // so the markers and indents have to be redrawn to match.
@@ -471,6 +520,49 @@ export function TextEditor({
     else store().patchRuns([el.id], { [key]: !firstRun[key] });
   };
 
+  /**
+   * The format painter, narrowed to the text under the cursor.
+   *
+   * With characters highlighted it works exactly like B/I/U does: ⌘⌥C samples
+   * the run the selection starts in and ⌘⌥V restyles only those characters,
+   * leaving the rest of the box alone. A bare caret keeps the old whole-element
+   * behaviour, which is what PowerPoint falls back to as well.
+   *
+   * Typing lives in the DOM until commit, so the model is synced first —
+   * otherwise the offsets read off the DOM would address a stale body — and the
+   * editor is repainted after, because splitting a run to restyle a stretch of
+   * it renumbers every `data-run` below the split.
+   */
+  const applyPainter = (painter: 'copy' | 'paste') => {
+    const node = ref.current;
+    const range = node ? selectionOffsets(node) : null;
+    if (range) syncModel();
+    if (painter === 'copy') {
+      if (!range) return store().copyFormat(el.id);
+      // A selection samples its first character; a caret samples the character
+      // behind it, the one it would extend by typing.
+      store().copyTextFormat(el.id, range.start, range.end > range.start ? 'after' : 'before');
+      return;
+    }
+    if (!range || range.end === range.start) {
+      // Restyling the whole box ends the edit — commit the typing first, then
+      // stamp the format over the result.
+      commit();
+      store().pasteFormat([el.id]);
+      return;
+    }
+    store().pasteTextFormat(el.id, range.start, range.end);
+    const s = store();
+    const live = s.deck.slides
+      .find((sl) => sl.id === s.currentSlideId)
+      ?.elements.find((x) => x.id === el.id);
+    const paragraphs = live && 'body' in live ? live.body?.paragraphs : undefined;
+    if (!paragraphs || !node) return;
+    paint(paragraphs);
+    node.focus();
+    selectOffsets(node, range);
+  };
+
   const justify =
     body.anchor === 'middle' ? 'center' : body.anchor === 'bottom' ? 'flex-end' : 'flex-start';
 
@@ -495,14 +587,7 @@ export function TextEditor({
         const textEdge = textAlignEdge(e);
         if (painter) {
           e.preventDefault();
-          if (painter === 'copy') {
-            store().copyFormat(el.id);
-          } else {
-            // Pasting a format restyles the whole box, so it ends the edit —
-            // commit the typing first, then stamp the format over the result.
-            commit();
-            store().pasteFormat([el.id]);
-          }
+          applyPainter(painter);
         } else if (mod && key === 'enter') {
           e.preventDefault();
           commit();
@@ -542,9 +627,7 @@ export function TextEditor({
           store().patchParagraphs([el.id], { align: 'left' });
         } else if (sizeDir) {
           e.preventDefault();
-          store().patchRuns([el.id], {
-            sizePt: nextFontSize(firstRun.sizePt ?? ds.type.body.sizePt, sizeDir),
-          });
+          store().stepFontSize([el.id], sizeDir);
         }
         e.stopPropagation();
       }}

@@ -22,8 +22,8 @@ import type {
   VerticalAnchor,
 } from '@/model';
 
-type RunFormat = Omit<TextRun, 'text'>;
-type ParagraphFormat = Omit<Paragraph, 'runs'>;
+export type RunFormat = Omit<TextRun, 'text'>;
+export type ParagraphFormat = Omit<Paragraph, 'runs'>;
 
 interface BodyFormat {
   anchor?: VerticalAnchor;
@@ -85,8 +85,27 @@ function assignOrDelete<T extends object, K extends readonly (keyof T)[]>(
   }
 }
 
-/** Lift the formatting off an element, ready to be pasted onto others. */
-export function extractFormat(el: SlideElement): ElementFormat {
+/** Copy the run properties of a sampled format onto `run`, in place. */
+export function applyRunFormat(run: TextRun, fmt: RunFormat) {
+  assignOrDelete(run, fmt, RUN_KEYS);
+}
+
+/** Copy the paragraph properties of a sampled format onto `p`, in place. */
+export function applyParagraphFormat(p: Paragraph, fmt: ParagraphFormat) {
+  assignOrDelete(p, fmt, PARA_KEYS);
+}
+
+/**
+ * Lift the formatting off an element, ready to be pasted onto others.
+ *
+ * `at` names the run to sample — the one under the cursor when the copy came
+ * from inside the text editor. Without it the first run stands in, which is the
+ * closest equivalent when there is no caret to read.
+ */
+export function extractFormat(
+  el: SlideElement,
+  at?: { paragraph: number; run: number },
+): ElementFormat {
   const fmt: ElementFormat = {};
 
   if (el.type === 'text' || el.type === 'shape') {
@@ -96,10 +115,9 @@ export function extractFormat(el: SlideElement): ElementFormat {
 
   const body = bodyOf(el);
   if (body) {
-    // PowerPoint samples the run/paragraph under the cursor; with no caret to
-    // read, the first one is the closest equivalent.
-    fmt.run = pick(body.paragraphs[0]?.runs[0], RUN_KEYS);
-    fmt.paragraph = pick(body.paragraphs[0], PARA_KEYS);
+    const para = body.paragraphs[at?.paragraph ?? 0] ?? body.paragraphs[0];
+    fmt.run = pick(para?.runs[at?.run ?? 0] ?? para?.runs[0], RUN_KEYS);
+    fmt.paragraph = pick(para, PARA_KEYS);
     fmt.body = pick(body, BODY_KEYS);
   }
 

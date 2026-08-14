@@ -1,0 +1,636 @@
+'use client';
+
+/**
+ * The datasheet's contextual controls — think-cell's model.
+ *
+ * What replaced a wall of thirty dropdowns. A chart has a lot of settings, but
+ * nobody is ever adjusting all of them: they are looking at one part and want
+ * that part's options. So the panel shows the options for whatever was clicked
+ * IN THE PREVIEW and nothing else, and with nothing selected it shows only the
+ * handful that belong to the chart as a whole.
+ *
+ * Two rules it keeps:
+ *
+ * - **Everything writes to the SPEC**, through `patchChart`, so undo behaves the
+ *   same whether the change came from here, the datasheet or the canvas.
+ * - **One row, always.** The panel sits above the sheet and the preview, and the
+ *   moment it grows into a second wall of controls it has failed at its job.
+ *   A part with more options than fit is a sign the part is too coarse, not a
+ *   reason to make the panel taller.
+ *
+ * It is deliberately NOT `ChartPartPopover`: that one is anchored to a selection
+ * on the canvas and driven by Moveable and the element selection. This is driven
+ * by a `ChartRef` from a preview hit-test, with no canvas underneath it.
+ */
+import {
+  canSwapAxes,
+  convertData,
+  chartOrientation,
+  isGridSpec,
+  legendSeriesKey,
+  setChartOrientation,
+  supportsOrientation,
+  swapAxes,
+  token,
+  type AxisId,
+  type AxisSpec,
+  type ChartInstance,
+  type ChartKind,
+  type ChartRef,
+  type ChartSpec,
+  type DesignSystem,
+  type LabelContent,
+  type LabelPlacement,
+  type NumberFormat,
+} from '@/model';
+import { useEditor } from '@/store/editorStore';
+import { SUPPORTED_KINDS } from '@/chart/compile';
+import { describePart } from './previewHitTest';
+
+const FIELD =
+  'h-6 rounded border border-zinc-200 bg-white px-1 text-[11px] text-zinc-700 outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200';
+
+/**
+ * Seven types, not twelve. Column and bar are one entry because orientation is
+ * its own control; donut is a variant of pie and area of line.
+ */
+const KIND_OPTIONS: { value: ChartKind; label: string }[] = [
+  { value: 'column', label: 'Bar' },
+  { value: 'line', label: 'Line' },
+  { value: 'combo', label: 'Column + line' },
+  { value: 'waterfall', label: 'Waterfall' },
+  { value: 'pie', label: 'Pie' },
+  { value: 'sankey', label: 'Sankey' },
+  { value: 'scatter', label: 'Scatter' },
+  { value: 'bubble', label: 'Bubble' },
+];
+
+const displayKind = (kind: ChartKind): ChartKind =>
+  kind === 'bar' ? 'column' : kind === 'donut' ? 'pie' : kind === 'area' ? 'line' : kind;
+
+/** The single-field kinds. `custom` and `composite` need an editor of their own. */
+type SimpleContent = Extract<LabelContent, { kind: 'value' | 'percent' | 'category' | 'seriesName' }>;
+
+const LABEL_CONTENTS: { value: SimpleContent['kind']; label: string }[] = [
+  { value: 'value', label: 'Value' },
+  { value: 'percent', label: 'Share' },
+  { value: 'category', label: 'Category' },
+  { value: 'seriesName', label: 'Series' },
+];
+
+const PLACEMENTS: { value: LabelPlacement; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'outsideEnd', label: 'Outside' },
+  { value: 'insideEnd', label: 'Inside end' },
+  { value: 'insideCenter', label: 'Center' },
+  { value: 'insideBase', label: 'Inside base' },
+  { value: 'above', label: 'Above' },
+];
+
+/* ------------------------------------------------------------------ */
+/* Controls                                                           */
+/* ------------------------------------------------------------------ */
+
+function Group({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex shrink-0 flex-col gap-0.5">
+      <span className="whitespace-nowrap text-[10px] text-zinc-500 dark:text-zinc-400">
+        {label}
+      </span>
+      <span className="flex h-6 items-center gap-1">{children}</span>
+    </label>
+  );
+}
+
+function Toggle({
+  on,
+  onClick,
+  children,
+  title,
+}: {
+  on: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-pressed={on}
+      className={`h-6 rounded border px-1.5 text-[11px] ${
+        on
+          ? 'border-zinc-900 bg-zinc-900 text-white dark:border-white dark:bg-white dark:text-black'
+          : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** A number input where blank genuinely means "auto", not zero. */
+function AutoNumber({
+  value,
+  onChange,
+  placeholder = 'auto',
+  width = 'w-16',
+}: {
+  value: number | undefined;
+  onChange: (v: number | undefined) => void;
+  placeholder?: string;
+  width?: string;
+}) {
+  return (
+    <input
+      type="number"
+      value={value ?? ''}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
+      className={`${FIELD} ${width} text-right`}
+    />
+  );
+}
+
+function Swatches({
+  ds,
+  current,
+  onPick,
+}: {
+  ds: DesignSystem;
+  current?: string;
+  onPick: (tokenId: string) => void;
+}) {
+  return (
+    <span className="flex items-center gap-1">
+      {ds.colors.slice(0, 7).map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          onClick={() => onPick(c.id)}
+          title={c.name}
+          aria-label={c.name}
+          className={`h-4 w-4 rounded-full ring-1 ${
+            current === c.id ? 'ring-2 ring-indigo-500' : 'ring-black/15'
+          }`}
+          style={{ background: c.hex }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+
+export function ChartPartOptions({
+  chart,
+  ds,
+  part,
+  onClear,
+}: {
+  chart: ChartInstance;
+  ds: DesignSystem;
+  /** The part clicked in the preview, or null for the chart as a whole. */
+  part: ChartRef | null;
+  onClear: () => void;
+}) {
+  const patchChart = useEditor((s) => s.patchChart);
+  const { spec } = chart;
+
+  const patch = (fn: (s: ChartSpec) => void) => patchChart(chart.id, fn);
+  // Keyed by `AxisId`, which includes the optional secondary value axis — a
+  // combo chart's `y2` is a real axis somebody can click.
+  const setAxis = (axis: AxisId, fn: (a: AxisSpec) => void) =>
+    patch((s) => {
+      const ax = s.axes[axis];
+      if (ax) fn(ax);
+    });
+  const setFormat = (fn: (f: NumberFormat) => void) => patch((s) => fn(s.numberFormat));
+  const setLabels = (fn: (l: ChartSpec['decorations']['labels']) => void) =>
+    patch((s) => fn(s.decorations.labels));
+
+  const seriesKey =
+    part && (part.part === 'mark' || part.part === 'label')
+      ? part.series
+      : part?.part === 'legend.item'
+        ? legendSeriesKey(part)
+        : null;
+  const series =
+    isGridSpec(spec) && seriesKey ? spec.data.series.find((s) => s.key === seriesKey) : undefined;
+
+  const rows = (() => {
+    switch (part?.part) {
+      /* --- axis: the label, the ticks, the type size --- */
+      case 'axis': {
+        const axis = part.axis;
+        const ax = spec.axes[axis];
+        const value = axis === 'y';
+        return (
+          <>
+            <Group label="Show">
+              <Toggle on={ax?.show ?? true} onClick={() => setAxis(axis, (a) => (a.show = !a.show))}>
+                Axis
+              </Toggle>
+              {value ? (
+                <Toggle
+                  on={spec.decorations.gridlines.major?.show ?? false}
+                  onClick={() =>
+                    patch((s) => {
+                      s.decorations.gridlines.major = {
+                        ...s.decorations.gridlines.major,
+                        show: !s.decorations.gridlines.major?.show,
+                      };
+                    })
+                  }
+                >
+                  Grid
+                </Toggle>
+              ) : null}
+            </Group>
+
+            <Group label="Title">
+              <input
+                value={ax?.title ?? ''}
+                placeholder="(none)"
+                onChange={(e) =>
+                  setAxis(axis, (a) => (a.title = e.target.value || undefined))
+                }
+                className={`${FIELD} w-32`}
+              />
+            </Group>
+
+            {value ? (
+              <>
+                <Group label="Min">
+                  <AutoNumber value={ax?.min} onChange={(v) => setAxis(axis, (a) => (a.min = v))} />
+                </Group>
+                <Group label="Max">
+                  <AutoNumber value={ax?.max} onChange={(v) => setAxis(axis, (a) => (a.max = v))} />
+                </Group>
+                <Group label="Ticks every">
+                  <AutoNumber
+                    value={ax?.tickStep}
+                    onChange={(v) => setAxis(axis, (a) => (a.tickStep = v))}
+                  />
+                </Group>
+                <Group label="Divide by">
+                  <select
+                    value={ax?.unitDivisor ?? 1}
+                    onChange={(e) =>
+                      setAxis(axis, (a) => {
+                        const d = Number(e.target.value);
+                        a.unitDivisor = d === 1 ? undefined : d;
+                        // The note is the only thing telling a reader the axis
+                        // is scaled, so it moves with the divisor unless they
+                        // have written their own.
+                        const auto: Record<number, string> = {
+                          1000: 'in thousands',
+                          1000000: 'in millions',
+                          1000000000: 'in billions',
+                        };
+                        if (!a.unitNote || Object.values(auto).includes(a.unitNote)) {
+                          a.unitNote = auto[d];
+                        }
+                      })
+                    }
+                    className={`${FIELD} w-24`}
+                  >
+                    <option value={1}>—</option>
+                    <option value={1000}>Thousands</option>
+                    <option value={1000000}>Millions</option>
+                    <option value={1000000000}>Billions</option>
+                  </select>
+                </Group>
+              </>
+            ) : null}
+
+            <Group label="Type size">
+              <AutoNumber
+                value={ax?.font?.sizePt}
+                width="w-14"
+                onChange={(v) =>
+                  setAxis(axis, (a) => {
+                    a.font = v === undefined ? undefined : { ...a.font, sizePt: v };
+                  })
+                }
+              />
+            </Group>
+          </>
+        );
+      }
+
+      /* --- a bar, or the number on it --- */
+      case 'mark':
+      case 'label': {
+        const labels = spec.decorations.labels;
+        return (
+          <>
+            {series ? (
+              <Group label="Color">
+                <Swatches
+                  ds={ds}
+                  current={
+                    series.format?.fill?.kind === 'solid' &&
+                    series.format.fill.color.kind === 'token'
+                      ? series.format.fill.color.token
+                      : undefined
+                  }
+                  onPick={(id) =>
+                    patch((s) => {
+                      if (!isGridSpec(s)) return;
+                      const ser = s.data.series.find((x) => x.key === seriesKey);
+                      if (ser) ser.format = { ...ser.format, fill: { kind: 'solid', color: token(id) } };
+                    })
+                  }
+                />
+              </Group>
+            ) : null}
+
+            <Group label="Labels">
+              <Toggle on={labels.show} onClick={() => setLabels((l) => (l.show = !l.show))}>
+                Show
+              </Toggle>
+            </Group>
+            <Group label="Shows">
+              <select
+                value={labels.content.kind}
+                onChange={(e) =>
+                  setLabels((l) => (l.content = { kind: e.target.value as SimpleContent['kind'] }))
+                }
+                className={`${FIELD} w-24`}
+              >
+                {LABEL_CONTENTS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </Group>
+            <Group label="Place">
+              <select
+                value={labels.placement}
+                onChange={(e) =>
+                  setLabels((l) => (l.placement = e.target.value as LabelPlacement))
+                }
+                className={`${FIELD} w-24`}
+              >
+                {PLACEMENTS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </Group>
+            <Group label="Type size">
+              <AutoNumber
+                value={labels.font?.sizePt}
+                width="w-14"
+                onChange={(v) =>
+                  setLabels((l) => {
+                    l.font = v === undefined ? undefined : { ...l.font, sizePt: v };
+                  })
+                }
+              />
+            </Group>
+            <Group label="Numbers">
+              <select
+                value={spec.numberFormat.style}
+                onChange={(e) => setFormat((f) => (f.style = e.target.value as NumberFormat['style']))}
+                className={`${FIELD} w-24`}
+              >
+                <option value="number">Number</option>
+                <option value="currency">Currency</option>
+                <option value="percent">Percent</option>
+              </select>
+              <select
+                value={spec.numberFormat.scale ?? 'none'}
+                onChange={(e) => setFormat((f) => (f.scale = e.target.value as NumberFormat['scale']))}
+                className={`${FIELD} w-20`}
+              >
+                <option value="none">—</option>
+                <option value="auto">Auto</option>
+                <option value="K">K</option>
+                <option value="M">M</option>
+                <option value="B">B</option>
+              </select>
+            </Group>
+          </>
+        );
+      }
+
+      /* --- the total above a stack --- */
+      case 'total':
+        return (
+          <>
+            <Group label="Totals">
+              <Toggle
+                on={spec.decorations.totals?.show ?? false}
+                onClick={() =>
+                  patch((s) => {
+                    s.decorations.totals = s.decorations.totals?.show
+                      ? undefined
+                      : { show: true, content: { kind: 'value' }, placement: 'above' };
+                  })
+                }
+              >
+                Show
+              </Toggle>
+            </Group>
+            <Group label="Type size">
+              <AutoNumber
+                value={spec.decorations.totals?.font?.sizePt}
+                width="w-14"
+                onChange={(v) =>
+                  patch((s) => {
+                    if (!s.decorations.totals) return;
+                    s.decorations.totals.font =
+                      v === undefined ? undefined : { ...s.decorations.totals.font, sizePt: v };
+                  })
+                }
+              />
+            </Group>
+          </>
+        );
+
+      /* --- legend --- */
+      case 'legend.item':
+      case 'legend.box':
+        return (
+          <>
+            <Group label="Legend">
+              <Toggle
+                on={spec.legend.show}
+                onClick={() => patch((s) => (s.legend.show = !s.legend.show))}
+              >
+                Show
+              </Toggle>
+            </Group>
+            <Group label="Position">
+              <select
+                value={spec.legend.position}
+                onChange={(e) =>
+                  patch((s) => (s.legend.position = e.target.value as typeof s.legend.position))
+                }
+                className={`${FIELD} w-24`}
+              >
+                <option value="top">Top</option>
+                <option value="right">Right</option>
+                <option value="bottom">Bottom</option>
+                <option value="left">Left</option>
+              </select>
+            </Group>
+            {series ? (
+              <Group label="Name">
+                <input
+                  value={series.name}
+                  onChange={(e) =>
+                    patch((s) => {
+                      if (!isGridSpec(s)) return;
+                      const ser = s.data.series.find((x) => x.key === seriesKey);
+                      if (ser) ser.name = e.target.value;
+                    })
+                  }
+                  className={`${FIELD} w-32`}
+                />
+              </Group>
+            ) : null}
+          </>
+        );
+
+      /* --- the chart's title --- */
+      case 'title':
+        return (
+          <Group label="Title">
+            <input
+              value={spec.title ?? ''}
+              placeholder="(none)"
+              onChange={(e) => patch((s) => (s.title = e.target.value || undefined))}
+              className={`${FIELD} w-64`}
+            />
+          </Group>
+        );
+
+      /* --- nothing selected, or the plot background: the whole chart --- */
+      default:
+        return (
+          <>
+            <Group label="Type">
+              <select
+                value={displayKind(spec.kind)}
+                onChange={(e) => {
+                  const next = e.target.value as ChartKind;
+                  patch((s) => {
+                    // Keep the orientation across a type change: someone who set
+                    // up horizontal bars and switches to a waterfall means a
+                    // horizontal waterfall, not a reset.
+                    const was = chartOrientation(s);
+                    const converted = convertData(s, next);
+                    Object.assign(
+                      s,
+                      supportsOrientation(next) ? setChartOrientation(converted, was) : converted,
+                    );
+                  });
+                }}
+                className={`${FIELD} w-28`}
+              >
+                {KIND_OPTIONS.filter((k) => SUPPORTED_KINDS.includes(k.value)).map((k) => (
+                  <option key={k.value} value={k.value}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+            </Group>
+
+            {'stack' in spec ? (
+              <Group label="Stacking">
+                <select
+                  value={(spec as { stack: string }).stack}
+                  onChange={(e) =>
+                    patch((s) => {
+                      if (!('stack' in s)) return;
+                      const mode = e.target.value as 'clustered' | 'stacked' | 'stacked100';
+                      s.stack = mode;
+                      // Overlap is what actually makes bars sit on one another;
+                      // leaving it clustered would stack them visually apart.
+                      if ('overlapPct' in s) s.overlapPct = mode === 'clustered' ? -27 : 100;
+                    })
+                  }
+                  className={`${FIELD} w-28`}
+                >
+                  <option value="clustered">Clustered</option>
+                  <option value="stacked">Stacked</option>
+                  <option value="stacked100">100% stacked</option>
+                </select>
+              </Group>
+            ) : null}
+
+            <Group label="Title">
+              <input
+                value={spec.title ?? ''}
+                placeholder="(none)"
+                onChange={(e) => patch((s) => (s.title = e.target.value || undefined))}
+                className={`${FIELD} w-40`}
+              />
+            </Group>
+
+            {'gapWidthPct' in spec ? (
+              <Group label="Gap width">
+                <AutoNumber
+                  value={spec.gapWidthPct}
+                  width="w-14"
+                  onChange={(v) =>
+                    patch((s) => {
+                      if ('gapWidthPct' in s) s.gapWidthPct = v ?? 0;
+                    })
+                  }
+                />
+              </Group>
+            ) : null}
+
+            {canSwapAxes(spec.kind) ? (
+              <Group label="Axes">
+                <Toggle on={false} onClick={() => patch((s) => Object.assign(s, swapAxes(s)))}>
+                  Swap X and Y
+                </Toggle>
+              </Group>
+            ) : null}
+          </>
+        );
+    }
+  })();
+
+  return (
+    <div className="flex shrink-0 items-end gap-3 overflow-x-auto border-b border-zinc-200 bg-zinc-50/60 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex shrink-0 flex-col gap-0.5">
+        <span className="text-[10px] text-transparent">.</span>
+        <span className="flex h-6 items-center gap-1">
+          <span className="whitespace-nowrap text-[11px] font-semibold text-zinc-700 dark:text-zinc-200">
+            {part ? describePart(part, series?.name) : 'Chart'}
+          </span>
+          {part ? (
+            <button
+              type="button"
+              onClick={onClear}
+              title="Back to the whole chart"
+              aria-label="Back to the whole chart"
+              className="rounded px-1 text-[11px] text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+            >
+              ⤺
+            </button>
+          ) : null}
+        </span>
+      </div>
+
+      <div className="h-9 w-px shrink-0 bg-zinc-200 dark:bg-zinc-800" />
+
+      {rows}
+
+      {part ? null : (
+        <span className="ml-auto shrink-0 self-center text-[11px] text-zinc-400">
+          Click a part of the preview — an axis, a bar, the legend — to format it
+        </span>
+      )}
+    </div>
+  );
+}

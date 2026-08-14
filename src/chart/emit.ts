@@ -11,6 +11,7 @@
  *    from, so a click on the canvas can edit the chart rather than the rectangle.
  */
 import { elementIdFor } from '@/model';
+import { displayText } from '@/render/measureText';
 import type {
   LineElement,
   PathElement,
@@ -117,7 +118,7 @@ function emitMark(mark: Mark, groupId: string): SlideElement {
         rotation: mark.style.rotation,
         body: {
           anchor: mark.style.anchor,
-          wrap: true,
+          wrap: mark.style.wrap ?? true,
           // Charts position their own text exactly; PowerPoint's default inset
           // would shift every label by 0.1in and break the alignment we solved.
           insets: { l: 0, t: 0, r: 0, b: 0 },
@@ -126,7 +127,7 @@ function emitMark(mark: Mark, groupId: string): SlideElement {
               align: mark.style.align,
               runs: [
                 {
-                  text: mark.text,
+                  text: displayText(mark.text, mark.style),
                   font: mark.style.font,
                   sizePt: mark.style.sizePt,
                   bold: mark.style.bold,

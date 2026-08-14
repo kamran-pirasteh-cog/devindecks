@@ -126,6 +126,17 @@ export type ShapePreset =
   | 'chevron'
   | 'pill';
 
+/**
+ * Presets whose corners can be rounded or squared. Only the rectangular family
+ * qualifies — an ellipse has no corners, and a chevron's are structural.
+ */
+export const ROUNDABLE_PRESETS: ShapePreset[] = ['rect', 'roundRect', 'pill'];
+
+/** Whether a shape currently reads as round-cornered. */
+export function isRoundedPreset(preset: ShapePreset) {
+  return preset === 'roundRect' || preset === 'pill';
+}
+
 export type ElementType = 'text' | 'shape' | 'line' | 'picture' | 'path';
 
 interface BaseElement {
@@ -212,10 +223,34 @@ export type PathOp =
   | { op: 'C'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
   | { op: 'Z' };
 
+/**
+ * How much of the SOURCE image is thrown away on each side, as a fraction of
+ * the source's own width/height — OOXML `<a:srcRect>`, exactly.
+ *
+ * The surviving window is stretched to fill the element's rect, so a crop never
+ * moves or resizes the picture on the slide; the editor shrinks the rect and
+ * re-derives the insets together (see `cropWindow` in `crop.ts`) when the user
+ * drags a crop handle, which is what makes cropping feel like trimming rather
+ * than zooming.
+ */
+export interface Crop {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 export interface PictureElement extends BaseElement {
   type: 'picture';
   /** Asset ref or data URL; resolved via the asset store. */
   src: string;
+  /**
+   * Absent means "no crop" — and an uncropped picture is COVER-fit into its
+   * rect (centred, aspect kept, overflow trimmed), which is the one thing a
+   * `Crop` can't express without knowing the source's pixel size. Entering crop
+   * mode is what turns that implicit cover trim into explicit insets.
+   */
+  crop?: Crop;
   outline?: Outline;
 }
 

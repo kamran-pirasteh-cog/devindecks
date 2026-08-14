@@ -34,7 +34,11 @@ const withSeries = (sheet: SheetModel, series: SheetSeries[], rows: CellValue[][
 /* ------------------------------------------------------------------ */
 
 export function insertRow(sheet: SheetModel, at: number): SheetModel {
-  if (!sheet.schema.caps.addRows) return sheet;
+  const { caps } = sheet.schema;
+  if (!caps.addRows) return sheet;
+  // A transposed grid's rows are series, so a pie's one-ring limit is a row
+  // limit here — the same cap `maxSeries` applies the other way round.
+  if (caps.maxRows !== undefined && sheet.rows.length >= caps.maxRows) return sheet;
   const rows = [...sheet.rows];
   rows.splice(clamp(at, 0, rows.length), 0, blankRow(sheet.columns.length));
   return withRows(sheet, rows);
@@ -70,19 +74,43 @@ export function moveRow(sheet: SheetModel, from: number, to: number): SheetModel
 /* ------------------------------------------------------------------ */
 
 export function addSeries(sheet: SheetModel, name?: string): SheetModel {
+  return insertSeries(sheet, sheet.series.length, name);
+}
+
+/**
+ * A column insert, Excel's "insert left / insert right".
+ *
+ * One series is one logical column even when the schema paints it as several
+ * (scatter's X and Y), so this inserts at a SERIES index; `reflow` then carries
+ * every existing value across to its new position by column key.
+ */
+export function insertSeries(sheet: SheetModel, at: number, name?: string): SheetModel {
   const { caps } = sheet.schema;
   if (!caps.addSeries) return sheet;
   if (caps.maxSeries !== undefined && sheet.series.length >= caps.maxSeries) return sheet;
 
-  const series = [
-    ...sheet.series,
-    { key: `s-${nanoid(5)}`, name: name ?? `Series ${sheet.series.length + 1}` },
-  ];
+  const series = [...sheet.series];
+  series.splice(clamp(at, 0, series.length), 0, {
+    key: `s-${nanoid(5)}`,
+    name: name ?? nextSeriesName(sheet),
+  });
   const added = sheet.schema.perSeries.length;
   const rows = sheet.rows.map((r) => [...r, ...blankRow(added)]);
   // New columns land before the fixed extras, so a waterfall's Kind column
   // stays on the right where the user expects it.
   return reflow(withSeries(sheet, series, rows), sheet);
+}
+
+/** "Series 4" — the first index that isn't already taken, not just length + 1. */
+function nextSeriesName(sheet: SheetModel): string {
+  // Under the transposed layout a column group is a CATEGORY, and calling a new
+  // period "Series 4" would put that word on the chart's own axis.
+  const noun = sheet.schema.layout === 'seriesDown' ? 'Category' : 'Series';
+  const taken = new Set(sheet.series.map((s) => s.name));
+  for (let i = sheet.series.length + 1; ; i++) {
+    const name = `${noun} ${i}`;
+    if (!taken.has(name)) return name;
+  }
 }
 
 export function deleteSeries(sheet: SheetModel, seriesKey: string): SheetModel {
@@ -260,6 +288,16 @@ export function pasteTable(
     if (grown === next) break;
     next = grown;
     grewRows++;
+  }
+  const droppedRows = at.r + body.length - next.rows.length;
+  if (droppedRows > 0) {
+    // Same contract as the series cap: a block that doesn't fit is REPORTED,
+    // never quietly truncated. A transposed grid caps rows (a pie has one
+    // ring), so this is the row-shaped half of the same warning.
+    warnings.push({
+      code: 'rows-capped',
+      message: `This chart takes at most ${next.rows.length} row${next.rows.length === 1 ? '' : 's'}; ${droppedRows} pasted row(s) were ignored.`,
+    });
   }
 
   for (let i = 0; i < body.length; i++) {
