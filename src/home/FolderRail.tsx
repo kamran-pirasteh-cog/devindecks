@@ -55,6 +55,20 @@ function DocsIcon() {
   );
 }
 
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className="h-3 w-3 shrink-0">
+      <path
+        d="M8 3.5v9M3.5 8h9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function TrashIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden className="h-3.5 w-3.5 shrink-0">
@@ -119,10 +133,7 @@ function Row({
             }
           : undefined
       }
-      // pr-7 on every row, whether or not it has a menu: that reserves the
-      // menu's slot at the right edge so the counts all line up at the same x,
-      // and the "..." sits outside them rather than pushing them around on hover.
-      className={`group/row relative flex items-center gap-1.5 rounded-md py-1.5 pl-2 pr-7 text-sm ${
+      className={`group/row relative flex items-center gap-1.5 rounded-md py-1.5 pl-2 pr-2 text-sm ${
         dropping
           ? 'bg-indigo-50 ring-1 ring-indigo-300 dark:bg-indigo-500/10 dark:ring-indigo-500/50'
           : selected
@@ -135,7 +146,19 @@ function Row({
         <span className="truncate">{label}</span>
       </button>
       {typeof count === 'number' ? (
-        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-zinc-400">{count}</span>
+        // The count sits flush at the row's right edge and slides out of the
+        // way of the "..." rather than reserving a permanent gap for it. The
+        // has-[] half keeps it clear while the menu is open but the pointer has
+        // moved off the row onto the popup.
+        <span
+          className={`ml-auto shrink-0 text-[11px] tabular-nums text-zinc-400 transition-transform duration-150 ${
+            trailing
+              ? 'group-hover/row:-translate-x-6 group-has-[[aria-expanded=true]]/row:-translate-x-6'
+              : ''
+          }`}
+        >
+          {count}
+        </span>
       ) : null}
       {trailing ? (
         <span className="absolute right-1 top-1/2 -translate-y-1/2">{trailing}</span>
@@ -332,8 +355,8 @@ export function FolderRail({
         icon={<DocsIcon />}
       />
 
-      {/* pr-1, matching the rows' menu slot, so "+" sits in the same column as
-          the row menus rather than a couple of pixels off it. */}
+      {/* pr-1, matching the rows' menu slot, so the button's right edge lines up
+          with the row menus rather than a couple of pixels off them. */}
       <div className="mt-4 mb-1 flex items-center justify-between pl-2 pr-1">
         <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">
           Folders
@@ -341,9 +364,10 @@ export function FolderRail({
         <button
           onClick={() => beginEdit(null, '')}
           title="New folder"
-          className="flex h-5 w-5 items-center justify-center rounded text-zinc-400 hover:bg-zinc-200/70 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+          className="flex h-[18px] items-center gap-0.5 rounded-md border border-zinc-200 bg-white pl-1 pr-1.5 text-[11px] leading-none font-medium text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
         >
-          +
+          <PlusIcon />
+          New
         </button>
       </div>
 

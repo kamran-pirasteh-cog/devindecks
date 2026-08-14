@@ -38,7 +38,7 @@ const buildGroups = (MOD: string): Group[] => [
     title: 'General',
     items: [
       { keys: [MOD, 'Z'], label: 'Undo' },
-      { keys: [MOD, 'Y'], label: 'Redo' },
+      { keys: [MOD, 'Y'], label: 'Redo', note: `or ${MOD}⇧Z` },
       { keys: [MOD, 'A'], label: 'Select everything on the slide' },
       { keys: [MOD, 'M'], label: 'New slide', note: 'after the current one' },
       { keys: ['Delete'], label: 'Delete selection' },

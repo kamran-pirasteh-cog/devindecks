@@ -9,6 +9,11 @@
  * History is snapshot-based: `commit()` clones the deck before a mutation so we
  * can step back. Transient drags call the mutating action with `transient=true`
  * to avoid flooding history, then commit once on drop.
+ *
+ * The snapshot for a transient burst is taken at its START, not at the closing
+ * commit — see `beginChange`. Taking it at the end would snapshot a deck the
+ * preview had already changed, so undo would land mid-drag (or, for a slider or
+ * a chart cell, appear to do nothing at all).
  */
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
@@ -21,6 +26,7 @@ import {
   marginGuides,
   outerGroupId,
   selectionUnits,
+  supportsTurn,
   unionRect,
   type BulletKind,
   type Deck,
@@ -30,13 +36,29 @@ import {
   type Outline,
   type Paragraph,
   type Rect,
+  migrateDeck,
+  reidentifyCharts,
+  type ChartInstance,
+  type ChartSpec,
   type Slide,
-  type SlideChartConfig,
   type SlideElement,
   type TextRun,
   type VerticalAnchor,
 } from '@/model';
-import { buildChartElements } from '@/templates/charts';
+import { compileChart } from '@/chart/compile';
+import { snapQuarterTurn } from '@/chart/turn';
+import {
+  applyChartFormat,
+  chartById,
+  chartElementRects,
+  chartsForElements,
+  detachChartFrom,
+  insertChartInto,
+  recompileInto,
+  removeChartFrom,
+  syncChartGeometry,
+  translateChartFrames,
+} from './chartActions';
 import { clampLevel } from '@/render/bullets';
 import { applyFormat, extractFormat, type ElementFormat } from '@/editor/elementFormat';
 
@@ -75,6 +97,14 @@ interface EditorState {
 
   past: Deck[];
   future: Deck[];
+
+  /**
+   * The deck as it stood before the current transient burst (a drag, a slider,
+   * live typing in a chart cell). Held out of `past` until the burst commits,
+   * because a burst the user abandons shouldn't cost an undo step. Never
+   * persisted — see `beginChange`.
+   */
+  transientBase: Deck | null;
 
   /**
    * Format painter buffer. Deliberately outside the deck: it's a scratch
@@ -174,7 +204,31 @@ interface EditorState {
   insertSlides: (slides: Slide[]) => void;
   duplicateSlide: (id: string) => void;
   deleteSlide: (id: string) => void;
-  updateSlideChart: (id: string, config: SlideChartConfig) => void;
+
+  // charts
+  /** Drop a new chart on the current slide and select it. */
+  insertChart: (spec: ChartSpec, frame?: Rect) => void;
+  /** Replace a chart's spec wholesale (the datasheet's save path). */
+  updateChartSpec: (chartId: string, spec: ChartSpec, transient?: boolean) => void;
+  /**
+   * Mutate a chart's spec in place and recompile. The `transient` flag is the
+   * same contract as a drag: skip history while the user is still typing, then
+   * one commit when they stop.
+   */
+  patchChart: (chartId: string, fn: (spec: ChartSpec) => void, transient?: boolean) => void;
+  /** Move/resize a chart as a unit, relaying out at the new size. */
+  setChartFrame: (chartId: string, frame: Rect, transient?: boolean) => void;
+  /**
+   * Turn a chart to one of the four orientations. Any angle is accepted and
+   * snapped — charts are never left at a diagonal.
+   */
+  setChartRotation: (chartId: string, deg: number) => void;
+  recompileChart: (chartId: string) => void;
+  /** "Break apart" — keep the shapes, lose the link to the data. One-way. */
+  detachChart: (chartId: string) => void;
+  deleteChart: (chartId: string) => void;
+  /** The chart a given element belongs to, or null. */
+  chartOf: (elementId: string) => ChartInstance | null;
 
   // slide multi-selection (filmstrip)
   selectSlideRange: (id: string) => void;
@@ -183,6 +237,12 @@ interface EditorState {
 
   // history
   commit: () => void;
+  /**
+   * The one entry point every mutating action uses. `transient` means "this is
+   * a frame of a gesture, not a step" — the first such call banks the pre-burst
+   * deck, the closing non-transient call turns it into the history entry.
+   */
+  beginChange: (transient?: boolean) => void;
   undo: () => void;
   redo: () => void;
 
@@ -193,6 +253,41 @@ interface EditorState {
 const HISTORY_LIMIT = 100;
 
 /**
+ * Settle the view onto a deck we just stepped to.
+ *
+ * The current slide matters as much as the deck: undoing an "add slide" leaves
+ * `currentSlideId` naming a slide that no longer exists, and while the canvas
+ * falls back to the first slide, every mutating action looks the id up and
+ * silently does nothing — the editor goes dead until you click the filmstrip.
+ * Landing on the nearest surviving slide keeps the two in step.
+ */
+function landOn(
+  s: {
+    currentSlideId: string;
+    selectedIds: string[];
+    editingId: string | null;
+    selectedSlideIds: string[];
+    slideSelectionAnchor: string | null;
+  },
+  deck: Deck,
+): void {
+  if (!deck.slides.some((sl) => sl.id === s.currentSlideId)) {
+    s.currentSlideId = deck.slides[0]?.id ?? '';
+  }
+  s.selectedIds = [];
+  s.editingId = null;
+  s.selectedSlideIds = [];
+  s.slideSelectionAnchor = null;
+}
+
+/** Push one entry onto the undo ring and drop the redo branch. */
+function pushPast(s: { past: Deck[]; future: Deck[] }, entry: Deck): void {
+  s.past.push(entry);
+  if (s.past.length > HISTORY_LIMIT) s.past.shift();
+  s.future = [];
+}
+
+/**
  * Floor for a keyboard resize, ~1/20". Shrinking stops here rather than
  * inverting the box, so holding the key down can't lose an object.
  */
@@ -200,6 +295,22 @@ const MIN_SIZE: EMU = EMU_PER_POINT * 3.6;
 
 function slideById(deck: Deck, id: string): Slide | undefined {
   return deck.slides.find((s) => s.id === id);
+}
+
+/**
+ * Where a chart lands when it's inserted with no box of its own: centred, and
+ * leaving a title's worth of room at the top. Sized off the slide rather than
+ * hard-coded so 4:3 decks get a sensible box too.
+ */
+function defaultChartFrame(slideSize: { w: EMU; h: EMU }): Rect {
+  const w = Math.round(slideSize.w * 0.72);
+  const h = Math.round(slideSize.h * 0.62);
+  return {
+    x: Math.round((slideSize.w - w) / 2),
+    y: Math.round(slideSize.h * 0.26),
+    w,
+    h,
+  };
 }
 
 /**
@@ -245,6 +356,7 @@ export const useEditor = create<EditorState>()(
     slideSelectionAnchor: null,
     past: [],
     future: [],
+    transientBase: null,
     formatClipboard: null,
     showGuides: true,
     pendingFitId: null,
@@ -393,15 +505,112 @@ export const useEditor = create<EditorState>()(
       });
     },
 
-    updateSlideChart(id, config) {
+
+    /* ---- charts ---- */
+
+    insertChart(spec, frame) {
       get().commit();
       set((s) => {
-        const slide = slideById(s.deck, id);
+        const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
-        slide.chart = config;
-        slide.elements = buildChartElements(config);
+        const box = frame ?? defaultChartFrame(s.deck.slideSize);
+        const chart = insertChartInto(slide, spec, box, s.designSystem);
+        // Select the whole chart, which is its group — the same thing a click
+        // on the canvas would select.
+        s.selectedIds = slide.elements
+          .filter((e) => e.chartRef?.chartId === chart.id)
+          .map((e) => e.id);
+        s.editingId = null;
+      });
+    },
+
+    updateChartSpec(chartId, spec, transient = false) {
+      get().beginChange(transient);
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        const chart = slide && chartById(slide, chartId);
+        if (!slide || !chart) return;
+        chart.spec = spec;
+        recompileInto(slide, chartId, s.designSystem);
+      });
+    },
+
+    patchChart(chartId, fn, transient = false) {
+      get().beginChange(transient);
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        const chart = slide && chartById(slide, chartId);
+        if (!slide || !chart) return;
+        fn(chart.spec);
+        recompileInto(slide, chartId, s.designSystem);
+      });
+    },
+
+    setChartFrame(chartId, frame, transient = false) {
+      get().beginChange(transient);
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        const chart = slide && chartById(slide, chartId);
+        if (!slide || !chart) return;
+        chart.frame = frame;
+        recompileInto(slide, chartId, s.designSystem);
+      });
+    },
+
+    setChartRotation(chartId, deg) {
+      const rotation = snapQuarterTurn(deg);
+      // A gesture that lands back on the orientation it started from isn't an
+      // edit, and shouldn't cost an undo step.
+      const current = (() => {
+        const s = get();
+        const slide = slideById(s.deck, s.currentSlideId);
+        return slide ? chartById(slide, chartId) : null;
+      })();
+      // An x/y plot has no side to lie on — see `supportsTurn`.
+      if (!current || !supportsTurn(current.spec.kind)) return;
+      if ((current.rotation ?? 0) === rotation) return;
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        const chart = slide && chartById(slide, chartId);
+        if (!slide || !chart) return;
+        chart.rotation = rotation || undefined;
+        recompileInto(slide, chartId, s.designSystem);
+      });
+    },
+
+    recompileChart(chartId) {
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (slide) recompileInto(slide, chartId, s.designSystem);
+      });
+    },
+
+    detachChart(chartId) {
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        detachChartFrom(slide, chartId);
         s.selectedIds = [];
       });
+    },
+
+    deleteChart(chartId) {
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        removeChartFrom(slide, chartId);
+        s.selectedIds = [];
+      });
+    },
+
+    chartOf(elementId) {
+      const s = get();
+      const slide = slideById(s.deck, s.currentSlideId);
+      const chartId = slide?.elements.find((e) => e.id === elementId)?.chartRef?.chartId;
+      return (chartId && slide && chartById(slide, chartId)) || null;
     },
 
     duplicateSlide(id) {
@@ -412,8 +621,13 @@ export const useEditor = create<EditorState>()(
         if (idx < 0) return;
         const copy: Slide = JSON.parse(JSON.stringify(s.deck.slides[idx]));
         copy.id = newSlideId;
-        copy.elements = copy.elements.map((e) => ({ ...e, id: `${e.id}-${nanoid(4)}` }));
-        s.deck.slides.splice(idx + 1, 0, copy);
+        // Chart-owned ids encode which chart and part they are, so they can't
+        // be randomized — `reidentifyCharts` regenerates them from a fresh
+        // chart id instead, and everything else re-keys as usual.
+        copy.elements = copy.elements.map((e) =>
+          e.chartRef ? e : { ...e, id: `${e.id}-${nanoid(4)}` },
+        );
+        s.deck.slides.splice(idx + 1, 0, reidentifyCharts(copy));
         s.currentSlideId = newSlideId;
         s.selectedIds = [];
       });
@@ -458,9 +672,23 @@ export const useEditor = create<EditorState>()(
 
     commit() {
       set((s) => {
-        s.past.push(JSON.parse(JSON.stringify(s.deck)));
-        if (s.past.length > HISTORY_LIMIT) s.past.shift();
-        s.future = [];
+        pushPast(s, JSON.parse(JSON.stringify(s.deck)));
+        s.transientBase = null;
+      });
+    },
+
+    beginChange(transient = false) {
+      set((s) => {
+        if (transient) {
+          // Only the FIRST frame of the burst banks anything; the rest are
+          // previews on top of a deck we've already saved.
+          if (!s.transientBase) s.transientBase = JSON.parse(JSON.stringify(s.deck));
+          return;
+        }
+        // Closing a burst: the entry is the deck as it was before the preview
+        // started, so one undo steps over the whole gesture.
+        pushPast(s, s.transientBase ?? JSON.parse(JSON.stringify(s.deck)));
+        s.transientBase = null;
       });
     },
 
@@ -479,7 +707,7 @@ export const useEditor = create<EditorState>()(
     },
 
     updateElement(id, patch, transient = false) {
-      if (!transient) get().commit();
+      get().beginChange(transient);
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         const el = slide?.elements.find((e) => e.id === id);
@@ -488,35 +716,45 @@ export const useEditor = create<EditorState>()(
     },
 
     setRect(id, rect, transient = false) {
-      if (!transient) get().commit();
-      set((s) => {
-        const slide = slideById(s.deck, s.currentSlideId);
-        const el = slide?.elements.find((e) => e.id === id);
-        if (el) el.rect = rect;
-      });
+      get().setRects([{ id, rect }], transient);
     },
 
     /**
      * Many boxes in one commit, so a group resize or rotate is a single undo
      * step. `rotation` is optional because a resize leaves angles alone.
+     *
+     * Charts ride along: their elements move like any other, and then
+     * `syncChartGeometry` follows the change onto the chart's frame — a drag
+     * just translates it, a resize relayouts, so a chart never ends up with
+     * stretched 6pt type.
      */
     setRects(rects, transient = false) {
       if (!rects.length) return;
-      if (!transient) get().commit();
+      get().beginChange(transient);
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
+        const charts = chartsForElements(
+          slide,
+          rects.map((r) => r.id),
+        );
+        const before = new Map(charts.map((c) => [c.id, chartElementRects(slide, c.id)]));
+
         for (const { id, rect, rotation } of rects) {
           const el = slide.elements.find((e) => e.id === id);
           if (!el) continue;
           el.rect = rect;
           if (rotation !== undefined) el.rotation = rotation;
         }
+
+        for (const chart of charts) {
+          syncChartGeometry(slide, chart.id, before.get(chart.id) ?? [], s.designSystem);
+        }
       });
     },
 
     moveBy(ids, dx, dy, transient = false) {
-      if (!transient) get().commit();
+      get().beginChange(transient);
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
@@ -526,18 +764,28 @@ export const useEditor = create<EditorState>()(
             el.rect.y += dy;
           }
         }
+        // A pure translation: the elements are already right, so move the frame
+        // with them rather than paying for a relayout that changes nothing.
+        translateChartFrames(slide, ids, dx, dy);
       });
     },
 
     resizeBy(ids, dw, dh, transient = false) {
-      if (!transient) get().commit();
+      get().beginChange(transient);
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
+        const charts = chartsForElements(slide, ids);
+        const before = new Map(charts.map((c) => [c.id, chartElementRects(slide, c.id)]));
+
         for (const el of slide.elements) {
           if (!ids.includes(el.id)) continue;
           el.rect.w = Math.max(MIN_SIZE, el.rect.w + dw);
           el.rect.h = Math.max(MIN_SIZE, el.rect.h + dh);
+        }
+
+        for (const chart of charts) {
+          syncChartGeometry(slide, chart.id, before.get(chart.id) ?? [], s.designSystem);
         }
       });
     },
@@ -558,7 +806,24 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const sl = slideById(s.deck, s.currentSlideId);
         if (!sl) return;
-        for (const el of sl.elements.filter((e) => ids.includes(e.id))) {
+
+        // A duplicated chart has to become its OWN chart, not a second copy of
+        // the same one: element ids encode their chart, so cloning them would
+        // hand the copies to the original, which would then delete them on its
+        // next recompile.
+        for (const chart of chartsForElements(sl, ids)) {
+          const copy = insertChartInto(
+            sl,
+            JSON.parse(JSON.stringify(chart.spec)),
+            { ...chart.frame, x: chart.frame.x + dx, y: chart.frame.y + dy },
+            s.designSystem,
+          );
+          newIds.push(
+            ...sl.elements.filter((e) => e.chartRef?.chartId === copy.id).map((e) => e.id),
+          );
+        }
+
+        for (const el of sl.elements.filter((e) => ids.includes(e.id) && !e.chartRef)) {
           const copy: SlideElement = JSON.parse(JSON.stringify(el));
           copy.id = `${el.id}-${nanoid(4)}`;
           if (copy.groupIds) copy.groupIds = copy.groupIds.map(remapGid);
@@ -570,11 +835,22 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    /**
+     * Recoloring a chart part writes to the SPEC, not to the rectangle — a fill
+     * on the element would be erased by the next recompile, so the color would
+     * survive right up until the user edited the data.
+     */
     setFill(ids, fill) {
       get().commit();
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
+        if (applyChartFormat(slide, ids, { fill })) {
+          for (const chart of chartsForElements(slide, ids)) {
+            recompileInto(slide, chart.id, s.designSystem);
+          }
+          return;
+        }
         for (const el of slide.elements) {
           if (ids.includes(el.id) && (el.type === 'text' || el.type === 'shape')) {
             el.fill = fill;
@@ -602,6 +878,12 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
+        if (applyChartFormat(slide, ids, { outline })) {
+          for (const chart of chartsForElements(slide, ids)) {
+            recompileInto(slide, chart.id, s.designSystem);
+          }
+          return;
+        }
         for (const el of slide.elements) {
           if (!ids.includes(el.id)) continue;
           if (el.type === 'line') {
@@ -729,7 +1011,14 @@ export const useEditor = create<EditorState>()(
       get().commit();
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
-        if (slide) slide.elements = slide.elements.filter((e) => !selectedIds.includes(e.id));
+        if (!slide) return;
+        // Deleting any part of a chart deletes the chart. A chart missing its
+        // axis isn't a chart with a hole in it — it's a chart that would grow
+        // the axis back on the next recompile.
+        for (const chart of chartsForElements(slide, selectedIds)) {
+          removeChartFrom(slide, chart.id);
+        }
+        slide.elements = slide.elements.filter((e) => !selectedIds.includes(e.id));
         s.selectedIds = [];
         s.editingId = null;
       });
@@ -1009,6 +1298,13 @@ export const useEditor = create<EditorState>()(
       set((d) => {
         const sl = slideById(d.deck, d.currentSlideId);
         if (!sl) return;
+        // Ungrouping a live chart means "break it apart": once the pieces are
+        // loose there's no honest way to fold hand edits back into a spec, so
+        // say so by detaching rather than regenerating over the user's work on
+        // the next recompile.
+        for (const chart of (sl.charts ?? []).filter((c) => gids.has(c.groupId))) {
+          detachChartFrom(sl, chart.id);
+        }
         const freed: string[] = [];
         for (const el of sl.elements) {
           const gid = outerGroupId(el);
@@ -1106,14 +1402,15 @@ export const useEditor = create<EditorState>()(
 
     undo() {
       set((s) => {
+        // An in-flight preview is part of the step being undone, so it goes
+        // back with it rather than leaking into the next entry.
         const prev = s.past.pop();
         if (!prev) return;
-        s.future.push(JSON.parse(JSON.stringify(s.deck)));
+        const current = s.transientBase ?? (JSON.parse(JSON.stringify(s.deck)) as Deck);
+        s.transientBase = null;
+        s.future.push(current);
         s.deck = prev;
-        s.selectedIds = [];
-        s.editingId = null;
-        s.selectedSlideIds = [];
-        s.slideSelectionAnchor = null;
+        landOn(s, prev);
       });
     },
 
@@ -1121,12 +1418,10 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const next = s.future.pop();
         if (!next) return;
+        s.transientBase = null;
         s.past.push(JSON.parse(JSON.stringify(s.deck)));
         s.deck = next;
-        s.selectedIds = [];
-        s.editingId = null;
-        s.selectedSlideIds = [];
-        s.slideSelectionAnchor = null;
+        landOn(s, next);
       });
     },
   })),
@@ -1146,18 +1441,29 @@ function emptyDeck(): Deck {
 }
 
 /** Seed the store with a deck (e.g. the sample or an imported one). */
+/**
+ * Load a deck into the editor, migrating it on the way in.
+ *
+ * Migration lives here rather than in the repository because it needs the
+ * design system and a text measurer to recompile against, and this is the one
+ * place both are already to hand. It's idempotent, so a deck that's already
+ * current passes straight through.
+ */
 export function loadDeck(deck: Deck, ds?: DesignSystem) {
+  const designSystem = ds ?? useEditor.getState().designSystem;
+  const migrated = migrateDeck(deck, (chart) => compileChart(chart, designSystem).elements);
   useEditor.setState((s) => ({
     ...s,
-    deck,
-    designSystem: ds ?? s.designSystem,
-    currentSlideId: deck.slides[0]?.id ?? '',
+    deck: migrated,
+    designSystem,
+    currentSlideId: migrated.slides[0]?.id ?? '',
     selectedIds: [],
     editingId: null,
     selectedSlideIds: [],
     slideSelectionAnchor: null,
     past: [],
     future: [],
+    transientBase: null,
   }));
 }
 

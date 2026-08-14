@@ -82,6 +82,11 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
           onKeyDown={(e) => {
             if (singleSlide) return;
             if (e.key !== 'Backspace' && e.key !== 'Delete') return;
+            // A thumbnail keeps DOM focus after the click that selected the
+            // slide — Moveable swallows the canvas mousedown, so focus never
+            // leaves the strip. Without this guard, deleting a selected object
+            // on the canvas would bubble up here and take the slide with it.
+            if (useEditor.getState().selectedIds.length) return;
             e.preventDefault();
             deleteSlides(selectedSlideIds.length > 0 ? selectedSlideIds : [currentSlideId]);
           }}

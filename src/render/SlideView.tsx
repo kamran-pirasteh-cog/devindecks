@@ -24,7 +24,7 @@ import {
   type SlideElement,
   type TextBody,
 } from '@/model';
-import { ShapeGeom } from './geometry';
+import { PathGeom, ShapeGeom } from './geometry';
 import { bulletMarkers, indentMetricsPt } from './bullets';
 
 const dashArray = (dash: Outline['dash'], stroke: number): string | undefined => {
@@ -219,6 +219,30 @@ export function ElementVisual({
           {hideBody ? null : <TextBodyView body={el.body} ds={ds} scale={scale} />}
         </div>
       );
+
+    case 'path': {
+      const strokeW = el.outline ? el.outline.widthEmu * scale : 0;
+      return (
+        <div style={{ position: 'absolute', inset: 0 }}>
+          <svg
+            width={w}
+            height={h}
+            viewBox={`0 0 ${w} ${h}`}
+            style={{ position: 'absolute', inset: 0, overflow: 'visible' }}
+          >
+            <PathGeom
+              d={el.d}
+              w={w}
+              h={h}
+              fill={fillToCss(el.fill, ds)}
+              stroke={el.outline ? resolveColor(el.outline.color, ds) : undefined}
+              strokeWidth={strokeW}
+              dash={el.outline ? dashArray(el.outline.dash, strokeW) : undefined}
+            />
+          </svg>
+        </div>
+      );
+    }
 
     case 'shape': {
       const strokeW = el.outline ? el.outline.widthEmu * scale : 0;

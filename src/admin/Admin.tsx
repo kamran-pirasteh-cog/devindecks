@@ -40,6 +40,8 @@ import {
 } from '@/templates/layoutRepository';
 import { getActiveDesignSystem, resetDesignSystem, saveDesignSystem } from '@/design/repository';
 import { PrimaryTabs, SubTabs } from '@/nav/PrimaryTabs';
+import { ChartStyleSection } from './ChartStyleSection';
+import { ChartTemplates } from './ChartTemplates';
 import { Artifacts } from './Artifacts';
 import { LayoutCard } from './LayoutCard';
 
@@ -53,15 +55,23 @@ const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
   'kpiValue',
 ];
 
-type Tab = 'design' | 'templates' | 'artifacts';
+type Tab = 'design' | 'charts' | 'templates' | 'artifacts';
 
-const ADMIN_TABS: Tab[] = ['design', 'templates', 'artifacts'];
+const ADMIN_TABS: Tab[] = ['design', 'charts', 'templates', 'artifacts'];
 
 const TAB_LABELS: Record<Tab, string> = {
   design: 'Design system',
+  charts: 'Charts',
   templates: 'Layouts',
   artifacts: 'Artifacts',
 };
+
+/**
+ * Tabs whose contents are part of the design system's own dirty/save cycle.
+ * The chart style lives on `DesignSystem`, so its tab shares the header's Save
+ * — the template library below it auto-persists, exactly like Layouts.
+ */
+const SAVEABLE_TABS: Tab[] = ['design', 'charts'];
 
 function stripExt(filename: string): string {
   return filename.replace(/\.[^./]+$/, '');
@@ -159,18 +169,18 @@ export function Admin() {
             </span>
             <button
               onClick={reset}
-              disabled={tab !== 'design'}
+              disabled={!SAVEABLE_TABS.includes(tab)}
               className={`rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 ${
-                tab === 'design' ? '' : 'invisible'
+                SAVEABLE_TABS.includes(tab) ? '' : 'invisible'
               }`}
             >
               Reset
             </button>
             <button
               onClick={save}
-              disabled={!dirty || tab !== 'design'}
+              disabled={!dirty || !SAVEABLE_TABS.includes(tab)}
               className={`rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black ${
-                tab === 'design' ? '' : 'invisible'
+                SAVEABLE_TABS.includes(tab) ? '' : 'invisible'
               }`}
             >
               {dirty ? 'Save changes' : savedAt ? 'Saved' : 'Saved'}
@@ -309,6 +319,19 @@ export function Admin() {
                 </div>
               </section>
             </div>
+          </div>
+        ) : tab === 'charts' ? (
+          <div className="space-y-6">
+            <ChartStyleSection ds={ds} onChange={(chart) => patch({ chart })} />
+            <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <h3 className="mb-1 text-sm font-semibold">Chart templates</h3>
+              <p className="mb-3 text-[11px] leading-relaxed text-zinc-500">
+                Named archetypes authors drop in and repoint at their own data —
+                chart type, axes, formats and research framing already set.
+                Saved as you go.
+              </p>
+              <ChartTemplates ds={ds} />
+            </section>
           </div>
         ) : tab === 'templates' ? (
           <div>

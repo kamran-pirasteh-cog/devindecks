@@ -24,6 +24,7 @@ import { FolderRail, type FolderScope } from './FolderRail';
 import { DocCard } from './DocCard';
 import { NewDocModal } from './NewDocModal';
 import { Reports } from './Reports';
+import { RunNowDialog } from './RunNowDialog';
 import { DeletedItems } from './DeletedItems';
 import { PrimaryTabs } from '@/nav/PrimaryTabs';
 
@@ -201,6 +202,14 @@ export function Home() {
     searchParams.get('tab') === 'reports' ? 'reports' : 'documents',
   );
   const [deleted, setDeleted] = useState<Deck[]>([]);
+  // A counter, not a boolean: the sheet lives inside `Reports`, and each press
+  // of "New report" has to reach it again — including while the tab is already
+  // showing, where a boolean would already be true and change nothing.
+  const [newReportSignal, setNewReportSignal] = useState(0);
+  const [runNow, setRunNow] = useState(false);
+  // Same counter trick as `newReportSignal`: a run raised from the Documents
+  // tab has to reach the Reports tab's approvals queue, which owns that state.
+  const [runsSignal, setRunsSignal] = useState(0);
   // The rail's "Deleted" row swaps the grid for the recycle bin — it's one of
   // the places documents can be, so it lives with the folders rather than as a
   // button off in the toolbar.
@@ -328,6 +337,19 @@ export function Home() {
             <span className="text-xl font-semibold tracking-tight">Decks</span>
           </div>
           <div className="flex items-center gap-2">
+            {/* Documents only: "run now" is about sending a deck you're looking
+                at, and the Reports tab already has it on every card menu. */}
+            {tab === 'documents' ? (
+              <button
+                onClick={() => setRunNow(true)}
+                className="flex items-center gap-1.5 rounded-md border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden className="h-3 w-3">
+                  <path d="M5 3.5 12 8l-7 4.5v-9Z" fill="currentColor" />
+                </svg>
+                Run now
+              </button>
+            ) : null}
             <NewMenu
               onNewDeck={() => setModal(true)}
               onNewReport={() => {
@@ -336,6 +358,7 @@ export function Home() {
                 if (showTrash) setScope({ kind: 'all' });
                 setTab('reports');
                 window.history.replaceState(null, '', '/?tab=reports');
+                setNewReportSignal((n) => n + 1);
               }}
             />
           </div>
@@ -355,7 +378,12 @@ export function Home() {
       </header>
 
       <main className="px-8 py-6">
-        {tab === 'reports' ? <Reports docs={docs} /> : null}
+        {/* Hidden rather than unmounted, for the same reason as the grid below:
+            a search, a rail selection or a half-filled report sheet survives a
+            trip through Documents and back. */}
+        <div className={tab === 'reports' ? undefined : 'hidden'}>
+          <Reports docs={docs} newSignal={newReportSignal} runsSignal={runsSignal} />
+        </div>
 
         {/* Hidden rather than unmounted, so a search/filter survives a trip
             through Reports and back. */}
@@ -501,6 +529,14 @@ export function Home() {
           </div>
         </section>
       </main>
+
+      {runNow ? (
+        <RunNowDialog
+          decks={docs}
+          onClose={() => setRunNow(false)}
+          onRan={() => setRunsSignal((n) => n + 1)}
+        />
+      ) : null}
 
       {modal ? (
         <NewDocModal

@@ -11,6 +11,7 @@
 
 import type { FontFamily } from './fonts';
 import { DEFAULT_PAGE_NUMBERS, type PageNumberStyle } from './pageNumbers';
+import { DEFAULT_CHART_STYLE, type ChartStyle } from './chart/style';
 
 export interface ColorToken {
   /** Stable id referenced by elements, e.g. 'brand.primary'. */
@@ -52,6 +53,13 @@ export interface DesignSystem {
 
   /** How page numbers look on any deck that turns them on. */
   pageNumbers: PageNumberStyle;
+
+  /**
+   * How charts look. Brand truth in exactly the way `pageNumbers` is: series
+   * colours are token ids, so editing the palette reflows every chart in every
+   * deck at once.
+   */
+  chart: ChartStyle;
 }
 
 /** A color reference on any element. Prefer tokens; hex is an escape hatch. */
@@ -95,4 +103,5 @@ export const DEFAULT_DESIGN_SYSTEM: DesignSystem = {
     kpiValue: { font: 'Geist', sizePt: 48, bold: true, colorToken: 'brand.accent' },
   },
   pageNumbers: DEFAULT_PAGE_NUMBERS,
+  chart: DEFAULT_CHART_STYLE,
 };

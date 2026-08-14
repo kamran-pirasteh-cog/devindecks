@@ -7,7 +7,7 @@
  * Playground database + blob store without touching the UI.
  */
 import { nanoid } from 'nanoid';
-import { SLIDE_16x9, type Deck } from '@/model';
+import { reidentifyCharts, SLIDE_16x9, type Deck, type Slide } from '@/model';
 import { TEMPLATES } from '@/templates/registry';
 import { getTemplateSlides } from '@/templates/repository';
 import { copyThreads, purgeThreads } from '@/comments/repository';
@@ -218,14 +218,32 @@ function newDeck(title: string, slides: Deck['slides'], templateId?: string): De
   };
 }
 
+/**
+ * Fresh ids for a copied slide.
+ *
+ * Chart-owned elements are left for `reidentifyCharts`: their ids encode which
+ * chart and which part they are, so a random id would silently sever them from
+ * their chart — the copy looks fine until someone edits it, and then the chart
+ * regenerates on top of orphans.
+ */
+function rekeySlide(s: Slide, elementIds?: Record<string, string>): Slide {
+  const copy: Slide = {
+    ...s,
+    id: `s-${nanoid(8)}`,
+    elements: s.elements.map((e) => {
+      if (e.chartRef) return e;
+      const id = `${e.type}-${nanoid(6)}`;
+      if (elementIds) elementIds[e.id] = id;
+      return { ...e, id };
+    }),
+  };
+  return reidentifyCharts(copy);
+}
+
 /** Create a document from a template (or 'blank') and persist it. */
 export function createDoc(templateId = 'blank', title?: string): Deck {
   const tpl = getTemplateSlides(templateId) ?? getTemplateSlides('blank')!;
-  const slides = structuredClone(tpl.slides).map((s) => ({
-    ...s,
-    id: `s-${nanoid(8)}`,
-    elements: s.elements.map((e) => ({ ...e, id: `${e.type}-${nanoid(6)}` })),
-  }));
+  const slides = structuredClone(tpl.slides).map((s) => rekeySlide(s));
   const deck = newDeck(title ?? untitledName(tpl.name), slides, templateId);
   saveDoc(deck);
   return deck;
@@ -273,17 +291,9 @@ export function duplicateDoc(id: string, title?: string): Deck | null {
     createdAt: now(),
     updatedAt: now(),
     slides: clone.slides.map((s) => {
-      const sid = `s-${nanoid(8)}`;
-      slideIds[s.id] = sid;
-      return {
-        ...s,
-        id: sid,
-        elements: s.elements.map((e) => {
-          const eid = `${e.type}-${nanoid(6)}`;
-          elementIds[e.id] = eid;
-          return { ...e, id: eid };
-        }),
-      };
+      const copy = rekeySlide(s, elementIds);
+      slideIds[s.id] = copy.id;
+      return copy;
     }),
   };
   saveDoc(deck);

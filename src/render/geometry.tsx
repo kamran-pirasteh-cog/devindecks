@@ -4,7 +4,7 @@
  * geometries we allow; the SVG here and the exported <a:prstGeom> must stay in
  * lockstep so the editor preview matches PowerPoint/Slides.
  */
-import type { ShapePreset } from '@/model';
+import type { PathOp, ShapePreset } from '@/model';
 
 export interface ShapeGeomProps {
   preset: ShapePreset;
@@ -90,4 +90,60 @@ export function ShapeGeom({
     default:
       return <rect x={s} y={s} width={iw} height={ih} {...common} />;
   }
+}
+
+/**
+ * A freeform path. Coordinates are normalized to the element box, so the same
+ * `d` renders at any size — and the SVG here has to stay in lockstep with the
+ * `<a:custGeom>` the exporter writes, exactly as `ShapeGeom` does with
+ * `<a:prstGeom>`.
+ */
+export function PathGeom({
+  d,
+  w,
+  h,
+  fill,
+  stroke,
+  strokeWidth = 0,
+  dash,
+}: {
+  d: PathOp[];
+  w: number;
+  h: number;
+  fill: string;
+  stroke?: string;
+  strokeWidth?: number;
+  dash?: string;
+}) {
+  return (
+    <path
+      d={pathData(d, w, h)}
+      fill={fill}
+      stroke={stroke ?? 'none'}
+      strokeWidth={strokeWidth}
+      strokeDasharray={dash}
+      strokeLinejoin="round"
+      vectorEffect="non-scaling-stroke"
+    />
+  );
+}
+
+/** Normalized ops -> an SVG `d` string at a concrete pixel size. */
+export function pathData(d: PathOp[], w: number, h: number): string {
+  const x = (v: number) => (v * w).toFixed(3);
+  const y = (v: number) => (v * h).toFixed(3);
+  return d
+    .map((op) => {
+      switch (op.op) {
+        case 'M':
+          return `M ${x(op.x)} ${y(op.y)}`;
+        case 'L':
+          return `L ${x(op.x)} ${y(op.y)}`;
+        case 'C':
+          return `C ${x(op.x1)} ${y(op.y1)} ${x(op.x2)} ${y(op.y2)} ${x(op.x)} ${y(op.y)}`;
+        case 'Z':
+          return 'Z';
+      }
+    })
+    .join(' ');
 }

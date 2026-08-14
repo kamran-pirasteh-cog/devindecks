@@ -27,14 +27,18 @@ import {
   selectionUnit,
   textInsetBox,
   type Rect,
+  isGridSpec,
+  supportsTurn,
+  type ChartInstance,
 } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { SelectionFormatBar } from './SelectionFormatBar';
 import { ArrangeBar } from './ArrangeBar';
 import { TextEditor } from './TextEditor';
-import { ChartEditorModal } from './ChartEditorModal';
+import { ChartDatasheetPanel } from './chart/ChartDatasheetPanel';
 import { CommentPins } from './CommentPins';
 import { measureTextFitPx } from './fitToText';
+import { layoutFrame, previewTurn, turnRect, readableAngle, snapQuarterTurn } from '@/chart/turn';
 
 const CANVAS_PAD = 48;
 
@@ -117,7 +121,41 @@ export function EditorCanvas() {
   // A selection change that mousedown on an already-selected element implies,
   // held until mouseup so it can be dropped if the gesture turns into a drag.
   const pendingSelectRef = useRef<{ id: string; mode: DeferredSelect } | null>(null);
-  const [editingChart, setEditingChart] = useState(false);
+  /**
+   * The chart whose datasheet is open. Held by id rather than by object so the
+   * panel always reads the live instance out of the store — a stale copy would
+   * show the data as it was when the panel opened.
+   */
+  const [openChartId, setOpenChartId] = useState<string | null>(null);
+
+  /**
+   * Dragging a data label moves it in the SPEC, as an offset from where the
+   * layout put it, not in the element — the next recompile would otherwise
+   * snap it straight back. The offset also pins the label, so the collision
+   * solver routes other labels around it instead of shoving it aside.
+   *
+   * Returns true when it handled the drag.
+   */
+  const nudgeChartLabel = (id: string, dx: number, dy: number): boolean => {
+    const el = store().deck.slides
+      .find((sl) => sl.id === store().currentSlideId)
+      ?.elements.find((e) => e.id === id);
+    const ref = el?.chartRef;
+    if (ref?.part !== 'label') return false;
+    store().patchChart(ref.chartId, (spec) => {
+      if (!isGridSpec(spec)) return;
+      const series = spec.data.series.find((s) => s.key === ref.series);
+      if (!series) return;
+      series.pointOverrides ??= {};
+      const prior = series.pointOverrides[ref.point] ?? {};
+      const offset = prior.labelOffset ?? { dx: 0, dy: 0 };
+      series.pointOverrides[ref.point] = {
+        ...prior,
+        labelOffset: { dx: offset.dx + dx, dy: offset.dy + dy },
+      };
+    });
+    return true;
+  };
   // Live rotation angle during a rotate gesture — rendered instead of the
   // model's value so the object turns under the cursor, not on mouseup.
   const [liveRotate, setLiveRotate] = useState<{ id: string; deg: number } | null>(null);
@@ -270,7 +308,57 @@ export function EditorCanvas() {
     moveableRef.current?.updateRect();
   }, [selectedIds, width, zoom, deck]);
 
-  const selectedNodes = selectedIds
+  /**
+   * The chart that IS the whole selection, if any.
+   *
+   * A chart is thirty-odd elements. Handing all of them to Moveable draws
+   * thirty-odd control boxes and a hundred snap lines on top of the chart —
+   * unreadable, and it makes a simple drag look broken. A chart is one object
+   * to the person looking at it, so it gets one target: its backdrop, which
+   * covers the whole frame by construction.
+   */
+  const soleChart =
+    slide?.charts?.find(
+      (c) =>
+        selectedIds.length > 0 &&
+        selectedIds.every(
+          (id) => slide.elements.find((e) => e.id === id)?.chartRef?.chartId === c.id,
+        ),
+    ) ?? null;
+
+  const chartBackdropId = soleChart ? `${soleChart.id}::plot` : null;
+
+  /**
+   * Every node of the chart being dragged as one target.
+   *
+   * Moveable only knows about the backdrop, so the rest of the chart has to be
+   * carried along by hand during the gesture — otherwise the bars sit still
+   * while an empty rectangle slides away from them.
+   */
+  const chartNodes = (): { node: HTMLElement; rect: Rect }[] => {
+    if (!soleChart || !slide) return [];
+    return slide.elements
+      .filter((e) => e.chartRef?.chartId === soleChart.id)
+      .map((e) => ({ node: nodeMap.current.get(e.id), rect: e.rect }))
+      .filter((x): x is { node: HTMLElement; rect: Rect } => !!x.node);
+  };
+
+  /**
+   * Live quarter turn being dragged on the chart, relative to where it sits now.
+   *
+   * The rotate handle is on the backdrop, but a chart turns as one object, so
+   * every one of its primitives is repainted from this delta with the same
+   * maths `turnElements` will commit — no jump on mouseup.
+   */
+  const liveChartTurn =
+    soleChart && liveRotate && liveRotate.id === chartBackdropId
+      ? snapQuarterTurn(liveRotate.deg - (soleChart.rotation ?? 0))
+      : null;
+
+  /** What Moveable actually transforms: one node for a chart, else the selection. */
+  const targetIds = chartBackdropId ? [chartBackdropId] : selectedIds;
+
+  const selectedNodes = targetIds
     .map((id) => nodeMap.current.get(id))
     .filter(Boolean) as HTMLElement[];
 
@@ -289,7 +377,7 @@ export function EditorCanvas() {
   // AREN'T selected yet, and this one already is. Render once more now that the
   // refs have landed. Self-limiting — the next pass finds every node.
   useLayoutEffect(() => {
-    if (selectedIds.filter((id) => nodeMap.current.has(id)).length !== selectedNodes.length) {
+    if (targetIds.filter((id) => nodeMap.current.has(id)).length !== selectedNodes.length) {
       setNodeTick((t) => t + 1);
     }
   });
@@ -449,6 +537,83 @@ export function EditorCanvas() {
    * Paint one element's frame of a resize and report the box in canvas px, so
    * the same code serves a lone element and each member of a group resize.
    */
+  /**
+   * The chart's geometry when a resize began, in px.
+   *
+   * A chart resize relayouts on drop — text has to keep its point size, and a
+   * taller plot wants a different number of gridlines — but during the gesture
+   * the honest preview is an affine one: every part moves and scales with the
+   * box. Without this only the backdrop tracked the handle while the bars and
+   * labels sat still, and the whole chart jumped at the end.
+   */
+  const chartResizeStartRef = useRef<{
+    frame: { x: number; y: number; w: number; h: number };
+    /** The chart's orientation, so a turned chart previews turned. */
+    rotation: number;
+    /**
+     * The box the parts were laid out in — the frame transposed at 90°/270°,
+     * see `layoutFrame`. Dragging the right-hand handle of a turned chart makes
+     * its layout TALLER, so the scale factors have to be taken here rather than
+     * from the frame, or every part slides out of the box as you drag.
+     */
+    layout: { x: number; y: number; w: number; h: number };
+    /**
+     * Each part in the chart's UNROTATED frame, plus the angle it is drawn at.
+     * Scaling happens in that space — the handle's width is the frame's width
+     * whatever way round the chart is — and the turn is re-applied after.
+     */
+    nodes: { node: HTMLElement; x: number; y: number; w: number; h: number; spin: number }[];
+  } | null>(null);
+
+  const paintChartResize = (ev: any) => {
+    const start = chartResizeStartRef.current;
+    if (!start) return;
+    const [dx, dy] = ev.drag.dist as [number, number];
+    const x = start.frame.x + dx;
+    const y = start.frame.y + dy;
+    const frame = { x, y, w: ev.width, h: ev.height };
+    const layout = layoutFrame(frame, start.rotation);
+    const sx = start.layout.w > 0 ? layout.w / start.layout.w : 1;
+    const sy = start.layout.h > 0 ? layout.h / start.layout.h : 1;
+
+    for (const n of start.nodes) {
+      // Glyphs keep their size regardless — font size comes from the model,
+      // not from the box — so scaling a text box moves it without distorting
+      // the type, which is a fair picture of where it will land.
+      const local = {
+        x: layout.x + (n.x - start.layout.x) * sx,
+        y: layout.y + (n.y - start.layout.y) * sy,
+        w: n.w * sx,
+        h: n.h * sy,
+      };
+      const { rect } = turnRect(local, layout, start.rotation);
+      n.node.style.width = `${rect.w}px`;
+      n.node.style.height = `${rect.h}px`;
+      n.node.style.transform = `translate(${rect.x}px, ${rect.y}px)${
+        n.spin ? ` rotate(${n.spin}deg)` : ''
+      }`;
+    }
+  };
+
+  /**
+   * Hand the chart's nodes back to React.
+   *
+   * `paintChartResize` writes `width`/`height` inline, and React never set
+   * those — it positions elements with `transform` alone — so it has no reason
+   * to rewrite them on the next render. Left behind, they pin every part at
+   * whatever size the drag ended on, which is the stale outline you see around
+   * labels after a resize.
+   */
+  const clearChartResizePaint = () => {
+    const start = chartResizeStartRef.current;
+    if (!start) return;
+    for (const n of start.nodes) {
+      n.node.style.removeProperty('width');
+      n.node.style.removeProperty('height');
+    }
+    chartResizeStartRef.current = null;
+  };
+
   const paintResizeFrame = (ev: any) => {
     const target = ev.target as HTMLElement;
     const id = target.dataset.id;
@@ -563,6 +728,19 @@ export function EditorCanvas() {
     // change it — without this the click lands on empty workspace and clears.
     if (target.closest?.(CHROME_SELECTOR)) return;
 
+    // Take DOM focus for the canvas. Moveable calls preventDefault on mousedown,
+    // which cancels the browser's own focus move, so focus stayed wherever it
+    // last was — a font-size field, the chat box, the slide-title input. The
+    // window-level Delete/Backspace handler treats a focused input as typing and
+    // bails, which is why deleting a freshly clicked object worked only
+    // sometimes. Skipped while text is being edited: the editable is inside the
+    // canvas and must keep the caret.
+    if (!editingId) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active !== wrapRef.current) active.blur();
+      wrapRef.current?.focus({ preventScroll: true });
+    }
+
     const id = elementAtPoint(e.clientX, e.clientY)?.dataset.id;
 
     // Right-click opens the context menu on whatever is under the pointer; it
@@ -622,7 +800,10 @@ export function EditorCanvas() {
   return (
     <div
       ref={wrapRef}
-      className="relative flex h-full w-full items-center justify-center overflow-auto bg-zinc-200/70 p-12 dark:bg-zinc-800"
+      // Focusable so a canvas click can pull focus off whatever field had it;
+      // -1 keeps it out of the tab order, and no ring is drawn for it.
+      tabIndex={-1}
+      className="relative flex h-full w-full items-center justify-center overflow-auto bg-zinc-200/70 p-12 outline-none dark:bg-zinc-800"
       onMouseDownCapture={resolveMouseDown}
       onDoubleClickCapture={(e) => {
         const t = e.target as HTMLElement;
@@ -631,7 +812,10 @@ export function EditorCanvas() {
         if (t.className.includes('moveable-rotation')) {
           e.preventDefault();
           e.stopPropagation();
-          selectedIds.forEach((id) => store().updateElement(id, { rotation: 0 }));
+          // A chart's angle lives on the chart; zeroing its primitives would
+          // last only until the next recompile.
+          if (soleChart) store().setChartRotation(soleChart.id, 0);
+          else selectedIds.forEach((id) => store().updateElement(id, { rotation: 0 }));
           moveableRef.current?.updateRect();
           return;
         }
@@ -650,7 +834,7 @@ export function EditorCanvas() {
           column. */}
       <div className="relative m-auto shrink-0" style={{ width: displayWidth }}>
         <div className="absolute bottom-full right-0 z-30 mb-2 flex justify-end">
-          <SelectionFormatBar />
+          <SelectionFormatBar onOpenChartData={setOpenChartId} />
         </div>
         <div className="absolute left-full top-0 z-30 ml-1.5 flex">
           <ArrangeBar />
@@ -714,25 +898,28 @@ export function EditorCanvas() {
             childless. Shares the elements' coordinate origin. */}
         <div ref={ghostLayerRef} className="pointer-events-none absolute inset-0 z-10" />
 
-        {slide.chart ? (
-          <button
-            onClick={() => setEditingChart(true)}
-            title="Edit chart"
-            className="absolute right-3 top-3 z-10 flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-600 opacity-0 shadow-sm transition group-hover:opacity-100 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          >
-            ✎ Edit chart
-          </button>
-        ) : null}
         {slide.elements.map((el) => {
           const isEditing = editingId === el.id;
           const live = liveResize?.[el.id] ?? null;
-          const boxX = live ? live.x : el.rect.x * scale;
-          const boxY = live ? live.y : el.rect.y * scale;
-          const boxW = live ? live.w : el.rect.w * scale;
-          const boxH = live ? live.h : el.rect.h * scale;
+          // A chart mid-turn: this primitive orbits the frame's centre and
+          // spins by the same quarter turn, kept inside the frame so the chart
+          // turns in its box — the commit re-solves the layout, see `turn.ts`.
+          const turning =
+            liveChartTurn !== null && soleChart && el.chartRef?.chartId === soleChart.id
+              ? previewTurn(el.rect, soleChart.frame, liveChartTurn)
+              : null;
+          const rect = turning ? turning.rect : el.rect;
+          const boxX = live ? live.x : rect.x * scale;
+          const boxY = live ? live.y : rect.y * scale;
+          const boxW = live ? live.w : rect.w * scale;
+          const boxH = live ? live.h : rect.h * scale;
           // Mid-rotation the live angle wins, so the object turns with the
           // handle instead of snapping into place on mouseup.
-          const spinDeg = liveRotate?.id === el.id ? liveRotate.deg : (el.rotation ?? 0);
+          const spinDeg = turning
+            ? readableAngle((el.rotation ?? 0) + turning.spin, el.type === 'text')
+            : liveRotate?.id === el.id
+              ? liveRotate.deg
+              : (el.rotation ?? 0);
           return (
             <div
               key={el.id}
@@ -755,6 +942,13 @@ export function EditorCanvas() {
                 cursor: 'move',
               }}
               onDoubleClick={(e) => {
+                // A chart's parts are text and shapes too, but double-clicking
+                // one means "edit the chart's data", not "edit this label".
+                if (el.chartRef) {
+                  e.stopPropagation();
+                  setOpenChartId(el.chartRef.chartId);
+                  return;
+                }
                 if (el.type === 'text' || (el.type === 'shape' && el.body)) {
                   e.stopPropagation();
                   store().setEditing(el.id);
@@ -817,12 +1011,16 @@ export function EditorCanvas() {
             target={selectedNodes}
             draggable
             resizable
-            rotatable
+            // A scatter or bubble plot has no side to lie on, so it gets no
+            // rotate handle at all — see `supportsTurn`.
+            rotatable={!soleChart || supportsTurn(soleChart.spec.kind)}
             keepRatio={keepRatioActive}
             origin={false}
             throttleDrag={0}
             throttleResize={0}
-            throttleRotate={0}
+            // Charts snap to the four orientations — a chart at 37° is a
+            // mistake, not a design. Everything else rotates freely.
+            throttleRotate={soleChart ? 90 : 0}
             snappable
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
@@ -854,6 +1052,20 @@ export function EditorCanvas() {
               e.target.style.transform = `translate(${el.rect.x * scale + dx}px, ${el.rect.y * scale + dy}px)${
                 el.rotation ? ` rotate(${el.rotation}deg)` : ''
               }`;
+              // The chart's other parts aren't Moveable targets, so move them
+              // with it or only the backdrop appears to travel.
+              if (soleChart) {
+                for (const { node, rect } of chartNodes()) {
+                  if (node === e.target) continue;
+                  // Each part keeps its own angle: a turned chart, or just a
+                  // rotated axis title, would otherwise snap upright for the
+                  // duration of the drag and jump back on drop.
+                  const spin = findEl(node.dataset.id!)?.rotation ?? 0;
+                  node.style.transform = `translate(${rect.x * scale + dx}px, ${
+                    rect.y * scale + dy
+                  }px)${spin ? ` rotate(${spin}deg)` : ''}`;
+                }
+              }
             }}
             onDragEnd={(e) => {
               const wasDuplicate = dragDuplicateRef.current;
@@ -874,7 +1086,12 @@ export function EditorCanvas() {
                 }
                 store().duplicateBy([id], pxToEmu(dx, scale), pxToEmu(dy, scale));
                 restoreCommittedTransform(e.target as HTMLElement);
-              } else {
+              } else if (soleChart) {
+                // One command for the whole chart, so it's one undo step and
+                // the frame follows the elements.
+                const ids = chartNodes().map(({ node }) => node.dataset.id!);
+                store().moveBy(ids, pxToEmu(dx, scale), pxToEmu(dy, scale));
+              } else if (!nudgeChartLabel(id, pxToEmu(dx, scale), pxToEmu(dy, scale))) {
                 store().moveBy([id], pxToEmu(dx, scale), pxToEmu(dy, scale));
               }
             }}
@@ -922,16 +1139,52 @@ export function EditorCanvas() {
             }}
             onResizeStart={(e) => {
               beginResize(e.inputEvent);
+              if (!soleChart) {
+                chartResizeStartRef.current = null;
+                return;
+              }
+              const rotation = snapQuarterTurn(soleChart.rotation ?? 0);
+              const framePx = {
+                x: soleChart.frame.x * scale,
+                y: soleChart.frame.y * scale,
+                w: soleChart.frame.w * scale,
+                h: soleChart.frame.h * scale,
+              };
+              const layoutPx = layoutFrame(framePx, rotation);
+              chartResizeStartRef.current = {
+                frame: framePx,
+                rotation,
+                layout: layoutPx,
+                nodes: chartNodes().map(({ node, rect }) => {
+                  // Undo the chart's turn to get back to layout space; the
+                  // frame's centre is the same point either way round.
+                  const { rect: local } = turnRect(
+                    { x: rect.x * scale, y: rect.y * scale, w: rect.w * scale, h: rect.h * scale },
+                    layoutPx,
+                    (360 - rotation) % 360,
+                  );
+                  return {
+                    node,
+                    ...local,
+                    spin: findEl(node.dataset.id!)?.rotation ?? 0,
+                  };
+                }),
+              };
             }}
             onBeforeResize={(e) => {
               e.setFixedDirection(resizeFromCenterRef.current ? [0, 0] : e.startFixedDirection);
             }}
             onResize={(e) => {
+              if (soleChart) {
+                paintChartResize(e);
+                return;
+              }
               const painted = paintResizeFrame(e);
               if (painted) setLiveResize({ [painted.id]: painted.box });
             }}
             onResizeEnd={(e) => {
               endResize();
+              clearChartResizePaint();
               const last = e.lastEvent;
               setLiveResize(null);
               if (!last) return;
@@ -939,12 +1192,19 @@ export function EditorCanvas() {
               const el = findEl(id);
               if (!el) return;
               const [dx, dy] = last.drag.dist as [number, number];
-              store().setRect(id, {
+              const rect = {
                 x: el.rect.x + pxToEmu(dx, scale),
                 y: el.rect.y + pxToEmu(dy, scale),
                 w: pxToEmu(last.width, scale),
                 h: pxToEmu(last.height, scale),
-              });
+              };
+              if (soleChart) {
+                // The backdrop IS the frame, so resizing it resizes the chart —
+                // which relayouts rather than stretching 9pt type to 14.
+                store().setChartFrame(soleChart.id, rect);
+              } else {
+                store().setRect(id, rect);
+              }
             }}
             // Group resize, PowerPoint-style: dragging ONE handle of a
             // multi-selection applies the SAME scale factors to every selected
@@ -1058,6 +1318,13 @@ export function EditorCanvas() {
               const last = e.lastEvent;
               if (!last) return;
               const id = (e.target as HTMLElement).dataset.id!;
+              // The handle is on the backdrop, but the chart turns as one
+              // object and the orientation belongs to the chart, not to a
+              // rectangle that a recompile would replace.
+              if (soleChart) {
+                store().setChartRotation(soleChart.id, last.rotation);
+                return;
+              }
               store().updateElement(id, { rotation: normalizeDeg(last.rotation) });
             }}
             // Group rotate: the selection turns about ITS OWN centre, so each
@@ -1156,18 +1423,30 @@ export function EditorCanvas() {
         </div>
       </div>
 
-      {editingChart && slide.chart ? (
-        <ChartEditorModal
-          initial={slide.chart}
-          ds={ds}
-          saveLabel="Save changes"
-          onCancel={() => setEditingChart(false)}
-          onSave={(config) => {
-            store().updateSlideChart(slide.id, config);
-            setEditingChart(false);
-          }}
-        />
-      ) : null}
+      <ChartDatasheetHost
+        chart={slide.charts?.find((c) => c.id === openChartId) ?? null}
+        onClose={() => setOpenChartId(null)}
+      />
+
     </div>
   );
+}
+
+/**
+ * Renders the datasheet only while its chart still exists.
+ *
+ * The chart can vanish under an open panel — an undo, a delete, or switching
+ * slides — and the panel must fold quietly rather than throw.
+ */
+function ChartDatasheetHost({
+  chart,
+  onClose,
+}: {
+  chart: ChartInstance | null;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!chart) onClose();
+  }, [chart, onClose]);
+  return chart ? <ChartDatasheetPanel chart={chart} onClose={onClose} /> : null;
 }
