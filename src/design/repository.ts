@@ -8,7 +8,12 @@
  *
  * localStorage today; swaps for the Playground DB in Phase 5.
  */
-import { DEFAULT_DESIGN_SYSTEM, DEFAULT_PAGE_NUMBERS, type DesignSystem } from '@/model';
+import {
+  DEFAULT_DESIGN_SYSTEM,
+  DEFAULT_PAGE_NUMBERS,
+  withChartStyleDefaults,
+  type DesignSystem,
+} from '@/model';
 
 const KEY = 'devindesign.ds.v1';
 
@@ -18,7 +23,13 @@ const KEY = 'devindesign.ds.v1';
  * than letting `ds.pageNumbers.font` explode at render time.
  */
 function withDefaults(ds: DesignSystem): DesignSystem {
-  return { ...ds, pageNumbers: { ...DEFAULT_PAGE_NUMBERS, ...ds.pageNumbers } };
+  return {
+    ...ds,
+    pageNumbers: { ...DEFAULT_PAGE_NUMBERS, ...ds.pageNumbers },
+    // Deep, not shallow: a stored system predating the `chart` section would
+    // otherwise survive this line and then crash on `ds.chart.axis.showX`.
+    chart: withChartStyleDefaults(ds.chart),
+  };
 }
 
 export function getActiveDesignSystem(): DesignSystem {

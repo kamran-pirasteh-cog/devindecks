@@ -27,6 +27,7 @@ import {
   type DesignSystem,
   type Fill,
   type Outline,
+  type PathElement,
   type ShapeElement,
   type SlideElement,
   type TextBody,
@@ -128,6 +129,49 @@ function bodyBoxOpts(body: TextBody) {
       emuToPoints(body.insets?.l ?? DEFAULT_TEXT_INSETS.l),
     ],
   };
+}
+
+/**
+ * A freeform path becomes an OOXML `<a:custGeom>`.
+ *
+ * pptxgenjs builds one from a `points` array; our ops map onto it directly
+ * because both are the same four primitives. Coordinates are normalized to the
+ * element box in the model and inches on the wire, so the conversion is a
+ * single multiply — and the SVG in `render/geometry.tsx` must stay in lockstep
+ * with what's written here, exactly as `ShapeGeom` does with `prstGeom`.
+ */
+function addPathElement(slide: PptxGenJS.Slide, el: PathElement, ds: DesignSystem) {
+  const w = emuToInches(el.rect.w);
+  const h = emuToInches(el.rect.h);
+  const points = el.d.map((op) => {
+    switch (op.op) {
+      case 'M':
+        return { x: op.x * w, y: op.y * h, moveTo: true as const };
+      case 'L':
+        return { x: op.x * w, y: op.y * h };
+      case 'C':
+        return {
+          x: op.x * w,
+          y: op.y * h,
+          curve: {
+            type: 'cubic' as const,
+            x1: op.x1 * w,
+            y1: op.y1 * h,
+            x2: op.x2 * w,
+            y2: op.y2 * h,
+          },
+        };
+      case 'Z':
+        return { close: true as const };
+    }
+  });
+
+  slide.addShape('custGeom' as PptxGenJS.ShapeType, {
+    ...xywh(el),
+    points: points as never,
+    fill: el.fill?.kind === 'solid' ? { color: hx(el.fill.color, ds) } : { type: 'none' },
+    line: el.outline ? outlineOpts(el.outline, ds) : undefined,
+  });
 }
 
 function xywh(el: SlideElement) {
@@ -239,6 +283,9 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
             ...xywh(el),
             line: outlineOpts(el.outline, ds),
           });
+          break;
+        case 'path':
+          addPathElement(slide, el, ds);
           break;
         case 'picture':
           slide.addImage(

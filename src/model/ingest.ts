@@ -55,7 +55,7 @@ export interface RawSlide {
   background?: Slide['background'];
 }
 
-const ELEMENT_TYPES = new Set(['text', 'shape', 'line', 'picture']);
+const ELEMENT_TYPES = new Set(['text', 'shape', 'line', 'picture', 'path']);
 
 /** Nearest allowed font for an out-of-set family, so text keeps its character. */
 function coerceFont(raw: unknown, ds: DesignSystem): { font: FontFamily; changed: boolean } {

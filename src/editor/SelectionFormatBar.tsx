@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ALLOWED_FONTS,
   emuToPoints,
+  isStacked,
   pointsToEmu,
   resolveColor,
   token,
@@ -229,7 +230,11 @@ function outlineOf(el: SlideElement | undefined): Outline | undefined {
   return 'outline' in el ? el.outline : undefined;
 }
 
-export function SelectionFormatBar() {
+export function SelectionFormatBar({
+  onOpenChartData,
+}: {
+  onOpenChartData?: (chartId: string) => void;
+} = {}) {
   const deck = useEditor((s) => s.deck);
   const ds = useEditor((s) => s.designSystem);
   const currentSlideId = useEditor((s) => s.currentSlideId);
@@ -240,8 +245,31 @@ export function SelectionFormatBar() {
   const selected = slide?.elements.filter((e) => selectedIds.includes(e.id)) ?? [];
   if (!selected.length) return null;
 
-  const hasText = selected.some((e) => e.type === 'text' || (e.type === 'shape' && e.body));
+  // A chart part is a shape or a text box, but offering "Font" and "List" for
+  // a bar is nonsense — the chart cluster replaces them.
+  const chartRefs = selected.map((e) => e.chartRef).filter(Boolean);
+  const isChart = chartRefs.length > 0 && chartRefs.length === selected.length;
+  const chartId = isChart ? chartRefs[0]!.chartId : null;
+  const seriesKeys = [
+    ...new Set(
+      selected
+        .map((e) => (e.chartRef?.part === 'mark' ? e.chartRef.series : null))
+        .filter(Boolean) as string[],
+    ),
+  ];
+
+  const hasText = !isChart && selected.some((e) => e.type === 'text' || (e.type === 'shape' && e.body));
   const hasFillable = selected.some((e) => e.type === 'text' || e.type === 'shape');
+  if (isChart && chartId) {
+    return (
+      <ChartFormatCluster
+        chartId={chartId}
+        seriesKeys={seriesKeys}
+        ds={ds}
+        onOpenData={onOpenChartData}
+      />
+    );
+  }
   // Pictures are the one thing with nothing to offer here.
   const hasBorder = selected.some((e) => e.type !== 'picture');
   if (!hasText && !hasFillable && !hasBorder) return null;
@@ -468,5 +496,181 @@ export function SelectionFormatBar() {
         </>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The bar a chart shows instead of the ordinary one.
+ *
+ * Everything here writes to the SPEC through a store action, never to the
+ * selected rectangles — a fill set on the element would be erased by the next
+ * recompile, so the color would survive right up until someone edited the data.
+ * `setFill` already routes chart selections for us; the rest go through
+ * `patchChart`.
+ */
+function ChartFormatCluster({
+  chartId,
+  seriesKeys,
+  ds,
+  onOpenData,
+}: {
+  chartId: string;
+  seriesKeys: string[];
+  ds: DesignSystem;
+  onOpenData?: (chartId: string) => void;
+}) {
+  const store = useEditor.getState;
+  const chart = useEditor((s) =>
+    s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.charts?.find((c) => c.id === chartId),
+  );
+  const selectedIds = useEditor((s) => s.selectedIds);
+  if (!chart) return null;
+
+  const spec = chart.spec;
+  const labels = spec.decorations.labels;
+  const stacked = isStacked(spec);
+  // A selection spanning several series has no single color to show.
+  const oneSeries = seriesKeys.length === 1;
+
+  return (
+    <div
+      className="dd-format-bar flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+      role="toolbar"
+      aria-label="Format chart"
+      onContextMenu={(e) => e.stopPropagation()}
+    >
+      {/* The primary action. Double-clicking the chart also opens this, but
+          only when it isn't already selected — once it is, Moveable's control
+          box sits over every part and swallows the click. */}
+      <button
+        onClick={() => onOpenData?.(chartId)}
+        title="Edit this chart's data"
+        className="rounded bg-indigo-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-indigo-500"
+      >
+        Data
+      </button>
+
+      {oneSeries ? (
+        <Group label="Series">
+          <ColorPicker
+            label="Series color"
+            value={undefined}
+            colors={ds.colors}
+            ds={ds}
+            onPick={(id) => store().setFill(selectedIds, { kind: 'solid', color: token(id) })}
+          />
+        </Group>
+      ) : null}
+
+      <Divider />
+
+      <Group label="Stacking">
+        <select
+          value={'stack' in spec ? spec.stack : 'clustered'}
+          disabled={!('stack' in spec)}
+          onChange={(e) =>
+            store().patchChart(chartId, (s) => {
+              if (!('stack' in s)) return;
+              const mode = e.target.value as 'clustered' | 'stacked' | 'stacked100';
+              s.stack = mode;
+              if ('overlapPct' in s) s.overlapPct = mode === 'clustered' ? -27 : 100;
+            })
+          }
+          aria-label="Stacking"
+          className={FIELD_CLASS}
+        >
+          <option value="clustered">Clustered</option>
+          <option value="stacked">Stacked</option>
+          <option value="stacked100">100%</option>
+        </select>
+      </Group>
+
+      <Group label="Labels">
+        <div className="flex gap-0.5">
+          <ToggleButton
+            active={labels.show}
+            label="Data labels"
+            onClick={() =>
+              store().patchChart(chartId, (s) => (s.decorations.labels.show = !s.decorations.labels.show))
+            }
+          >
+            123
+          </ToggleButton>
+          <ToggleButton
+            active={spec.decorations.totals?.show ?? false}
+            label="Total labels"
+            disabled={!stacked}
+            onClick={() =>
+              store().patchChart(chartId, (s) => {
+                s.decorations.totals = s.decorations.totals?.show
+                  ? undefined
+                  : { show: true, content: { kind: 'value' }, placement: 'above' };
+              })
+            }
+          >
+            ∑
+          </ToggleButton>
+          <ToggleButton
+            active={spec.decorations.gridlines.major?.show ?? false}
+            label="Gridlines"
+            onClick={() =>
+              store().patchChart(chartId, (s) => {
+                s.decorations.gridlines.major = { show: !s.decorations.gridlines.major?.show };
+              })
+            }
+          >
+            ≡
+          </ToggleButton>
+          <ToggleButton
+            active={spec.legend.show}
+            label="Legend"
+            onClick={() => store().patchChart(chartId, (s) => (s.legend.show = !s.legend.show))}
+          >
+            ▤
+          </ToggleButton>
+        </div>
+      </Group>
+
+      <Divider />
+
+      <button
+        onClick={() => store().detachChart(chartId)}
+        title="Break apart into plain shapes. This can't be undone into a chart again."
+        className="rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+      >
+        Break apart
+      </button>
+    </div>
+  );
+}
+
+function ToggleButton({
+  active,
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      className={`flex h-6 w-6 items-center justify-center rounded text-[11px] disabled:opacity-30 ${
+        active
+          ? 'bg-indigo-600 text-white'
+          : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+      }`}
+    >
+      {children}
+    </button>
   );
 }

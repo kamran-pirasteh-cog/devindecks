@@ -10,7 +10,7 @@
 import type { EMU } from './units';
 import type { ColorRef } from './tokens';
 import type { FontFamily } from './fonts';
-import type { SlideChartConfig } from './chart';
+import type { ChartInstance, ChartRef, SlideChartConfig } from './chart';
 
 /* ------------------------------------------------------------------ */
 /* Geometry                                                           */
@@ -126,7 +126,7 @@ export type ShapePreset =
   | 'chevron'
   | 'pill';
 
-export type ElementType = 'text' | 'shape' | 'line' | 'picture';
+export type ElementType = 'text' | 'shape' | 'line' | 'picture' | 'path';
 
 interface BaseElement {
   id: string;
@@ -148,6 +148,13 @@ interface BaseElement {
    * than a nested container element — see `model/group.ts` for why.
    */
   groupIds?: string[];
+  /**
+   * Set when this primitive was compiled from a chart: which spec node it came
+   * from. Editor-only provenance — exporters ignore it exactly as they ignore
+   * `role`. It's what lets a click on a bar edit the SERIES rather than the
+   * rectangle, so the change survives the next recompile.
+   */
+  chartRef?: ChartRef;
 }
 
 export interface TextElement extends BaseElement {
@@ -173,6 +180,38 @@ export interface LineElement extends BaseElement {
   endArrow?: boolean;
 }
 
+/**
+ * A freeform outline. Pie and donut slices, true stacked areas, Mekko cells and
+ * waterfall connectors cannot be expressed as rect/ellipse/line, and this is the
+ * one primitive that covers all of them.
+ *
+ * Two constraints keep it export-safe:
+ *
+ * - **Coordinates are NORMALIZED to the element's box (0..1 on both axes)**, so
+ *   a path scales under `setRect`, group resize, `matchSize` and
+ *   `fitToMargins` exactly like every other element, with no special cases
+ *   anywhere.
+ * - **Cubics only, no arcs.** This maps to OOXML `<a:custGeom>` with
+ *   `moveTo`/`lnTo`/`cubicBezTo`/`close`, which both PowerPoint and Google
+ *   Slides import reliably. `arcTo` is where Slides' custGeom support is least
+ *   trustworthy, so circular geometry is approximated with <=90 degree cubic
+ *   segments instead.
+ *
+ * Authors never create one directly — only the chart compiler emits paths.
+ */
+export interface PathElement extends BaseElement {
+  type: 'path';
+  d: PathOp[];
+  fill?: Fill;
+  outline?: Outline;
+}
+
+export type PathOp =
+  | { op: 'M'; x: number; y: number }
+  | { op: 'L'; x: number; y: number }
+  | { op: 'C'; x1: number; y1: number; x2: number; y2: number; x: number; y: number }
+  | { op: 'Z' };
+
 export interface PictureElement extends BaseElement {
   type: 'picture';
   /** Asset ref or data URL; resolved via the asset store. */
@@ -184,7 +223,8 @@ export type SlideElement =
   | TextElement
   | ShapeElement
   | LineElement
-  | PictureElement;
+  | PictureElement
+  | PathElement;
 
 /* ------------------------------------------------------------------ */
 /* Slide + Deck                                                       */
@@ -197,13 +237,28 @@ export interface Slide {
   /** Slide template this slide was instantiated from, if any. */
   layoutId?: string;
   notes?: string;
-  /** Source config for this slide's chart, if its elements were generated from one. */
+  /**
+   * Charts living on this slide. Each one owns the elements stamped with its
+   * `groupId`; everything else on the slide is untouched by a recompile, which
+   * is what makes more than one chart per slide possible.
+   */
+  charts?: ChartInstance[];
+  /**
+   * @deprecated The pre-engine single-chart-per-slide config. Migrated into
+   * `charts` on load (`model/chart/migrate.ts`) and then cleared.
+   */
   chart?: SlideChartConfig;
 }
 
 export interface Deck {
   id: string;
   title: string;
+  /**
+   * Model version this deck was last written at. Migrations run on load and
+   * are idempotent, but the stamp makes "has this been through migration N?"
+   * answerable without re-scanning every slide. Absent = pre-versioning.
+   */
+  schemaVersion?: number;
   slideSize: { w: EMU; h: EMU };
   slides: Slide[];
   /** Provenance: which brand + template version this was built on. */
@@ -245,3 +300,4 @@ export const isShape = (e: SlideElement): e is ShapeElement => e.type === 'shape
 export const isLine = (e: SlideElement): e is LineElement => e.type === 'line';
 export const isPicture = (e: SlideElement): e is PictureElement =>
   e.type === 'picture';
+export const isPath = (e: SlideElement): e is PathElement => e.type === 'path';

@@ -5,4 +5,7 @@ export * from './pageNumbers';
 export * from './layout';
 export * from './chart';
 export * from './group';
+export * from './sheet';
+export * from './sheetSchema';
+export * from './sheetAdapter';
 export * from './types';

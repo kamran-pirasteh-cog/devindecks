@@ -12,6 +12,7 @@ import { makeShape } from './factories';
 import { LinePopover } from './LinePopover';
 import { TextPopover } from './TextPopover';
 import { ShortcutsModal } from './ShortcutsModal';
+import { ChartPopover } from './ChartPopover';
 import { OVERLAY_Z } from './layers';
 import { FIT_TO_MARGINS_BUTTON } from '@/flags';
 import type { ShapePreset } from '@/model';
@@ -57,8 +58,6 @@ const Divider = () => <div className="mx-1 h-5 w-px bg-zinc-200 dark:bg-zinc-700
 export function Toolbar() {
   const addElement = useEditor((s) => s.addElement);
   const reorder = useEditor((s) => s.reorder);
-  const undo = useEditor((s) => s.undo);
-  const redo = useEditor((s) => s.redo);
   const copyFormat = useEditor((s) => s.copyFormat);
   const pasteFormat = useEditor((s) => s.pasteFormat);
   const hasFormat = useEditor((s) => s.formatClipboard !== null);
@@ -77,9 +76,10 @@ export function Toolbar() {
   const togglePanel = useComments((s) => s.togglePanel);
   const panelOpen = useComments((s) => s.panelOpen);
   const openThreads = useComments((s) => s.threads.filter((t) => !t.resolved).length);
-  const canUndo = useEditor((s) => s.past.length > 0);
-  const canRedo = useEditor((s) => s.future.length > 0);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showCharts, setShowCharts] = useState(false);
+  const insertChart = useEditor((s) => s.insertChart);
+  const ds = useEditor((s) => s.designSystem);
   const [showLine, setShowLine] = useState(false);
   const [showText, setShowText] = useState(false);
   const lineAnchorRef = useRef<HTMLDivElement>(null);
@@ -169,12 +169,25 @@ export function Toolbar() {
         ⬇
       </Btn>
       <div className="flex-1" />
-      <Btn onClick={undo} title="Undo" disabled={!canUndo}>
-        ↺
-      </Btn>
-      <Btn onClick={redo} title="Redo" disabled={!canRedo}>
-        ↻
-      </Btn>
+      <div className="relative">
+        <button
+          onClick={() => setShowCharts((o) => !o)}
+          title="Insert a chart"
+          aria-pressed={showCharts}
+          className={`flex h-8 items-center rounded-md px-2.5 text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+            showCharts ? 'text-indigo-600 dark:text-indigo-400' : 'text-zinc-600 dark:text-zinc-300'
+          }`}
+        >
+          Charts
+        </button>
+        {showCharts ? (
+          <ChartPopover
+            ds={ds}
+            onPick={(spec) => insertChart(spec)}
+            onClose={() => setShowCharts(false)}
+          />
+        ) : null}
+      </div>
       <Divider />
       <button
         onClick={togglePanel}

@@ -186,11 +186,11 @@ export function Editor({
         e.preventDefault();
         useComments.getState().startDraft(s.currentSlideId, s.selectedIds[0]);
       } else if (mod && !e.shiftKey && key === 'z') {
-        // Undo is mod+Z only; redo is mod+Y. mod+shift+Z is deliberately not
-        // bound, so it falls through rather than acting as a second redo.
         e.preventDefault();
         s.undo();
-      } else if (mod && key === 'y') {
+      } else if (mod && (key === 'y' || (e.shiftKey && key === 'z'))) {
+        // Both redo chords: ⌘⇧Z is what every other editor on this machine
+        // uses, and leaving it unbound made redo look broken half the time.
         e.preventDefault();
         s.redo();
       } else if (mod && e.altKey && (e.code === 'KeyG' || key === 'g' || key === '©')) {
