@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { defaultChartSpec, sheetFromSpec, type SheetModel } from '@/model';
 import { setCell } from './sheetOps';
-import { advance, isSingleCell, move, reconcileSelection, singleCell } from './selection';
+import {
+  advance,
+  isSingleCell,
+  move,
+  reconcileSelection,
+  selectColumn,
+  selectRow,
+  singleCell,
+} from './selection';
 
 const sheet = (): SheetModel => sheetFromSpec(defaultChartSpec('column', 'stacked'));
 // 3 rows (FY23-25) x 4 columns (Date + 3 series).
@@ -86,6 +94,46 @@ describe('advance', () => {
     const s = sheet();
     const block = { active: { r: 1, c: 1 }, range: { anchor: { r: 0, c: 1 }, focus: { r: 1, c: 2 } } };
     expect(advance(s, block, 'vertical').active).toEqual({ r: 0, c: 2 });
+  });
+});
+
+describe('the blank area past the data', () => {
+  // The grid renders further than the model does (see gridExtent), and passes
+  // that extent in; these are the cases where forgetting to would strand the
+  // cursor on the last real cell.
+  const extent = { rows: 20, cols: 6 };
+
+  it('lets an arrow key step past the last row and column', () => {
+    const s = sheet();
+    expect(move(s, singleCell({ r: 2, c: 3 }), 'down', { extent }).active).toEqual({ r: 3, c: 3 });
+    expect(move(s, singleCell({ r: 2, c: 3 }), 'right', { extent }).active).toEqual({ r: 2, c: 4 });
+  });
+
+  it('still clamps at the end of the blank area', () => {
+    const s = sheet();
+    expect(move(s, singleCell({ r: 19, c: 5 }), 'down', { extent }).active).toEqual({ r: 19, c: 5 });
+  });
+
+  it('wraps Tab at the far edge of the blank area, not of the data', () => {
+    const s = sheet();
+    expect(advance(s, singleCell({ r: 0, c: 5 }), 'horizontal', false, extent).active).toEqual({
+      r: 1,
+      c: 0,
+    });
+  });
+
+  it('keeps a selection sitting in the blank area where it is', () => {
+    const s = sheet();
+    const sel = singleCell({ r: 8, c: 5 });
+    expect(reconcileSelection(s, sel, extent).active).toEqual({ r: 8, c: 5 });
+    // ...and without the extent it would be dragged back onto the data.
+    expect(reconcileSelection(s, sel).active).toEqual({ r: 2, c: 3 });
+  });
+
+  it('selects a whole row or column across the blank area', () => {
+    const s = sheet();
+    expect(selectRow(s, 7, extent).range.focus).toEqual({ r: 7, c: 5 });
+    expect(selectColumn(s, 5, extent).range.focus).toEqual({ r: 19, c: 5 });
   });
 });
 

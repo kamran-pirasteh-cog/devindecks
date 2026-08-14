@@ -63,6 +63,19 @@ export function chartIdOfElementId(id: string): string | null {
   return i > 0 ? id.slice(0, i) : null;
 }
 
+/**
+ * The data series a legend entry stands for.
+ *
+ * A legend entry is TWO marks — the swatch and its text — and their ids have to
+ * differ, so the text's ref carries a `.label`-suffixed series key (see
+ * `legendMarks`). That suffix is an id device, not a series: anything asking
+ * "which series did the user just click?" must strip it, or it looks up a series
+ * that doesn't exist and silently finds nothing.
+ */
+export const legendSeriesKey = (
+  ref: Extract<ChartRef, { part: 'legend.item' }>,
+): string => (ref.series.endsWith('.label') ? ref.series.slice(0, -'.label'.length) : ref.series);
+
 /** True when this ref addresses a single data point (bar, marker, slice). */
 export const isPointRef = (
   ref: ChartRef,

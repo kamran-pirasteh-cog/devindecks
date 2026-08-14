@@ -32,8 +32,8 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
   const threads = useComments((s) => s.threads);
   const commentCounts = unresolvedCounts(threads);
   const { width, startDrag } = useResizableWidth(196, 180, 320, 'right');
-  // Measured, not derived: the thumbnail column scrolls, so its usable width is
-  // the panel width minus padding *and* the scrollbar. See useContentWidth.
+  // Measured, not derived: the thumbnail column's usable width is the panel
+  // width minus padding (and any scrollbar gutter). See useContentWidth.
   const listRef = useRef<HTMLDivElement>(null);
   const thumbWidth = useContentWidth(listRef);
 
@@ -78,7 +78,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
             outside the box, so the scroll container needs slack or they clip. */}
         <div
           ref={listRef}
-          className="flex-1 space-y-2 overflow-y-auto px-3 pb-3 pt-1"
+          className="flex-1 space-y-2 overflow-y-auto px-3 pb-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           onKeyDown={(e) => {
             if (singleSlide) return;
             if (e.key !== 'Backspace' && e.key !== 'Delete') return;

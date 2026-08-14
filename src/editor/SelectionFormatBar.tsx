@@ -16,8 +16,11 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ALLOWED_FONTS,
   emuToPoints,
+  isCropped,
+  isRoundedPreset,
   isStacked,
   pointsToEmu,
+  ROUNDABLE_PRESETS,
   resolveColor,
   token,
   type BulletKind,
@@ -173,17 +176,28 @@ function ColorPicker({
   );
 }
 
-/** The body-bearing element whose values the bar displays. */
+/** The first run in a box, skipping paragraphs that carry no text. */
+function firstRunOf(el: Extract<SlideElement, { type: 'text' | 'shape' }> | undefined) {
+  return el?.body?.paragraphs.find((p) => p.runs.length)?.runs[0];
+}
+
+/**
+ * The body-bearing element whose values the bar displays. One that carries a
+ * run wins: a blank opening line or an empty leading table cell has nothing to
+ * read, and letting it win showed the theme's defaults instead of the text's
+ * own font and size.
+ */
 function bodyElementOf(selected: SlideElement[]) {
-  return selected.find(
+  const bodies = selected.filter(
     (e): e is Extract<SlideElement, { type: 'text' | 'shape' }> =>
       e.type === 'text' || (e.type === 'shape' && !!e.body),
   );
+  return bodies.find((e) => firstRunOf(e)) ?? bodies[0];
 }
 
 /** Bullet/numbering icons, drawn rather than typed so they scale with the bar. */
 /**
- * Rows sit inset from the 14×14 box: the marker's radius and the rules' round
+ * Rows sit inset from the 14×14 box: the marker's square and the rules' round
  * caps both grow past their nominal coordinates, so rows flush to the edges
  * clip against the button.
  */
@@ -206,7 +220,7 @@ function ListIcon({ numbered }: { numbered: boolean }) {
             {i + 1}
           </text>
         ) : (
-          <circle key={y} cx={2.2} cy={y} r={1.4} fill="currentColor" />
+          <rect key={y} x={0.8} y={y - 1.4} width={2.8} height={2.8} fill="currentColor" />
         ),
       )}
       {ROWS.map((y) => (
@@ -221,6 +235,23 @@ function ListIcon({ numbered }: { numbered: boolean }) {
           strokeLinecap="round"
         />
       ))}
+    </svg>
+  );
+}
+
+/** Square vs round corner glyphs — one box, drawn with the corner in question. */
+function CornerIcon({ rounded }: { rounded: boolean }) {
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden fill="none">
+      <rect
+        x={2}
+        y={2}
+        width={10}
+        height={10}
+        rx={rounded ? 3.5 : 0}
+        stroke="currentColor"
+        strokeWidth={1.6}
+      />
     </svg>
   );
 }
@@ -250,27 +281,22 @@ export function SelectionFormatBar({
   const chartRefs = selected.map((e) => e.chartRef).filter(Boolean);
   const isChart = chartRefs.length > 0 && chartRefs.length === selected.length;
   const chartId = isChart ? chartRefs[0]!.chartId : null;
-  const seriesKeys = [
-    ...new Set(
-      selected
-        .map((e) => (e.chartRef?.part === 'mark' ? e.chartRef.series : null))
-        .filter(Boolean) as string[],
-    ),
-  ];
 
   const hasText = !isChart && selected.some((e) => e.type === 'text' || (e.type === 'shape' && e.body));
   const hasFillable = selected.some((e) => e.type === 'text' || e.type === 'shape');
   if (isChart && chartId) {
     return (
-      <ChartFormatCluster
-        chartId={chartId}
-        seriesKeys={seriesKeys}
-        ds={ds}
-        onOpenData={onOpenChartData}
-      />
+      <ChartFormatCluster chartId={chartId} onOpenData={onOpenChartData} />
     );
   }
-  // Pictures are the one thing with nothing to offer here.
+  // A picture answers to none of the controls below — no fill, no type — so it
+  // gets its own cluster rather than an empty bar.
+  const pictures = selected.filter((e): e is Extract<SlideElement, { type: 'picture' }> =>
+    e.type === 'picture',
+  );
+  if (pictures.length === selected.length) {
+    return <PictureFormatCluster pictures={pictures} />;
+  }
   const hasBorder = selected.some((e) => e.type !== 'picture');
   if (!hasText && !hasFillable && !hasBorder) return null;
 
@@ -286,8 +312,16 @@ export function SelectionFormatBar({
   // never removed.
   const borderRequired = selected.every((e) => e.type === 'line');
 
+  // Only the rectangular family has corners to round; a mixed selection shows
+  // the control and rounds whichever shapes can take it.
+  const roundable = selected.filter(
+    (e): e is Extract<SlideElement, { type: 'shape' }> =>
+      e.type === 'shape' && ROUNDABLE_PRESETS.includes(e.preset),
+  );
+  const cornersRounded = roundable.length > 0 && roundable.every((e) => isRoundedPreset(e.preset));
+
   const textEl = bodyElementOf(selected);
-  const run = textEl?.body?.paragraphs[0]?.runs[0];
+  const run = firstRunOf(textEl);
   const paragraphs = textEl?.body?.paragraphs ?? [];
   // A list button reads "on" only when the whole box is that list — the same
   // rule `toggleBullet` uses to decide whether pressing it clears the style.
@@ -437,6 +471,36 @@ export function SelectionFormatBar({
         </>
       ) : null}
 
+      {roundable.length ? (
+        <>
+          <Divider />
+          <Group label="Corners">
+            <div className="flex gap-0.5">
+              {([
+                { rounded: false, label: 'Square corners' },
+                { rounded: true, label: 'Round corners' },
+              ]).map(({ rounded, label }) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => store().setCornersRounded(selectedIds, rounded)}
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={cornersRounded === rounded}
+                  className={`flex h-7 w-7 items-center justify-center rounded border ${
+                    cornersRounded === rounded
+                      ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  <CornerIcon rounded={rounded} />
+                </button>
+              ))}
+            </div>
+          </Group>
+        </>
+      ) : null}
+
       {hasBorder ? (
         <>
           <Group label="Border">
@@ -500,37 +564,112 @@ export function SelectionFormatBar({
 }
 
 /**
+ * The bar a picture shows — clicking an image is what puts it on screen, and
+ * cropping is what it's mostly for.
+ *
+ * While a crop is in progress the buttons step aside: the live geometry belongs
+ * to `CropOverlay` until it commits, and Done/Cancel sit down there with the
+ * handles rather than up here away from the gesture.
+ */
+function PictureFormatCluster({
+  pictures,
+}: {
+  pictures: Extract<SlideElement, { type: 'picture' }>[];
+}) {
+  const store = useEditor.getState;
+  const croppingId = useEditor((s) => s.croppingId);
+  const cropping = pictures.some((p) => p.id === croppingId);
+  // Cropping is a gesture on ONE box; several pictures at once can still be
+  // reset, which needs no geometry.
+  const sole = pictures.length === 1 ? pictures[0] : null;
+  const cropped = pictures.filter((p) => isCropped(p.crop));
+
+  return (
+    <div
+      className="dd-format-bar flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+      role="toolbar"
+      aria-label="Format picture"
+      onContextMenu={(e) => e.stopPropagation()}
+    >
+      <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+        {pictures.length > 1 ? `${pictures.length} images` : 'Image'}
+      </span>
+      {cropping ? (
+        <span className="px-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+          Drag the handles to trim, or the image to reposition it.
+        </span>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => sole && store().setCropping(sole.id)}
+            disabled={!sole}
+            title={sole ? 'Crop this image' : 'Select a single image to crop'}
+            className="flex items-center gap-1 rounded bg-indigo-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-indigo-500 disabled:opacity-40"
+          >
+            <CropIcon />
+            Crop
+          </button>
+          {cropped.length ? (
+            <button
+              type="button"
+              onClick={() =>
+                cropped.forEach((p) => store().setCrop(p.id, undefined))
+              }
+              title="Show the whole image again"
+              className="rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            >
+              Reset crop
+            </button>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The two overlapping carpenter's rules PowerPoint uses for crop. */
+function CropIcon() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 14 14" aria-hidden fill="none">
+      <path
+        d="M4 0.8V10h9.2M0.8 4H10v9.2"
+        stroke="currentColor"
+        strokeWidth={1.4}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/**
  * The bar a chart shows instead of the ordinary one.
+ *
+ * Chart-WIDE settings only. Anything addressed to one series, point, label or
+ * axis belongs to `ChartPartPopover`, which floats next to the part the user
+ * drilled into rather than making them look back up here to find out what a
+ * click did.
  *
  * Everything here writes to the SPEC through a store action, never to the
  * selected rectangles — a fill set on the element would be erased by the next
  * recompile, so the color would survive right up until someone edited the data.
- * `setFill` already routes chart selections for us; the rest go through
- * `patchChart`.
  */
 function ChartFormatCluster({
   chartId,
-  seriesKeys,
-  ds,
   onOpenData,
 }: {
   chartId: string;
-  seriesKeys: string[];
-  ds: DesignSystem;
   onOpenData?: (chartId: string) => void;
 }) {
   const store = useEditor.getState;
   const chart = useEditor((s) =>
     s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.charts?.find((c) => c.id === chartId),
   );
-  const selectedIds = useEditor((s) => s.selectedIds);
   if (!chart) return null;
 
   const spec = chart.spec;
   const labels = spec.decorations.labels;
   const stacked = isStacked(spec);
-  // A selection spanning several series has no single color to show.
-  const oneSeries = seriesKeys.length === 1;
 
   return (
     <div
@@ -549,18 +688,6 @@ function ChartFormatCluster({
       >
         Data
       </button>
-
-      {oneSeries ? (
-        <Group label="Series">
-          <ColorPicker
-            label="Series color"
-            value={undefined}
-            colors={ds.colors}
-            ds={ds}
-            onPick={(id) => store().setFill(selectedIds, { kind: 'solid', color: token(id) })}
-          />
-        </Group>
-      ) : null}
 
       <Divider />
 

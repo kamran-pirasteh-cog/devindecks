@@ -9,3 +9,4 @@ export * from './sheet';
 export * from './sheetSchema';
 export * from './sheetAdapter';
 export * from './types';
+export * from './crop';

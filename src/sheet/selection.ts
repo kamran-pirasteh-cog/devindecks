@@ -23,6 +23,17 @@ export const isSingleCell = (sel: SheetSelection): boolean => {
   return r0 === r1 && c0 === c1;
 };
 
+/**
+ * How far the GRID extends, which is further than the model does — the blank
+ * rows and columns past the data are selectable (see `gridExtent`). Every
+ * function here takes it as an optional argument so the model's own size stays
+ * the default and nothing that doesn't render a phantom area has to care.
+ */
+export interface SelectionExtent {
+  rows: number;
+  cols: number;
+}
+
 export type Direction = 'up' | 'down' | 'left' | 'right';
 
 const DELTA: Record<Direction, { dr: number; dc: number }> = {
@@ -34,23 +45,23 @@ const DELTA: Record<Direction, { dr: number; dc: number }> = {
 
 const clamp = (n: number, hi: number) => Math.max(0, Math.min(hi, n));
 
-const bounds = (sheet: SheetModel) => ({
-  maxR: Math.max(0, sheet.rows.length - 1),
-  maxC: Math.max(0, sheet.columns.length - 1),
+const bounds = (sheet: SheetModel, extent?: SelectionExtent) => ({
+  maxR: Math.max(0, (extent?.rows ?? sheet.rows.length) - 1),
+  maxC: Math.max(0, (extent?.cols ?? sheet.columns.length) - 1),
 });
 
 export function move(
   sheet: SheetModel,
   sel: SheetSelection,
   dir: Direction,
-  opts: { extend?: boolean; toEdge?: boolean } = {},
+  opts: { extend?: boolean; toEdge?: boolean; extent?: SelectionExtent } = {},
 ): SheetSelection {
-  const { maxR, maxC } = bounds(sheet);
+  const { maxR, maxC } = bounds(sheet, opts.extent);
   const { dr, dc } = DELTA[dir];
   const from = opts.extend ? sel.range.focus : sel.active;
 
   const next: CellAddress = opts.toEdge
-    ? edgeFrom(sheet, from, dir)
+    ? edgeFrom(sheet, from, dir, opts.extent)
     : { r: clamp(from.r + dr, maxR), c: clamp(from.c + dc, maxC) };
 
   // Extending keeps the anchor put: shift+arrow grows the block from where the
@@ -64,8 +75,13 @@ export function move(
  * ⌘→ jumps to the last cell before a gap, or to the edge if there is none —
  * Excel's behaviour, and the only fast way to reach the end of a long column.
  */
-function edgeFrom(sheet: SheetModel, from: CellAddress, dir: Direction): CellAddress {
-  const { maxR, maxC } = bounds(sheet);
+function edgeFrom(
+  sheet: SheetModel,
+  from: CellAddress,
+  dir: Direction,
+  extent?: SelectionExtent,
+): CellAddress {
+  const { maxR, maxC } = bounds(sheet, extent);
   const { dr, dc } = DELTA[dir];
   const filled = (r: number, c: number) => (sheet.rows[r]?.[c]?.kind ?? 'empty') !== 'empty';
 
@@ -97,8 +113,9 @@ export function advance(
   sel: SheetSelection,
   axis: 'horizontal' | 'vertical',
   back = false,
+  extent?: SelectionExtent,
 ): SheetSelection {
-  const { maxR, maxC } = bounds(sheet);
+  const { maxR, maxC } = bounds(sheet, extent);
 
   if (!isSingleCell(sel)) {
     const { r0, r1, c0, c1 } = rangeBounds(sel.range);
@@ -127,9 +144,18 @@ export function advance(
   return singleCell({ r, c: nc });
 }
 
-/** Clamp a selection back inside a sheet that just shrank. */
-export function reconcileSelection(sheet: SheetModel, sel: SheetSelection): SheetSelection {
-  const { maxR, maxC } = bounds(sheet);
+/**
+ * Clamp a selection back inside a sheet that just shrank.
+ *
+ * Passing the extent matters here: without it, every commit would yank a
+ * selection sitting in the blank area back onto the last real cell.
+ */
+export function reconcileSelection(
+  sheet: SheetModel,
+  sel: SheetSelection,
+  extent?: SelectionExtent,
+): SheetSelection {
+  const { maxR, maxC } = bounds(sheet, extent);
   const fix = (a: CellAddress): CellAddress => ({ r: clamp(a.r, maxR), c: clamp(a.c, maxC) });
   return {
     active: fix(sel.active),
@@ -138,12 +164,20 @@ export function reconcileSelection(sheet: SheetModel, sel: SheetSelection): Shee
 }
 
 /** Select whole rows or columns, for the gutter and header clicks. */
-export const selectRow = (sheet: SheetModel, r: number): SheetSelection => ({
+export const selectRow = (
+  sheet: SheetModel,
+  r: number,
+  extent?: SelectionExtent,
+): SheetSelection => ({
   active: { r, c: 0 },
-  range: { anchor: { r, c: 0 }, focus: { r, c: Math.max(0, sheet.columns.length - 1) } },
+  range: { anchor: { r, c: 0 }, focus: { r, c: bounds(sheet, extent).maxC } },
 });
 
-export const selectColumn = (sheet: SheetModel, c: number): SheetSelection => ({
+export const selectColumn = (
+  sheet: SheetModel,
+  c: number,
+  extent?: SelectionExtent,
+): SheetSelection => ({
   active: { r: 0, c },
-  range: { anchor: { r: 0, c }, focus: { r: Math.max(0, sheet.rows.length - 1), c } },
+  range: { anchor: { r: 0, c }, focus: { r: bounds(sheet, extent).maxR, c } },
 });

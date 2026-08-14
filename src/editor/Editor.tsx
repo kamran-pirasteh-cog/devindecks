@@ -8,7 +8,7 @@
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEditor, loadDeck, nextFontSize, type AlignMode } from '@/store/editorStore';
+import { useEditor, loadDeck, type AlignMode } from '@/store/editorStore';
 import { SAMPLE_DECK } from '@/model/sample';
 import { expandSelection, inchesToEmu, unionRect, type Deck } from '@/model';
 import { getDoc, saveDoc } from '@/docs/repository';
@@ -18,6 +18,7 @@ import { getActiveDesignSystem } from '@/design/repository';
 import { useComments } from '@/store/commentStore';
 import { ChatColumn } from './ChatColumn';
 import { CommentsPanel } from './CommentsPanel';
+import { commentAnchorId } from './commentAnchor';
 import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
@@ -137,6 +138,10 @@ export function Editor({
       const s = useEditor.getState();
       const typing =
         s.editingId ||
+        // Crop mode owns the keyboard the way text editing does: Enter and
+        // Escape belong to the overlay, and nudging or deleting the picture
+        // out from under the handles is never what's meant.
+        s.croppingId ||
         (e.target instanceof HTMLElement &&
           (e.target.tagName === 'INPUT' ||
             e.target.tagName === 'TEXTAREA' ||
@@ -152,12 +157,31 @@ export function Editor({
       const textEdge = textAlignEdge(e);
 
       const slide = s.currentSlide();
-      const primary = slide.elements.find(
-        (el) => s.selectedIds.includes(el.id) && (el.type === 'text' || (el.type === 'shape' && el.body)),
+      // Every selected box the character shortcuts can act on. A group arrives
+      // here as its members (`select` expands it), so a click on an imported
+      // table selects a dozen of these at once.
+      const textTargets = slide.elements.filter(
+        (el) =>
+          s.selectedIds.includes(el.id) && (el.type === 'text' || (el.type === 'shape' && el.body)),
       );
+      /**
+       * The run whose current values the shortcuts read: the first one in the
+       * box, skipping paragraphs that carry no text. A blank opening line is
+       * common in imported decks, and an empty cell often leads a table's
+       * elements — reading `paragraphs[0].runs[0]` there finds nothing, which
+       * used to leave the whole cluster of shortcuts inert.
+       */
+      const firstRunOf = (el: (typeof textTargets)[number]) =>
+        (el.type === 'text' || el.type === 'shape' ? el.body : undefined)?.paragraphs.find(
+          (p) => p.runs.length,
+        )?.runs[0];
+      const primary = textTargets.find(firstRunOf) ?? textTargets[0];
       const primaryBody =
         primary && (primary.type === 'text' || primary.type === 'shape') ? primary.body : undefined;
-      const firstRun = primaryBody?.paragraphs[0]?.runs[0];
+      // Undefined for a box with no text in it yet, so the branches below gate
+      // on `primaryBody` — what the box could take — and fall back to the
+      // theme's own size rather than doing nothing.
+      const firstRun = primary && firstRunOf(primary);
 
       // Format painter first: its chords carry Alt/Shift, so they must not be
       // read as a plain mod+C/V by anything below.
@@ -181,10 +205,15 @@ export function Editor({
         }
       } else if (isCommentShortcut(e)) {
         // Google Slides' insert-comment chord. With something selected the
-        // thread pins to it (the first object, as the format painter does);
-        // otherwise it's a comment on the slide itself.
+        // thread pins to it — to whichever selected object carries the text the
+        // commenter was reading; otherwise it's a comment on the slide itself.
         e.preventDefault();
-        useComments.getState().startDraft(s.currentSlideId, s.selectedIds[0]);
+        useComments
+          .getState()
+          .startDraft(
+            s.currentSlideId,
+            commentAnchorId(s.selectedIds, s.currentSlide().elements),
+          );
       } else if (mod && !e.shiftKey && key === 'z') {
         e.preventDefault();
         s.undo();
@@ -252,29 +281,34 @@ export function Editor({
       } else if (e.key === 'PageUp' || e.key === 'PageDown') {
         e.preventDefault();
         s.stepSlide(e.key === 'PageDown' ? 1 : -1);
-      } else if (mod && key === 'b' && firstRun) {
+      } else if (mod && key === 'b' && primaryBody) {
         e.preventDefault();
-        s.patchRuns(s.selectedIds, { bold: !firstRun.bold });
-      } else if (mod && key === 'i' && firstRun) {
+        s.patchRuns(s.selectedIds, { bold: !firstRun?.bold });
+      } else if (mod && key === 'i' && primaryBody) {
         e.preventDefault();
-        s.patchRuns(s.selectedIds, { italic: !firstRun.italic });
-      } else if (mod && key === 'u' && firstRun) {
+        s.patchRuns(s.selectedIds, { italic: !firstRun?.italic });
+      } else if (mod && key === 'u' && primaryBody) {
         e.preventDefault();
-        s.patchRuns(s.selectedIds, { underline: !firstRun.underline });
-      } else if (mod && key === 'e' && firstRun) {
+        s.patchRuns(s.selectedIds, { underline: !firstRun?.underline });
+      } else if (mod && key === 'e' && primaryBody) {
         e.preventDefault();
         s.patchParagraphs(s.selectedIds, { align: 'center' });
-      } else if (mod && key === 'r' && firstRun) {
+      } else if (mod && key === 'r' && primaryBody) {
         e.preventDefault();
         s.patchParagraphs(s.selectedIds, { align: 'right' });
-      } else if (mod && key === 'l' && firstRun) {
+      } else if (mod && key === 'l' && primaryBody) {
         e.preventDefault();
         s.patchParagraphs(s.selectedIds, { align: 'left' });
-      } else if (sizeDir && firstRun) {
+      } else if (sizeDir && textTargets.length) {
+        // Every selected box steps, each run from its own size — gated on the
+        // targets rather than on `primaryBody` so a mixed selection (say a
+        // chart and three labels, or an imported table's cells) still steps the
+        // text it does hold.
         e.preventDefault();
-        s.patchRuns(s.selectedIds, {
-          sizePt: nextFontSize(firstRun.sizePt ?? s.designSystem.type.body.sizePt, sizeDir),
-        });
+        s.stepFontSize(
+          textTargets.map((el) => el.id),
+          sizeDir,
+        );
       } else if (mod && !e.shiftKey && key === 'a') {
         e.preventDefault();
         s.select(slide.elements.map((el) => el.id));

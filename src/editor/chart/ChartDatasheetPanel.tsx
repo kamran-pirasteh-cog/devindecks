@@ -13,18 +13,26 @@
  * canvas's mousedown resolver and Selecto both leave it alone — without that,
  * clicking a cell would clear the chart's selection out from under it.
  */
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
+import { compileChart } from '@/chart/compile';
 import { FitSlideView } from '@/render/FitSlideView';
-import type { ChartInstance } from '@/model';
+import {
+  chartOrientation,
+  setChartOrientation,
+  supportsOrientation,
+  type ChartInstance,
+  type ChartRef,
+} from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { SheetGrid } from '@/sheet/SheetGrid';
 import { OVERLAY_Z } from '../layers';
 import { useChartDraft } from './useChartDraft';
-import { ChartPropertiesPanel } from './ChartPropertiesPanel';
+import { ChartPartOptions } from './ChartPartOptions';
+import { hitTestChart, rectOfPart } from './previewHitTest';
 import { DevinChartMenu } from './DevinChartMenu';
 
-const UI_KEY = 'devindesign.datasheet.ui.v2';
+const UI_KEY = 'devindesign.datasheet.ui.v5';
 
 interface PanelBox {
   x: number;
@@ -33,39 +41,49 @@ interface PanelBox {
   h: number;
 }
 
+const MIN_W = 720;
+const MIN_H = 420;
+
 /**
- * Sized off the viewport rather than fixed: the panel holds a grid, a preview
- * and a properties column side by side, and at a fixed 900px the preview ends
- * up too small to judge anything by.
+ * Sized off the viewport rather than fixed. It stacks a properties band, a
+ * datasheet and a preview, and all three are judged by how much you can see at
+ * once — so it opens nearly the full width and most of the height.
  */
-function defaultBox(): PanelBox {
-  if (typeof window === 'undefined') return { x: 80, y: 180, w: 1180, h: 560 };
-  const w = Math.min(1400, Math.max(MIN_W, window.innerWidth - 160));
-  const h = Math.min(700, Math.max(MIN_H, Math.round(window.innerHeight * 0.55)));
-  return { x: Math.round((window.innerWidth - w) / 2), y: Math.round(window.innerHeight - h - 60), w, h };
+function defaultSize(): { w: number; h: number } {
+  if (typeof window === 'undefined') return { w: 1180, h: 760 };
+  return {
+    w: Math.max(MIN_W, window.innerWidth - 64),
+    h: Math.max(MIN_H, Math.round(window.innerHeight * 0.84)),
+  };
 }
 
-const MIN_W = 720;
-const MIN_H = 320;
+/** Dead centre of the window, for a size. */
+const centered = (size: { w: number; h: number }): PanelBox => ({
+  ...size,
+  x: typeof window === 'undefined' ? 32 : Math.round((window.innerWidth - size.w) / 2),
+  y: typeof window === 'undefined' ? 80 : Math.round((window.innerHeight - size.h) / 2),
+});
 
-/** Panel position is view state, never deck state — it isn't undoable. */
+/**
+ * SIZE is remembered; POSITION is not.
+ *
+ * A panel this large has one right place to open — the middle of the screen —
+ * and restoring wherever it was last dragged means it opens off-centre for the
+ * rest of time, including on a different-sized window where the stored spot
+ * isn't even on screen. Dragging still works; it just doesn't outlive the panel.
+ */
 function loadBox(): PanelBox {
-  const fallback = defaultBox();
-  if (typeof window === 'undefined') return fallback;
+  const fallback = defaultSize();
+  if (typeof window === 'undefined') return centered(fallback);
   try {
     const raw = window.localStorage.getItem(UI_KEY);
-    if (!raw) return fallback;
-    const stored = JSON.parse(raw) as Partial<PanelBox>;
-    // A box saved on a bigger screen, or from an older too-small default, must
-    // not strand the panel off-screen or reintroduce a cramped preview.
-    return {
-      x: Math.max(0, Math.min(stored.x ?? fallback.x, window.innerWidth - MIN_W)),
-      y: Math.max(0, Math.min(stored.y ?? fallback.y, window.innerHeight - 80)),
+    const stored = raw ? (JSON.parse(raw) as Partial<PanelBox>) : {};
+    return centered({
       w: Math.max(MIN_W, Math.min(stored.w ?? fallback.w, window.innerWidth)),
       h: Math.max(MIN_H, Math.min(stored.h ?? fallback.h, window.innerHeight)),
-    };
+    });
   } catch {
-    return fallback;
+    return centered(fallback);
   }
 }
 
@@ -77,7 +95,6 @@ export function ChartDatasheetPanel({
   onClose: () => void;
 }) {
   const ds = useEditor((s) => s.designSystem);
-  const slideSize = useEditor((s) => s.deck.slideSize);
   const slide = useEditor((s) => s.deck.slides.find((sl) => sl.id === s.currentSlideId));
   const { sheet, diagnostics, commit, live } = useChartDraft(chart);
 
@@ -97,11 +114,12 @@ export function ChartDatasheetPanel({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(UI_KEY, JSON.stringify(box));
+      // Size only — see `loadBox`.
+      window.localStorage.setItem(UI_KEY, JSON.stringify({ w: box.w, h: box.h }));
     } catch {
       // A full or blocked localStorage must not take the panel down with it.
     }
-  }, [box]);
+  }, [box.w, box.h]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -147,11 +165,76 @@ export function ChartDatasheetPanel({
     gesture.current = null;
   }, []);
 
-  if (!mounted) return null;
+  /**
+   * The preview canvas is the chart's OWN frame, magnified.
+   *
+   * Two wrong answers were tried first. Cropping the chart out of the rendered
+   * slide keeps the geometry but wastes most of the panel on the rest of the
+   * slide. Recompiling into the measured box fills the panel but re-solves the
+   * layout: a taller frame means taller bars, different gutters and type that
+   * is a different fraction of the frame — so the preview stops looking like
+   * the thing on the page, which is the one job it has.
+   *
+   * Compiling at the chart's real width and height and scaling the result is
+   * the only version where "bigger" means bigger and nothing else. Every gap,
+   * gutter and point size keeps its ratio to the frame; `FitSlideView` scales
+   * the lot uniformly to the panel.
+   */
+  const previewSize = useMemo(
+    () => ({ w: chart.frame.w, h: chart.frame.h }),
+    [chart.frame.h, chart.frame.w],
+  );
 
-  const previewSlide = slide
-    ? { ...slide, elements: slide.elements.filter((e) => e.chartRef?.chartId === chart.id) }
-    : null;
+  const previewSlide = useMemo(() => {
+    // Compiled at the origin rather than at the chart's place on the slide —
+    // placers lay out relative to the frame, so the geometry is identical and
+    // the preview has no slide margins to crop.
+    const { elements } = compileChart(
+      { ...chart, frame: { x: 0, y: 0, w: previewSize.w, h: previewSize.h } },
+      ds,
+    );
+    return { id: 'chart-preview', elements, background: slide?.background };
+  }, [chart, ds, previewSize, slide?.background]);
+
+  /**
+   * The part being formatted. Clicking the preview picks one; clicking an empty
+   * corner of it drops back to the chart as a whole.
+   */
+  const [part, setPart] = useState<ChartRef | null>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  const onPreviewClick = useCallback(
+    (e: React.MouseEvent) => {
+      const el = previewRef.current;
+      if (!el) return;
+      const box = el.getBoundingClientRect();
+      if (box.width < 1) return;
+      // Screen px back to the EMU the elements are laid out in — the preview is
+      // one uniform scale, so this is a single divide.
+      const perPx = previewSize.w / box.width;
+      const x = (e.clientX - box.left) * perPx;
+      const y = (e.clientY - box.top) * perPx;
+      // A few px of slop, in EMU: a tick label is a hairline tall and a click
+      // that has to be exact reads as a broken control.
+      setPart(hitTestChart(previewSlide.elements, x, y, 4 * perPx));
+    },
+    [previewSize.w, previewSlide.elements],
+  );
+
+  /** The ring drawn over whatever is selected, in fractions of the preview. */
+  const partBox = useMemo(() => {
+    if (!part) return null;
+    const rect = rectOfPart(previewSlide.elements, part);
+    if (!rect) return null;
+    return {
+      left: `${(rect.x / previewSize.w) * 100}%`,
+      top: `${(rect.y / previewSize.h) * 100}%`,
+      width: `${(rect.w / previewSize.w) * 100}%`,
+      height: `${(rect.h / previewSize.h) * 100}%`,
+    };
+  }, [part, previewSize.h, previewSize.w, previewSlide.elements]);
+
+  if (!mounted) return null;
 
   return createPortal(
     <div
@@ -169,8 +252,12 @@ export function ChartDatasheetPanel({
         <span className="text-[11px] font-semibold">
           {chart.spec.title || 'Chart data'}
         </span>
+        {/* Counted in the chart's own terms, not the grid's: under the
+            transposed layout a "row" is a series and a column is a period. */}
         <span className="text-[10px] text-zinc-400">
-          {sheet.rows.length} row{sheet.rows.length === 1 ? '' : 's'} · {sheet.series.length} series
+          {sheet.schema.layout === 'seriesDown'
+            ? `${sheet.series.length} column${sheet.series.length === 1 ? '' : 's'} · ${sheet.rows.length} series`
+            : `${sheet.rows.length} row${sheet.rows.length === 1 ? '' : 's'} · ${sheet.series.length} series`}
         </span>
 
         <div className="ml-auto flex items-center gap-1" onPointerDown={(e) => e.stopPropagation()}>
@@ -185,8 +272,14 @@ export function ChartDatasheetPanel({
         </div>
       </div>
 
+      {/* One row of options for whatever is selected in the preview — see
+          `ChartPartOptions`. This used to be every chart setting at once. */}
+      <ChartPartOptions chart={chart} ds={ds} part={part} onClear={() => setPart(null)} />
+
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-[1.35]">
+        {/* The sheet takes the whole left side — a datasheet is judged by how
+            many rows and columns you can see at once. */}
+        <div className="flex min-w-0 flex-1 flex-col">
           <SheetGrid
             sheet={sheet}
             ds={ds}
@@ -197,24 +290,33 @@ export function ChartDatasheetPanel({
         </div>
 
         {/* A preview of this chart alone, so an edit can be judged without
-            dragging the panel off the chart it's editing. Sized as a share of
-            the panel so widening the panel actually buys a bigger chart. */}
-        <div className="flex min-w-0 flex-1 flex-col gap-1 border-l border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
+            dragging the panel off the chart it's editing. An even split with the
+            sheet: you're reading the chart as much as you're typing into the
+            grid, and half a wide panel is still a dozen columns. */}
+        <div className="flex w-1/2 min-w-[20rem] shrink-0 flex-col gap-1 border-l border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
             Preview
           </div>
-          {previewSlide ? (
-            <div className="flex min-h-0 flex-1 items-center overflow-hidden rounded bg-white ring-1 ring-black/10 dark:bg-zinc-900">
-              <FitSlideView
-                slide={previewSlide}
-                slideSize={slideSize}
-                designSystem={ds}
+          {/* Takes the chart's own shape, as wide as the column allows. Making
+              the card fill the column instead would only add white around a
+              chart that has to keep its proportions to be worth looking at. */}
+          <div
+            ref={previewRef}
+            onClick={onPreviewClick}
+            className="relative shrink-0 cursor-pointer overflow-hidden rounded bg-white ring-1 ring-black/10 dark:bg-zinc-900"
+          >
+            <FitSlideView slide={previewSlide} slideSize={previewSize} designSystem={ds} />
+            {partBox ? (
+              <span
+                // Purely an indicator: it must never eat the next click, which
+                // is usually on a neighbouring part.
+                className="pointer-events-none absolute rounded-sm ring-2 ring-indigo-500/70"
+                style={partBox}
               />
-            </div>
-          ) : null}
+            ) : null}
+            <OrientationArrows chart={chart} />
+          </div>
         </div>
-
-        <ChartPropertiesPanel chart={chart} />
       </div>
 
       <div
@@ -228,5 +330,46 @@ export function ChartDatasheetPanel({
       />
     </div>,
     document.body,
+  );
+}
+
+/**
+ * Orientation, on the preview instead of in a dropdown.
+ *
+ * Turning bars on their side is a change you judge by looking at the chart, so
+ * the control belongs on the chart: two arrows pointing the way the bars will
+ * run. Absent entirely for the kinds that have no orientation to speak of — a
+ * pie doesn't lie down.
+ */
+function OrientationArrows({ chart }: { chart: ChartInstance }) {
+  const patchChart = useEditor((s) => s.patchChart);
+  if (!supportsOrientation(chart.spec.kind)) return null;
+
+  const current = chartOrientation(chart.spec);
+  const options: { value: 'vertical' | 'horizontal'; glyph: string; title: string }[] = [
+    { value: 'vertical', glyph: '↑', title: 'Bars run up' },
+    { value: 'horizontal', glyph: '→', title: 'Bars run across' },
+  ];
+
+  return (
+    <div className="absolute right-1.5 top-1.5 flex overflow-hidden rounded border border-black/10 bg-white/85 shadow-sm backdrop-blur dark:border-white/15 dark:bg-zinc-900/85">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          onClick={() =>
+            patchChart(chart.id, (s) => Object.assign(s, setChartOrientation(s, o.value)))
+          }
+          title={o.title}
+          aria-pressed={current === o.value}
+          className={`flex h-6 w-6 items-center justify-center text-[13px] leading-none ${
+            current === o.value
+              ? 'bg-zinc-900 text-white dark:bg-white dark:text-black'
+              : 'text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
+          }`}
+        >
+          {o.glyph}
+        </button>
+      ))}
+    </div>
   );
 }

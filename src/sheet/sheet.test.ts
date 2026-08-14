@@ -20,6 +20,7 @@ import {
   deleteSeries,
   fillRange,
   insertRow,
+  insertSeries,
   moveRow,
   moveSeries,
   pasteTable,
@@ -229,6 +230,47 @@ describe('sheetSchemaFor', () => {
   });
 });
 
+describe('datasheetSchemaFor — time runs across, not down', () => {
+  it('turns a category grid on its side: a row is a series, a column a period', () => {
+    const sheet = sheetFromSpec(column());
+    expect(sheet.schema.layout).toBe('seriesDown');
+    expect(sheet.schema.keyColumns.map((c) => c.header)).toEqual(['Series']);
+    // FY23-25 across the headers, Enterprise/Mid-Market/SMB down the rows.
+    expect(sheet.series.map((s) => s.name)).toEqual(['FY23', 'FY24', 'FY25']);
+    expect(sheet.rows.map((r) => cellText(r[0]))).toEqual(['Enterprise', 'Mid-Market', 'SMB']);
+    expect(sheet.rows[0].slice(1).map(cellText)).toEqual(['420', '512', '640']);
+  });
+
+  it('swaps the caps over with the axes', () => {
+    const caps = sheetFromSpec(defaultChartSpec('pie')).schema.caps;
+    // Slices can be added without limit; a second ring cannot.
+    expect(caps.addSeries).toBe(true);
+    expect(caps.maxSeries).toBeUndefined();
+    expect(caps.addRows).toBe(false);
+    expect(caps.maxRows).toBe(1);
+  });
+
+  it('leaves the shapes that have no category axis alone', () => {
+    for (const kind of ['scatter', 'bubble', 'waterfall', 'sankey', 'butterfly'] as const) {
+      expect(sheetFromSpec(defaultChartSpec(kind)).schema.layout).toBe('recordsDown');
+    }
+  });
+
+  it('leaves a Mekko alone, because its width band is indexed by row', () => {
+    const sheet = sheetFromSpec(defaultChartSpec('mekko'));
+    expect(sheet.schema.layout).toBe('recordsDown');
+    expect(sheet.bandValues.width).toHaveLength(3);
+  });
+
+  it("does not turn Devin's contract on its side with it", () => {
+    // The research contract is one record per period — the shape a source
+    // table comes in — however the datasheet chooses to draw it.
+    const schema = sheetSchemaFor(column());
+    expect(schema.layout).toBe('recordsDown');
+    expect(schema.keyColumns[0].header).toBe('Date');
+  });
+});
+
 describe('parseGrain', () => {
   it.each([
     ['2024', 'year'],
@@ -293,18 +335,26 @@ describe('sheetFromSpec / specFromSheet', () => {
   it('keeps category keys stable across a rename, so overrides survive', () => {
     const spec = column();
     spec.data.series[0].pointOverrides = { c1: { hidden: true } };
-    const sheet = sheetFromSpec(spec);
-    const renamed = setCell(sheet, 1, 0, { kind: 'text', text: 'Renamed' });
+    // A category is a COLUMN here, so renaming one is a header rename.
+    const renamed = renameSeries(sheetFromSpec(spec), 'c1', 'Renamed');
     const out = specFromSheet(renamed, spec).spec as ColumnBarSpec;
 
     expect(out.data.categories[1]).toMatchObject({ key: 'c1', label: 'Renamed' });
     expect(out.data.series[0].pointOverrides?.c1).toEqual({ hidden: true });
   });
 
+  it('renames a series from its row label', () => {
+    const spec = column();
+    const renamed = setCell(sheetFromSpec(spec), 0, 0, { kind: 'text', text: 'EMEA' });
+    const out = specFromSheet(renamed, spec).spec as ColumnBarSpec;
+    expect(out.data.series[0]).toMatchObject({ key: 's0', name: 'EMEA' });
+    expect(out.data.series[0].values).toEqual(spec.data.series[0].values);
+  });
+
   it('prunes overrides whose point was deleted', () => {
     const spec = column();
     spec.data.series[0].pointOverrides = { c2: { hidden: true } };
-    const sheet = deleteRows(sheetFromSpec(spec), 2);
+    const sheet = deleteSeries(sheetFromSpec(spec), 'c2');
     const out = specFromSheet(sheet, spec).spec as ColumnBarSpec;
     expect(out.data.series[0].pointOverrides).toBeUndefined();
   });
@@ -356,27 +406,58 @@ describe('sheetOps — series', () => {
     expect(s.rows[0]).toHaveLength(s.columns.length);
   });
 
-  it('refuses past the cap', () => {
-    const s = sheetOf(defaultChartSpec('pie'));
-    expect(addSeries(s)).toBe(s);
-  });
-
   it('deletes a series and its column', () => {
-    const s = deleteSeries(sheetOf(), 's1');
-    expect(s.series.map((x) => x.key)).toEqual(['s0', 's2']);
+    const s = deleteSeries(sheetOf(), 'c1');
+    expect(s.series.map((x) => x.key)).toEqual(['c0', 'c2']);
     expect(s.rows[0]).toHaveLength(s.columns.length);
   });
 
+  it('inserts a column at a position and carries the neighbours across', () => {
+    const s = sheetOf();
+    const before = at(s, 0, 1);
+    const inserted = insertSeries(s, 1);
+    expect(inserted.series).toHaveLength(4);
+    // The first series stays put; the second is now the new blank one.
+    expect(at(inserted, 0, 1)).toBe(before);
+    expect(at(inserted, 0, 2)).toBe('');
+    expect(inserted.rows[0]).toHaveLength(inserted.columns.length);
+  });
+
+  it('inserting past the end is the same as appending', () => {
+    const s = sheetOf();
+    expect(insertSeries(s, 99).series).toHaveLength(4);
+  });
+
+  it('refuses to insert past the cap', () => {
+    const s = sheetOf(defaultChartSpec('waterfall'));
+    expect(insertSeries(s, 0)).toBe(s);
+    expect(addSeries(s)).toBe(s);
+  });
+
+  it('refuses to add a row past the cap', () => {
+    // One ring, one row: the pie's series cap is a ROW cap once transposed.
+    const s = sheetOf(defaultChartSpec('pie'));
+    expect(s.rows).toHaveLength(1);
+    expect(insertRow(s, 1)).toBe(s);
+  });
+
+  it('names a new column group after what a column means here', () => {
+    // Transposed, a column is a period — not a fourth "Series".
+    expect(addSeries(sheetOf()).series[3].name).toBe('Category 4');
+    const points = sheetOf(defaultChartSpec('scatter'));
+    expect(addSeries(points).series[1].name).toBe('Series 2');
+  });
+
   it('renames a series in the header', () => {
-    expect(renameSeries(sheetOf(), 's0', 'EMEA').columns[1].header).toBe('EMEA');
+    expect(renameSeries(sheetOf(), 'c0', 'FY26').columns[1].header).toBe('FY26');
   });
 
   it('carries the data with a reordered series rather than shifting values', () => {
     const s = sheetOf();
     const before = at(s, 0, 1);
     const moved = moveSeries(s, 0, 2);
-    expect(moved.series.map((x) => x.key)).toEqual(['s1', 's2', 's0']);
-    // Enterprise's value follows Enterprise to its new column.
+    expect(moved.series.map((x) => x.key)).toEqual(['c1', 'c2', 'c0']);
+    // FY23's column of values follows FY23 to its new position.
     expect(at(moved, 0, 3)).toBe(before);
   });
 });
@@ -450,8 +531,20 @@ describe('sheetOps — paste', () => {
   });
 
   it('reports rather than silently dropping columns past the cap', () => {
-    const r = pasteTable(sheetOf(defaultChartSpec('pie')), { r: 0, c: 0 }, [['A', '1', '2', '3']]);
+    const r = pasteTable(sheetOf(defaultChartSpec('butterfly')), { r: 0, c: 0 }, [
+      ['A', '1', '2', '3'],
+    ]);
     expect(r.warnings.map((w) => w.code)).toContain('series-capped');
+  });
+
+  it('reports rather than silently dropping rows past the cap', () => {
+    // A pie has one ring, which under the transposed layout is one row.
+    const r = pasteTable(sheetOf(defaultChartSpec('pie')), { r: 0, c: 0 }, [
+      ['Slices', '1', '2'],
+      ['Extra', '3', '4'],
+    ]);
+    expect(r.warnings.map((w) => w.code)).toContain('rows-capped');
+    expect(r.sheet.rows).toHaveLength(1);
   });
 
   it('surfaces an ambiguous separator warning once, not per cell', () => {

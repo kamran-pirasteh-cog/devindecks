@@ -5,8 +5,8 @@
  * rectangle approach leaves visible seams between segments and can't follow a
  * smoothed curve at all.
  */
-import type { AreaSpec, ComboSpec, LineSpec } from '@/model';
-import { pointsToEmu } from '@/model';
+import type { AreaSpec, ColorRef, ComboSpec, DashStyle, EMU, LineSpec } from '@/model';
+import { hex, pointsToEmu } from '@/model';
 import type { TextMeasurer } from '@/render/measureText';
 import { lineHeightEmu } from '@/render/measureText';
 import type { LinearScale } from '../scale/linear';
@@ -16,6 +16,8 @@ import type { Mark } from '../mark';
 import { rectFromEdges } from '../mark';
 import type { GridDerived } from '../derive/grid';
 import { areaPath, linePath, type Point } from '../geom/path';
+import { shadeOf } from '../color';
+import { formatSet } from '../format/number';
 import type { Projector } from './cartesian';
 import { textStyle } from './cartesian';
 
@@ -85,6 +87,112 @@ function runs(points: (Point | null)[]): Point[][] {
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* The house line treatment                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Which series is the subject of the chart.
+ *
+ * Unset emphasis means the first series — see `LineSpec.emphasis`. A key that
+ * no longer exists (the series was deleted after someone picked it) degrades to
+ * no emphasis rather than to a silently different line.
+ */
+export function emphasisSeriesKey(spec: LineLikeSpec, seriesKeys: string[]): string | null {
+  if (spec.kind !== 'line' || spec.emphasis === null) return null;
+  if (spec.emphasis !== undefined) {
+    return seriesKeys.includes(spec.emphasis) ? spec.emphasis : null;
+  }
+  return seriesKeys[0] ?? null;
+}
+
+/** Emphasised lines are thick enough to read as the subject; the rest are hairlines. */
+const EMPHASIS_WIDTH: EMU = pointsToEmu(2.75);
+const RECEDED_WIDTH: EMU = pointsToEmu(1.25);
+const PLAIN_WIDTH: EMU = pointsToEmu(2);
+
+/**
+ * A receded line needs to be tellable from its neighbours without competing
+ * with the subject, so it varies in DASH first and in shade only after the
+ * three dash patterns are used up. Dash is the cheaper signal: it survives
+ * greyscale printing, and a field of near-identical greys does not.
+ */
+const RECEDED_DASHES: DashStyle[] = ['solid', 'dash', 'dot'];
+
+export interface LineLook {
+  color: ColorRef;
+  widthEmu: EMU;
+  dash: DashStyle;
+  emphasized: boolean;
+}
+
+/**
+ * How series `si` draws, before its own `format` overrides anything.
+ *
+ * `recedeIndex` counts only the receded series, so the dash cycle isn't skipped
+ * where the emphasised one sits in the order.
+ */
+export function lineLook(
+  theme: ChartTheme,
+  si: number,
+  emphasized: boolean,
+  hasEmphasis: boolean,
+  recedeIndex: number,
+): LineLook {
+  if (!hasEmphasis) {
+    return { color: theme.seriesColor(si), widthEmu: PLAIN_WIDTH, dash: 'solid', emphasized: false };
+  }
+  if (emphasized) {
+    return {
+      color: theme.seriesColor(0),
+      widthEmu: EMPHASIS_WIDTH,
+      dash: 'solid',
+      emphasized: true,
+    };
+  }
+  const shade = Math.floor(recedeIndex / RECEDED_DASHES.length);
+  return {
+    color: shade === 0 ? theme.mutedInk : hex(shadeOf(theme.resolve(theme.mutedInk), shade)),
+    widthEmu: RECEDED_WIDTH,
+    dash: RECEDED_DASHES[recedeIndex % RECEDED_DASHES.length],
+    emphasized: false,
+  };
+}
+
+/** The last drawn value of a series, which is what its end label reports. */
+const lastValue = (derived: GridDerived, seriesKey: string): number | null => {
+  const points = derived.data
+    .filter((d) => d.seriesKey === seriesKey)
+    .sort((a, b) => a.pointIndex - b.pointIndex);
+  for (let i = points.length - 1; i >= 0; i--) {
+    if (points[i].value !== null) return points[i].top;
+  }
+  return null;
+};
+
+/**
+ * The text of each end label, aligned with `derived.series`.
+ *
+ * Exported because the frame solver has to reserve the right-hand gutter for
+ * these before any mark exists — and reserving for the NAME while the placer
+ * draws "name · value" is how end labels used to run off the slide.
+ */
+export function endLabelTexts(spec: LineSpec, derived: GridDerived): string[] {
+  const names = derived.series.map((s) => s.name);
+  if (spec.endLabelValues === false) return names;
+
+  const lasts = derived.series.map((s) => lastValue(derived, s.key));
+  // Formatted as a SET, so the end labels agree on decimals and scale with each
+  // other the way a column of tick labels does.
+  const formatted = formatSet(
+    lasts.map((v) => v ?? 0),
+    spec.numberFormat,
+  );
+  return names.map((name, i) =>
+    lasts[i] === null ? name : `${name} · ${formatted[i]?.text ?? ''}`,
+  );
+}
+
 export function placeLineArea(input: LineAreaInput): Mark[] {
   const { chartId, spec, derived, proj, theme, measurer, onlySeries } = input;
   const marks: Mark[] = [];
@@ -137,6 +245,12 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
     }
   }
 
+  // The subject of the chart, and the running count of the lines that recede
+  // behind it — see `lineLook`.
+  const emphasisKey = emphasisSeriesKey(spec, derived.series.map((k) => k.key));
+  const endLabels = spec.kind === 'line' ? endLabelTexts(spec, derived) : [];
+  let recedeIndex = 0;
+
   // Then the lines and their markers, on top.
   for (const s of series) {
     const si = derived.series.indexOf(s);
@@ -144,10 +258,13 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
     if (spec.kind === 'combo' && mode !== 'line') continue;
     if (spec.kind === 'area') continue;
 
+    const look = lineLook(theme, si, s.key === emphasisKey, emphasisKey !== null, recedeIndex);
+    if (emphasisKey !== null && !look.emphasized) recedeIndex++;
+
     const color =
       s.format?.outline?.color ??
-      (s.format?.fill?.kind === 'solid' ? s.format.fill.color : theme.seriesColor(si));
-    const width = s.format?.lineWidthEmu ?? pointsToEmu(2);
+      (s.format?.fill?.kind === 'solid' ? s.format.fill.color : look.color);
+    const width = s.format?.lineWidthEmu ?? look.widthEmu;
     const tops = pointsOf(derived, s.key, proj, centers, true);
 
     for (const run of runs(tops)) {
@@ -160,7 +277,7 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
         rect: path.box,
         d: path.d,
         fill: { kind: 'none' },
-        outline: { color, widthEmu: width, dash: s.format?.dash ?? 'solid' },
+        outline: { color, widthEmu: width, dash: s.format?.dash ?? look.dash },
       });
     }
 
@@ -184,20 +301,45 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
     }
 
     // think-cell's series labels at the end of each line, which beat a legend
-    // for a chart with a handful of lines: no colour-matching required.
+    // for a chart with a handful of lines: no colour-matching required. The
+    // emphasised line gets its label in the sans face and the value's weight,
+    // so the reader's eye lands on the subject before the comparators.
     if (spec.kind === 'line' && spec.endLabels) {
       const last = [...tops].reverse().find((p): p is Point => p !== null);
       if (last) {
-        const style = textStyle({ ...theme.text.dataLabel, color }, 'left', 'middle');
-        const w = measurer.measure(s.name, style).wEmu + pointsToEmu(2);
+        const role = look.emphasized ? theme.text.endLabelEmphasis : theme.text.endLabel;
+        const style = { ...textStyle({ ...role, color }, 'left', 'middle'), wrap: false };
+        const text = endLabels[si] ?? s.name;
+        // Padded generously. A measured width that's a hair under what the
+        // renderer's real font metrics need wraps "Enterprise · 640" onto two
+        // lines, and a wrapped end label reads as a bug rather than as a label.
+        const w = measurer.measure(text, style).wEmu + pointsToEmu(5);
         const h = lineHeightEmu(style);
+        // A dot on the last point ties the label to its line: the label sits a
+        // gap away from the data, and on a crowded right-hand edge that gap is
+        // enough to make the reader guess which line it belongs to.
+        if (look.emphasized && !marker) {
+          const size = pointsToEmu(6);
+          marks.push({
+            kind: 'marker',
+            ref: { chartId, part: 'mark', series: s.key, point: 'end' },
+            shape: 'circle',
+            rect: {
+              x: Math.round(last.x - size / 2),
+              y: Math.round(last.y - size / 2),
+              w: size,
+              h: size,
+            },
+            fill: { kind: 'solid', color },
+          });
+        }
         marks.push({
           kind: 'text',
           ref: { chartId, part: 'label', series: s.key, point: 'end' },
-          text: s.name,
+          text,
           style,
           rect: {
-            x: Math.round(last.x + theme.sizes.labelGapEmu),
+            x: Math.round(last.x + theme.sizes.labelGapEmu * 2),
             y: Math.round(last.y - h / 2),
             w,
             h,

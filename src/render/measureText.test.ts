@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EMU_PER_POINT, FONTS } from '@/model';
-import { defaultMeasurer, lineHeightEmu, metricMeasurer } from './measureText';
+import { defaultMeasurer, displayText, lineHeightEmu, metricMeasurer } from './measureText';
 
 const m = metricMeasurer();
 const geist = (sizePt: number, bold?: boolean) => ({ font: 'Geist' as const, sizePt, bold });
@@ -67,6 +67,22 @@ describe('metricMeasurer', () => {
     const w = m.measure('1,240', geist(10)).wEmu;
     expect(w).toBeGreaterThan(0.2 * 914_400);
     expect(w).toBeLessThan(0.6 * 914_400);
+  });
+});
+
+describe('caps', () => {
+  it('uppercases only when the style asks', () => {
+    expect(displayText('FY25 revenue', geist(10))).toBe('FY25 revenue');
+    expect(displayText('FY25 revenue', { ...geist(10), caps: true })).toBe('FY25 REVENUE');
+  });
+
+  it('measures the uppercased string, not the one passed in', () => {
+    // The whole point: a gutter sized for "revenue" and then filled with
+    // "REVENUE" overhangs the plot.
+    const plain = m.measure('revenue', geist(10)).wEmu;
+    const caps = m.measure('revenue', { ...geist(10), caps: true }).wEmu;
+    expect(caps).toBeGreaterThan(plain);
+    expect(caps).toBe(m.measure('REVENUE', geist(10)).wEmu);
   });
 });
 

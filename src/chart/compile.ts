@@ -43,6 +43,7 @@ import { categoryCenters, placeColumnBar } from './place/columnBar';
 import { placeCartesianFurniture, projector, type LegendItem } from './place/cartesian';
 import {
   comboColumnBand,
+  endLabelTexts,
   lineCategoryCenters,
   placeLineArea,
   type LineLikeSpec,
@@ -350,7 +351,7 @@ function compileCartesian(
     horizontal,
     outsideValueLabels,
     endLabels:
-      spec.kind === 'line' && spec.endLabels ? derived.series.map((s) => s.name) : undefined,
+      spec.kind === 'line' && spec.endLabels ? endLabelTexts(spec, derived) : undefined,
     categoryLabels: derived.categoryLabels,
     showValueAxisLabels: showAxes && valueAxis.show,
     showCategoryAxisLabels: showAxes && categoryAxis.show,

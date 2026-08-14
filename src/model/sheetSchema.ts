@@ -5,6 +5,11 @@
  * scatter gets X and Y, a bubble adds Size, a waterfall adds a Kind dropdown,
  * a Mekko gets a column-width band. Adding a chart type is one case here — the
  * grid component itself never changes.
+ *
+ * Two schemas come out of it. `sheetSchemaFor` is the CANONICAL one — one
+ * record per row — and it is what the Devin contract is generated from.
+ * `datasheetSchemaFor` is what the editor's grid renders, and for a category
+ * grid that is the canonical schema transposed; see `transposesInDatasheet`.
  */
 import { WATERFALL_ROLE_OPTIONS } from './chart/roles';
 import { dataShapeOf } from './chart/shape';
@@ -42,6 +47,7 @@ export function sheetSchemaFor(spec: ChartSpec): SheetSchema {
       if (shape.fields.includes('size')) perSeries.push(num('size', 'Size'));
       return {
         id: spec.kind,
+        layout: 'recordsDown',
         keyColumns: [text('label', 'Point')],
         perSeries,
         extraColumns: [],
@@ -53,6 +59,7 @@ export function sheetSchemaFor(spec: ChartSpec): SheetSchema {
     case 'waterfall':
       return {
         id: 'waterfall',
+        layout: 'recordsDown',
         keyColumns: [text('label', 'Label')],
         perSeries: [num('value', 'Value')],
         extraColumns: [
@@ -73,6 +80,7 @@ export function sheetSchemaFor(spec: ChartSpec): SheetSchema {
     case 'sankey':
       return {
         id: 'sankey',
+        layout: 'recordsDown',
         // Two key columns: a flow is identified by both of its ends.
         keyColumns: [text('from', 'From'), text('to', 'To')],
         perSeries: [num('value', 'Value')],
@@ -85,6 +93,7 @@ export function sheetSchemaFor(spec: ChartSpec): SheetSchema {
     case 'butterfly':
       return {
         id: 'butterfly',
+        layout: 'recordsDown',
         keyColumns: [text('label', 'Category')],
         perSeries: [num('value', 'Value')],
         extraColumns: [],
@@ -97,6 +106,7 @@ export function sheetSchemaFor(spec: ChartSpec): SheetSchema {
       const dated = isGridSpec(spec) && looksDated(spec.data.categories.map((c) => c.label));
       return {
         id: spec.kind === 'pie' || spec.kind === 'donut' ? 'pie' : 'grid',
+        layout: 'recordsDown',
         keyColumns: [
           dated
             ? { key: 'label', header: 'Date', type: 'date', editable: true }
@@ -184,6 +194,70 @@ const fullYear = (y: string): string => (y.length === 2 ? `20${y}` : y);
 
 const quarterIso = (q: number, year: string): string =>
   `${fullYear(year)}-${String((q - 1) * 3 + 1).padStart(2, '0')}-01`;
+
+/* ------------------------------------------------------------------ */
+/* The DATASHEET's schema — the canonical one, turned on its side       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Is this chart edited with its categories running ACROSS the sheet?
+ *
+ * Only the category grid, and only where nothing else in the sheet is indexed
+ * by row. A Mekko's column-width band is one value per category and lives in a
+ * row band, so transposing it would put the band at right angles to the thing
+ * it sizes; it keeps the classic layout until the band can follow.
+ */
+export function transposesInDatasheet(spec: ChartSpec): boolean {
+  return dataShapeOf(spec.kind).form === 'grid' && spec.kind !== 'mekko';
+}
+
+/**
+ * The schema the datasheet renders, which is NOT always the schema Devin's
+ * contract is generated from.
+ *
+ * A category grid is edited transposed — one row per series, one column per
+ * category — because the category axis is nearly always time, and a reader who
+ * sees FY23 → FY25 running left to right in the chart should not have to read
+ * it top to bottom in the sheet directly beneath it. The research contract is
+ * unaffected: an agent still returns one record per period, which is the shape
+ * a source table comes in.
+ */
+export function datasheetSchemaFor(spec: ChartSpec): SheetSchema {
+  const canonical = sheetSchemaFor(spec);
+  if (!transposesInDatasheet(spec)) return canonical;
+
+  const shape = dataShapeOf(spec.kind);
+  const single = shape.form === 'grid' && shape.seriesLimit === 1;
+
+  return {
+    ...canonical,
+    layout: 'seriesDown',
+    // The row key is now the series name; the category labels have moved up
+    // into the column headers, where they are edited as headers.
+    keyColumns: [text('series', 'Series')],
+    perSeries: [num('value', shape.form === 'grid' ? shape.valueHeader : 'Value')],
+    extraColumns: [],
+    bands: [],
+    caps: {
+      // Rows are series and columns are categories, so every cap swaps sides.
+      addRows: !single,
+      maxRows: shape.form === 'grid' ? shape.seriesLimit : undefined,
+      reorderRows: !single,
+      addSeries: true,
+      reorderSeries: true,
+      maxSeries: undefined,
+      minRows: 1,
+    },
+  };
+}
+
+/** The column groups the datasheet shows — categories when transposed. */
+export function datasheetSeriesFor(spec: ChartSpec): SheetSeries[] {
+  if (transposesInDatasheet(spec) && isGridSpec(spec)) {
+    return spec.data.categories.map((c) => ({ key: c.key, name: c.label }));
+  }
+  return sheetSeriesFor(spec);
+}
 
 /** The series a sheet shows for this spec, in display order. */
 export function sheetSeriesFor(spec: ChartSpec): SheetSeries[] {

@@ -23,7 +23,7 @@ import {
   type XYSeries,
 } from './chart/spec';
 import { WATERFALL_ROLE_OPTIONS } from './chart/roles';
-import { parseGrain, sheetSchemaFor, sheetSeriesFor } from './sheetSchema';
+import { datasheetSchemaFor, datasheetSeriesFor, parseGrain } from './sheetSchema';
 import {
   columnsFor,
   EMPTY,
@@ -43,8 +43,8 @@ const textCell = (s: string): CellValue => (s ? { kind: 'text', text: s } : EMPT
 /* ------------------------------------------------------------------ */
 
 export function sheetFromSpec(spec: ChartSpec): SheetModel {
-  const schema = sheetSchemaFor(spec);
-  const series = sheetSeriesFor(spec);
+  const schema = datasheetSchemaFor(spec);
+  const series = datasheetSeriesFor(spec);
   const columns = columnsFor(schema, series);
   const dateKey = schema.keyColumns[0]?.type === 'date';
 
@@ -59,7 +59,17 @@ export function sheetFromSpec(spec: ChartSpec): SheetModel {
   const rows: CellValue[][] = [];
   const bandValues: Record<string, CellValue[]> = {};
 
-  if (isGridSpec(spec)) {
+  if (isGridSpec(spec) && schema.layout === 'seriesDown') {
+    // Transposed: a row is a series, a column is a category. The category
+    // labels aren't cells at all here — they're the column headers, carried by
+    // `series` above.
+    for (const s of spec.data.series) {
+      rows.push([
+        textCell(s.name),
+        ...spec.data.categories.map((_, ci) => numCell(s.values[ci])),
+      ]);
+    }
+  } else if (isGridSpec(spec)) {
     for (const [ci, cat] of spec.data.categories.entries()) {
       rows.push([keyCell(cat.label), ...spec.data.series.map((s) => numCell(s.values[ci]))]);
     }
@@ -146,8 +156,37 @@ export function specFromSheet(sheet: SheetModel, base: ChartSpec): SpecFromSheet
     return t || fallback;
   };
 
-  /* --- category grid --- */
-  if (isGridSpec(spec)) {
+  /* --- category grid, transposed: one row per series --- */
+  if (isGridSpec(spec) && schema.layout === 'seriesDown') {
+    // Category identity rides on the column group's key, so renaming a header
+    // or dragging a column keeps every per-point override attached to it.
+    spec.data.categories = sheet.series.map((s, i) => ({
+      key: s.key,
+      label: s.name.trim() || `Category ${i + 1}`,
+    }));
+    const liveKeys = spec.data.categories.map((c) => c.key);
+    // One value column per category, addressed by key rather than by offset so
+    // a reordered or deleted column can't shift values under their headers.
+    const valueCols = sheet.series.map((s) =>
+      colIndex((col) => col.seriesKey === s.key && col.field === 'value'),
+    );
+
+    spec.data.series = rows.map((_, r): GridSeries => {
+      // Series identity is POSITIONAL here: a row carries no key, so a series
+      // that moves takes its name and values with it while explicit formatting
+      // stays with the slot — which is also how a palette assigns colour.
+      const prior = spec.data.series[r];
+      return {
+        ...(prior ?? { key: `s-${nanoid(5)}`, name: '', values: [] }),
+        key: prior?.key ?? `s-${nanoid(5)}`,
+        name: labelAt(r, prior?.name || `Series ${r + 1}`),
+        values: valueCols.map((c, ci) =>
+          c < 0 ? null : readNumber(r, c, `${liveKeys[ci]}.value`),
+        ),
+        pointOverrides: pruneOverrides(prior?.pointOverrides, liveKeys),
+      };
+    });
+  } else if (isGridSpec(spec)) {
     const existing = spec.data.categories;
     spec.data.categories = rows.map((_, r) => ({
       // Reuse the key positionally so per-point overrides survive a rename.

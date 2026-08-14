@@ -185,9 +185,10 @@ describe('chart typography', () => {
     ) as DesignSystem['type'],
   };
 
-  it('pins every chart string to the sans face, whatever the type roles say', () => {
+  it('keeps the serif out of a chart, whatever the type roles say', () => {
     // A serif body role is a good call for prose and a bad one for a column of
-    // 9pt axis numbers.
+    // 9pt axis numbers. Charts use the sans for titles and legends and the mono
+    // for everything annotating the data.
     const els = compileChart(
       { id: 'c1', groupId: 'g1', frame: FRAME, spec: spec() },
       serifEverywhere,
@@ -198,7 +199,32 @@ describe('chart typography', () => {
         e.type === 'text' ? e.body.paragraphs.flatMap((p) => p.runs.map((r) => r.font)) : [],
       ),
     );
-    expect([...fonts]).toEqual(['Geist']);
+    expect([...fonts].sort()).toEqual(['Geist', 'Geist Mono']);
+  });
+
+  it('sets ticks, categories and data labels in mono, uppercase and muted', () => {
+    const els = compileChart(
+      { id: 'c1', groupId: 'g1', frame: FRAME, spec: spec() },
+      serifEverywhere,
+      metricMeasurer(),
+    ).elements;
+    const runs = els.flatMap((e) =>
+      e.type === 'text' && (e.chartRef?.part === 'label' || e.chartRef?.part === 'axis')
+        ? e.body.paragraphs.flatMap((p) => p.runs.map((r) => ({ ...r, part: e.chartRef!.part })))
+        : [],
+    );
+    expect(runs.length).toBeGreaterThan(0);
+    for (const r of runs) {
+      expect(r.font).toBe('Geist Mono');
+      // Emitted uppercase, not left to a renderer to transform.
+      expect(r.text).toBe(r.text.toUpperCase());
+    }
+    // Muted for the axis furniture. A data label INSIDE a mark still takes
+    // whatever ink is legible on that fill — a grey number on a saturated bar
+    // is the one thing worse than an off-palette one.
+    for (const r of runs.filter((x) => x.part === 'axis')) {
+      expect(r.color).toEqual({ kind: 'token', token: 'ink.muted' });
+    }
   });
 
   it('still takes its sizes and colours from the design system', () => {

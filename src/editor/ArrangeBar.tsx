@@ -1,11 +1,12 @@
 'use client';
 
 /**
- * Arrange bar — the multi-selection counterpart to the SelectionFormatBar.
- * Where that bar sits above the slide and formats what's selected, this one
- * sits down its right edge and arranges it: align, distribute, match size,
- * match format. It only exists while two or more objects are selected, since
- * every action here is relational.
+ * Arrange bar — the placement counterpart to the SelectionFormatBar. Where that
+ * bar sits above the slide and formats what's selected, this one sits down its
+ * right edge and arranges it: stacking order, align, distribute, match size,
+ * match format. It appears as soon as anything is selected — order and align
+ * both mean something for one object — and the relational actions below stay
+ * disabled until there are enough objects for them to act on.
  *
  * Like the format bar it's a thin trigger surface — every button calls a store
  * action, so the toolbar, the context menu and Devin all stay in sync for free.
@@ -161,11 +162,14 @@ export function ArrangeBar() {
   const matchFormat = useEditor((s) => s.matchFormat);
   const group = useEditor((s) => s.group);
   const ungroup = useEditor((s) => s.ungroup);
+  const reorder = useEditor((s) => s.reorder);
   const elements = useEditor((s) => s.currentSlide().elements);
 
-  // Nothing to arrange against with one object, and a caret in a text box means
-  // the user is writing, not laying out.
-  if (selectedIds.length < 2 || editingId) return null;
+  // Nothing selected is nothing to arrange, and a caret in a text box means the
+  // user is writing, not laying out.
+  if (selectedIds.length < 1 || editingId) return null;
+  /** Relational actions need a second object to measure against. */
+  const single = selectedIds.length < 2;
 
   return (
     <div
@@ -176,7 +180,28 @@ export function ArrangeBar() {
       aria-orientation="vertical"
       onContextMenu={(e) => e.stopPropagation()}
     >
-      {/* Group first: it changes what the buttons below act on — after ⌘G the
+      {/* Stacking order first: it's the one cluster that works on a single
+          object, so it heads the bar rather than sitting below actions that are
+          greyed out. */}
+      {/* The filled box is the selection, the dashed one its neighbour; SVG
+          paints in document order, so the filled box comes last to read as in
+          front and first to read as behind. */}
+      <Btn onClick={() => reorder('front')} title="Bring to front">
+        <Icon>
+          <rect x={6} y={6} width={8} height={8} rx={1} strokeDasharray="2 1.5" />
+          <Box x={2} y={2} w={8} h={8} />
+        </Icon>
+      </Btn>
+      <Btn onClick={() => reorder('back')} title="Send to back">
+        <Icon>
+          <Box x={2} y={2} w={8} h={8} />
+          <rect x={6} y={6} width={8} height={8} rx={1} strokeDasharray="2 1.5" />
+        </Icon>
+      </Btn>
+
+      <Divider />
+
+      {/* Group next: it changes what the buttons below act on — after ⌘G the
           align buttons see one object, not several. */}
       <Btn
         onClick={() => group()}
@@ -237,13 +262,13 @@ export function ArrangeBar() {
 
       <Divider />
 
-      <Btn onClick={matchSize} title="Make same size as first selected">
+      <Btn onClick={matchSize} title="Make same size as first selected" disabled={single}>
         <Icon>
           <rect x={1.5} y={1.5} width={8} height={8} rx={1} />
           <rect x={6.5} y={6.5} width={8} height={8} rx={1} />
         </Icon>
       </Btn>
-      <Btn onClick={matchFormat} title="Apply format of first selected">
+      <Btn onClick={matchFormat} title="Apply format of first selected" disabled={single}>
         <Icon>
           {/* Brush: handle out to the top-right, head sweeping down-left. */}
           <path d="M13.5 2.5 9.5 6.5" />

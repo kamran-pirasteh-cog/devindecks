@@ -14,11 +14,45 @@
 import type { Paragraph } from '@/model';
 
 /** Marker glyph per indent level, cycling like PowerPoint's default scheme. */
-const BULLET_GLYPHS = ['•', '◦', '▪', '–', '·'];
+const BULLET_GLYPHS = ['▪', '▫', '▪', '–', '·'];
+
+/**
+ * How big a bullet glyph is relative to the text it leads, as a percentage —
+ * PowerPoint's `buSzPct`. The square glyphs are drawn small inside their em box,
+ * so at 100% they read as specks next to body text; the bump makes them square
+ * dots of the weight a reader expects. Numbers are text and stay at 100%.
+ */
+export const BULLET_SIZE_PCT = 145;
+
+/** The factor a marker's font size is scaled by — 1 for numbers and plain text. */
+export const markerSizeScale = (p: Pick<Paragraph, 'bullet'>) =>
+  p.bullet === 'bullet' ? BULLET_SIZE_PCT / 100 : 1;
+
+/**
+ * How far a square bullet is nudged down, as a fraction of the paragraph's own
+ * font size. The ▪/▫ glyphs are drawn high in their em box — their centre sits
+ * well above the middle of the x-height — and `BULLET_SIZE_PCT` scales that
+ * offset up with them, so left alone a bullet floats near the cap line instead
+ * of centring on the text it leads. Numbers are ordinary text sitting on the
+ * baseline and get no shift.
+ *
+ * The value is measured, not guessed: at `BULLET_SIZE_PCT` the ink box of ▪
+ * centres ~0.5em above the baseline while the x-height centres at ~0.265em,
+ * so the glyph needs ~0.235em of the text's size to sit on the text's middle.
+ */
+export const BULLET_SHIFT_EM = 0.235;
+
+/** Downward shift of a marker, in ems of the paragraph's font size. */
+export const markerShiftEm = (p: Pick<Paragraph, 'bullet'>) =>
+  p.bullet === 'bullet' ? BULLET_SHIFT_EM : 0;
+
+/** The glyph a bulleted paragraph at this level draws, for renderers and export. */
+export const bulletGlyph = (level: number) =>
+  BULLET_GLYPHS[clampLevel(level) % BULLET_GLYPHS.length];
 
 /** Points of extra indent per level, and the width of the marker gutter. */
 export const LEVEL_INDENT_PT = 18;
-export const BULLET_GUTTER_PT = 18;
+export const BULLET_GUTTER_PT = 22;
 
 /** Deepest level the model allows (see `Paragraph.level`). */
 export const MAX_LEVEL = 4;
@@ -95,7 +129,7 @@ export function bulletMarkers(paragraphs: Paragraph[]): (string | null)[] {
       return numberLabel(level, counters[level]);
     }
     counters[level] = 0;
-    return p.bullet === 'bullet' ? BULLET_GLYPHS[level % BULLET_GLYPHS.length] : null;
+    return p.bullet === 'bullet' ? bulletGlyph(level) : null;
   });
 }
 
