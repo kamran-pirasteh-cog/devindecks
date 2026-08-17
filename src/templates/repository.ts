@@ -15,7 +15,14 @@ import { nanoid } from 'nanoid';
 import { SLIDE_16x9, type Deck, type PictureElement, type Slide } from '@/model';
 import { getTemplate, TEMPLATES, type TemplateDef } from './registry';
 
-const KEY = 'devindesign.templates.v1';
+/**
+ * Seeding only fills in ids that are MISSING, so a browser that has already
+ * stored a built-in keeps serving its copy forever — bumping this key is the
+ * only way a changed built-in reaches an existing browser. v2: the built-in set
+ * was replaced wholesale by the three standard reference decks. v3: those decks
+ * re-imported at full canvas scale.
+ */
+const KEY = 'devindesign.templates.v3';
 
 export interface StoredTemplate {
   id: string;

@@ -30,7 +30,11 @@ import {
   type TypeRole,
 } from '@/model';
 import { FitSlideView } from '@/render/FitSlideView';
-import { SLIDE_LAYOUT_CATEGORIES, type SlideLayoutCategory } from '@/templates/registry';
+import {
+  CATEGORY_BLURBS,
+  SLIDE_LAYOUT_CATEGORIES,
+  type SlideLayoutCategory,
+} from '@/templates/registry';
 import {
   createLayout,
   createLayoutFromImage,
@@ -824,7 +828,10 @@ function AlbumCard({
       </div>
       <div className="mt-2 px-0.5">
         <div className="truncate text-sm font-medium">{category}</div>
-        <div className="text-[11px] text-zinc-400">
+        {/* What belongs in this family, not just how full it is — the shelf is
+            browsed by the shape of the idea, the way SmartArt is. */}
+        <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{CATEGORY_BLURBS[category]}</div>
+        <div className="text-[11px] text-zinc-400 dark:text-zinc-500">
           {layouts.length} {layouts.length === 1 ? 'layout' : 'layouts'}
         </div>
       </div>

@@ -180,6 +180,16 @@ export interface WaterfallItem {
    */
   value: number | null;
   format?: SeriesFormat;
+  /**
+   * This item's own label settings, over the chart's. A waterfall has no series
+   * to hang a `PointOverride` on, so the item IS the narrowest node there is —
+   * without it "make this one number bigger" could only be a chart-wide change.
+   *
+   * Named like `GridSeries.labels` — plural — because `label` on an item is
+   * already its NAME, and one field called `label` meaning both would be a bug
+   * waiting to happen.
+   */
+  labels?: LabelSpec;
 }
 
 export interface WaterfallData {

@@ -179,6 +179,9 @@ describe('compileChart — axis scale and ticks', () => {
   const ticks = (els: SlideElement[]) =>
     texts(els.filter((e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick' && e.chartRef.axis === 'y'));
 
+  const isTickMark = (e: SlideElement) =>
+    e.chartRef?.part === 'axis' && e.chartRef.sub === 'tickMark';
+
   it('runs the axis to the bound it was given, not to the data', () => {
     const { elements } = compile(
       chart((s) => {
@@ -199,18 +202,18 @@ describe('compileChart — axis scale and ticks', () => {
 
   it('draws no tick marks unless asked — gridlines already carry the scale', () => {
     const { elements } = compile(chart());
-    expect(elements.filter((e) => e.chartRef?.sub === 'tickMark')).toHaveLength(0);
+    expect(elements.filter(isTickMark)).toHaveLength(0);
   });
 
   it('puts a tick mark at every tick, on the side asked for', () => {
     const out = compile(chart((s) => (s.axes.y.tickMarks = 'out'))).elements;
-    const marks = out.filter((e) => e.chartRef?.sub === 'tickMark');
+    const marks = out.filter(isTickMark);
     expect(marks).toHaveLength(ticks(out).length);
     const plotLeft = Math.min(...out.filter((e) => e.chartRef?.part === 'mark').map((e) => e.rect.x));
     // Outside means left of the bars; inside means over them.
     expect(Math.max(...marks.map((m) => m.rect.x))).toBeLessThanOrEqual(plotLeft);
     const inside = compile(chart((s) => (s.axes.y.tickMarks = 'in'))).elements
-      .filter((e) => e.chartRef?.sub === 'tickMark');
+      .filter(isTickMark);
     expect(Math.min(...inside.map((m) => m.rect.x))).toBeGreaterThanOrEqual(
       Math.max(...marks.map((m) => m.rect.x)),
     );
@@ -226,7 +229,7 @@ describe('compileChart — axis scale and ticks', () => {
 
   it('ticks the category axis too, when that axis asks', () => {
     const els = compile(chart((s) => (s.axes.x.tickMarks = 'out'))).elements;
-    const marks = els.filter((e) => e.chartRef?.sub === 'tickMark');
+    const marks = els.filter(isTickMark);
     expect(marks).toHaveLength(3); // one per category
     expect(marks.every((m) => m.chartRef?.part === 'axis' && m.chartRef.axis === 'x')).toBe(true);
   });

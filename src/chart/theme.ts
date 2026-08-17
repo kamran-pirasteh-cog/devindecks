@@ -189,7 +189,7 @@ const ANNOTATION = { font: LABEL_FONT, caps: true } as const;
  * because a spread of the whole `LabelFont` would set `color: undefined` and
  * wipe the resolved token.
  */
-function fontOver(font?: LabelFont): Partial<ChartTextRole> {
+export function fontOver(font?: LabelFont): Partial<ChartTextRole> {
   if (!font) return {};
   return {
     ...(font.sizePt !== undefined ? { sizePt: font.sizePt } : {}),

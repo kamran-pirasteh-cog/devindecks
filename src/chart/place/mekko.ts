@@ -17,6 +17,7 @@ import type { GridDerived } from '../derive/grid';
 import { formatNumber } from '../format/number';
 import type { Projector } from './cartesian';
 import { textStyle } from './cartesian';
+import { labelRole, labelSpecFor } from './labelSpec';
 
 export interface MekkoInput {
   chartId: string;
@@ -44,11 +45,7 @@ export function placeMekko(input: MekkoInput): Mark[] {
   const { chartId, spec, derived, proj, theme, measurer } = input;
   const bands = weightedBands(mekkoWeights(spec, derived));
   const marks: Mark[] = [];
-  const labels = spec.decorations.labels;
-
-  // Every Mekko label sits inside its own cell, so ink is per-cell.
-  const labelRole = { ...theme.text.dataLabel, ...(labels.font ?? {}) };
-  const labelH = lineHeightEmu(labelRole);
+  const chartLabels = spec.decorations.labels;
 
   for (const d of derived.data) {
     if (d.value === null) continue;
@@ -79,12 +76,18 @@ export function placeMekko(input: MekkoInput): Mark[] {
       outline: { color: theme.gridline, widthEmu: pointsToEmu(0.75), dash: 'solid' },
     });
 
+    // Chart < series < cell, so a single label restyled on the canvas — which
+    // lands on the point override — is honoured here rather than dropped.
+    const labels = labelSpecFor(chartLabels, derived.series[d.seriesIndex]?.labels, override?.label);
+
     if (labels.show) {
+      const labelH = lineHeightEmu(labelRole(theme, labels.font));
       const share = d.share ?? 0;
       const text = formatNumber(share, { ...spec.numberFormat, style: 'percent' }, { peers: [share] })
         .text;
+      // Every Mekko label sits inside its own cell, so ink is per-cell.
       const labelStyle = textStyle(
-        { ...labelRole, color: labels.font?.color ?? theme.inkOn(cellColor) },
+        { ...labelRole(theme, labels.font), color: labels.font?.color ?? theme.inkOn(cellColor) },
         'center',
         'middle',
       );

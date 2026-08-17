@@ -307,6 +307,10 @@ export interface Deck {
    * numbers are drawn from each slide's live index at render time, so they
    * renumber themselves as slides are added, deleted or reordered. Style comes
    * from the design system (see `model/pageNumbers.ts`).
+   *
+   * Unset means on — numbering is the default, and only an explicit `false`
+   * suppresses it. Read it through `showsPageNumbers`, never as a truthiness
+   * test.
    */
   pageNumbers?: boolean;
   /** Free-text labels (e.g. client names) for organizing/filtering documents. */

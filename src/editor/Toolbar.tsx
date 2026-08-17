@@ -16,8 +16,7 @@ import { ShortcutsModal } from './ShortcutsModal';
 import { ChartPopover } from './ChartPopover';
 import { ImportSlidesDialog } from './ImportSlidesDialog';
 import { OVERLAY_Z } from './layers';
-import { FIT_TO_MARGINS_BUTTON } from '@/flags';
-import type { ShapePreset } from '@/model';
+import { showsPageNumbers, type ShapePreset } from '@/model';
 
 const SHAPES: { preset: ShapePreset; label: string }[] = [{ preset: 'rect', label: '▭' }];
 
@@ -65,7 +64,7 @@ export function Toolbar() {
   const addElement = useEditor((s) => s.addElement);
   const showGuides = useEditor((s) => s.showGuides);
   const toggleGuides = useEditor((s) => s.toggleGuides);
-  const pageNumbers = useEditor((s) => !!s.deck.pageNumbers);
+  const pageNumbers = useEditor((s) => showsPageNumbers(s.deck));
   const togglePageNumbers = useEditor((s) => s.togglePageNumbers);
   const fitToMargins = useEditor((s) => s.fitToMargins);
   const slideIsEmpty = useEditor(
@@ -161,19 +160,17 @@ export function Toolbar() {
       >
         <span className={showGuides ? 'text-sky-500' : undefined}>⊞</span>
       </Btn>
-      {FIT_TO_MARGINS_BUTTON ? (
-        <Btn
-          onClick={fitToMargins}
-          title={
-            selCount > 0
-              ? 'Fit selection inside margin guides'
-              : 'Fit slide content inside margin guides'
-          }
-          disabled={slideIsEmpty}
-        >
-          ⊡
-        </Btn>
-      ) : null}
+      <Btn
+        onClick={fitToMargins}
+        title={
+          selCount > 0
+            ? 'Pull the selection inside the margin guides'
+            : 'Pull all slide content inside the margin guides'
+        }
+        disabled={slideIsEmpty}
+      >
+        <span className="text-xs font-medium">Enforce margins</span>
+      </Btn>
       <Btn
         onClick={togglePageNumbers}
         title={pageNumbers ? 'Remove page numbers' : 'Add page numbers to all slides'}

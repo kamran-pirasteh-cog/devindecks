@@ -11,10 +11,15 @@ import { useRouter } from 'next/navigation';
 import { useEditor, loadDeck, type AlignMode } from '@/store/editorStore';
 import { SAMPLE_DECK } from '@/model/sample';
 import { expandSelection, inchesToEmu, unionRect, type Deck } from '@/model';
-import { getDoc, saveDoc } from '@/docs/repository';
+import { getDoc, saveDoc, seedIfFirstRun as seedDocs } from '@/docs/repository';
 import { getFolder } from '@/docs/folders';
 import { getLastSlide, rememberLastSlide } from '@/docs/lastSlide';
-import { getStoredTemplate, saveTemplateFromDeck, templateAsDeck } from '@/templates/repository';
+import {
+  getStoredTemplate,
+  saveTemplateFromDeck,
+  seedIfFirstRun as seedTemplates,
+  templateAsDeck,
+} from '@/templates/repository';
 import { getStoredLayout, layoutAsDeck, saveLayoutFromSlide } from '@/templates/layoutRepository';
 import { getActiveDesignSystem } from '@/design/repository';
 import { useComments } from '@/store/commentStore';
@@ -117,6 +122,14 @@ export function Editor({
       loadDeck(templateAsDeck(tpl), getActiveDesignSystem());
       return;
     }
+    // Templates first: a pending seed migration rebuilds seeded decks from the
+    // stored templates, so those must be current before it runs. Both calls are
+    // no-ops once the version matches — and the editor has to make them,
+    // because reloading an `/edit/<id>` URL never passes through the dashboard,
+    // which used to be the only place a migration could happen.
+    seedTemplates();
+    seedDocs();
+
     const doc: Deck | null = deckId ? getDoc(deckId) : SAMPLE_DECK;
     if (!doc) {
       router.replace('/');

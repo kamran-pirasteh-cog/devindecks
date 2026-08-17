@@ -13,6 +13,7 @@ import type { Mark } from '../mark';
 import { slicePath } from '../geom/path';
 import { formatNumber } from '../format/number';
 import { textStyle } from './cartesian';
+import { labelRole, labelSpecFor } from './labelSpec';
 import type { GridDerived } from '../derive/grid';
 
 export interface PieInput {
@@ -48,12 +49,7 @@ export function placePie(input: PieInput): Mark[] {
   const cy = plot.y + plot.h / 2;
   const start = ((spec.startAngleDeg ?? 0) / 360) * TAU;
 
-  const labels = spec.decorations.labels;
-  // A slice label always sits ON its slice, so its ink is decided per slice
-  // rather than once for the chart. The role without a colour is the shared
-  // part; the colour is picked inside the loop.
-  const labelRole = { ...theme.text.dataLabel, ...(labels.font ?? {}) };
-  const labelH = lineHeightEmu(labelRole);
+  const chartLabels = spec.decorations.labels;
   const peers = values.map((d) => d.value ?? 0);
 
   let angle = start;
@@ -86,7 +82,14 @@ export function placePie(input: PieInput): Mark[] {
       });
     }
 
+    // A pie's legend lists SLICES, so a slice's own label settings live on the
+    // point override — which is where the canvas writes when one label is
+    // selected. Resolved per slice, so the size and the line height below are
+    // this slice's, not the chart's.
+    const labels = labelSpecFor(chartLabels, derived.series[0]?.labels, override?.label);
+
     if (labels.show && !override?.hidden) {
+      const labelH = lineHeightEmu(labelRole(theme, labels.font));
       const share = magnitude / total;
       const text =
         labels.content.kind === 'percent'
@@ -95,8 +98,10 @@ export function placePie(input: PieInput): Mark[] {
             ? d.pointLabel
             : formatNumber(d.value ?? 0, spec.numberFormat, { peers }).text;
 
+      // A slice label always sits ON its slice, so its ink is decided per slice
+      // rather than once for the chart.
       const labelStyle = textStyle(
-        { ...labelRole, color: labels.font?.color ?? theme.inkOn(color) },
+        { ...labelRole(theme, labels.font), color: labels.font?.color ?? theme.inkOn(color) },
         'center',
         'middle',
       );

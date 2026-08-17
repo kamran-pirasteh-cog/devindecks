@@ -603,6 +603,162 @@ function pointKeysOf(spec: ChartSpec, seriesKey: string): string[] {
   return [];
 }
 
+/* ------------------------------------------------------------------ */
+/* Where a data-label edit belongs                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The node a label edit is written to, resolved from what the user selected.
+ *
+ * One answer shared by the panel and the keyboard, because a readout and a write
+ * that disagree about scope is how "the control does nothing" happens: the panel
+ * would show the chart's size while the write landed on a point, or the other way
+ * round. `labelSpecAt` reads it and `patchLabelAt` writes it, so there is exactly
+ * one place that knows the rules.
+ *
+ * - `point` — the narrowest node, and the usual one: a `PointOverride` on the
+ *   series. What a single data label selected on the canvas becomes.
+ * - `series` — every point of the series selected, so the SERIES changed and a
+ *   category added later comes back styled to match.
+ * - `item` — a waterfall, which has items instead of series and so keeps a
+ *   label's settings on `WaterfallItem.labels`.
+ * - `chart` — a shape with nothing narrower than itself (a sankey).
+ */
+export type LabelHome =
+  | { scope: 'chart' }
+  | { scope: 'series'; seriesKey: string }
+  | { scope: 'point'; seriesKey: string; points: string[] }
+  | { scope: 'item'; items: string[] };
+
+/**
+ * Which node owns the labels of these marks/labels, or null when the selection
+ * spans several series and so has no single answer.
+ *
+ * A point key the series doesn't have — a line chart's `end` label, whose only
+ * home is the series — resolves to `series` rather than to an override no placer
+ * would ever read.
+ */
+export function labelHomeFor(spec: ChartSpec, refs: ChartRef[]): LabelHome | null {
+  const points = refs.filter(isPointRef);
+  if (!points.length) return null;
+
+  if (isWaterfallSpec(spec)) {
+    const keys = new Set(spec.data.items.map((i) => i.key));
+    const items = [...new Set(points.map((r) => r.point))].filter((k) => keys.has(k));
+    return items.length ? { scope: 'item', items } : { scope: 'chart' };
+  }
+
+  const seriesKeys = [...new Set(points.map((r) => r.series))];
+  if (seriesKeys.length !== 1) return null;
+  const seriesKey = seriesKeys[0]!;
+  if (!seriesOf(spec).some((s) => s.key === seriesKey)) return { scope: 'chart' };
+
+  const all = pointKeysOf(spec, seriesKey);
+  const selected = [...new Set(points.map((r) => r.point))].filter((k) => all.includes(k));
+  if (!selected.length) return { scope: 'series', seriesKey };
+  if (all.length > 0 && all.every((k) => selected.includes(k))) {
+    return { scope: 'series', seriesKey };
+  }
+  return { scope: 'point', seriesKey, points: selected };
+}
+
+/** The chart-wide default a narrower node falls through to. */
+const labelBase = (spec: ChartSpec, seriesKey?: string): LabelSpec => {
+  const series = seriesKey ? seriesOf(spec).find((s) => s.key === seriesKey) : undefined;
+  return series?.labels ?? spec.decorations.labels;
+};
+
+/**
+ * The label settings in force at a home, for a panel's readout.
+ *
+ * Resolved over the WHOLE selection rather than its first member: select three
+ * bars, turn labels on, and the override lands on all three — reading only one
+ * would leave the toggle showing "off" for labels that are visibly on. A
+ * selection whose members disagree has no single answer, so it falls back to the
+ * node above.
+ */
+export function labelSpecAt(spec: ChartSpec, home: LabelHome): LabelSpec {
+  switch (home.scope) {
+    case 'chart':
+      return spec.decorations.labels;
+    case 'series':
+      return labelBase(spec, home.seriesKey);
+    case 'point': {
+      const series = seriesOf(spec).find((s) => s.key === home.seriesKey);
+      const each = home.points.map((k) => series?.pointOverrides?.[k]?.label);
+      const first = each[0];
+      if (!first || !each.every((l) => l?.show === first.show)) {
+        return labelBase(spec, home.seriesKey);
+      }
+      return first;
+    }
+    case 'item': {
+      const each = home.items.map(
+        (k) => (isWaterfallSpec(spec) ? spec.data.items.find((i) => i.key === k)?.labels : undefined),
+      );
+      const first = each[0];
+      if (!first || !each.every((l) => l?.show === first.show)) return spec.decorations.labels;
+      return first;
+    }
+  }
+}
+
+/**
+ * Write a label patch to its home, seeded from the node above.
+ *
+ * Seeded rather than written sparse because `LabelSpec` is required-field and the
+ * placers resolve it by spreading — see `labelSpecFor`. Writing to a series also
+ * drops the per-point labels underneath it, which would otherwise shadow the
+ * change the user just made to all of them.
+ *
+ * Returns true when something was written, so a caller can skip the undo step
+ * for a selection with no spec home.
+ */
+export function patchLabelAt(
+  spec: ChartSpec,
+  home: LabelHome,
+  patch: Partial<LabelSpec>,
+): boolean {
+  switch (home.scope) {
+    case 'chart':
+      spec.decorations.labels = { ...spec.decorations.labels, ...patch };
+      return true;
+    case 'series': {
+      const series = seriesOf(spec).find((s) => s.key === home.seriesKey);
+      if (!series) return false;
+      series.labels = { ...labelBase(spec, home.seriesKey), ...patch };
+      for (const key of Object.keys(series.pointOverrides ?? {})) {
+        delete series.pointOverrides![key]!.label;
+      }
+      return true;
+    }
+    case 'point': {
+      const series = seriesOf(spec).find((s) => s.key === home.seriesKey);
+      if (!series) return false;
+      series.pointOverrides ??= {};
+      for (const key of home.points) {
+        const prior = series.pointOverrides[key] ?? {};
+        series.pointOverrides[key] = {
+          ...prior,
+          label: { ...(prior.label ?? labelBase(spec, home.seriesKey)), ...patch },
+        };
+      }
+      return true;
+    }
+    case 'item': {
+      if (!isWaterfallSpec(spec)) return false;
+      let wrote = false;
+      for (const key of home.items) {
+        const item = spec.data.items.find((i) => i.key === key);
+        if (!item) continue;
+        item.labels = { ...(item.labels ?? spec.decorations.labels), ...patch };
+        wrote = true;
+      }
+      return wrote;
+    }
+  }
+}
+
 export interface ChartFormatPatch {
   fill?: Fill;
   outline?: Outline | undefined;

@@ -3,6 +3,7 @@
 /** Slide navigator — thumbnails via the same SlideView renderer, scaled down. */
 import { useEffect, useRef, useState } from 'react';
 import { SlideView } from '@/render/SlideView';
+import { showsPageNumbers } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { useComments } from '@/store/commentStore';
 import { unresolvedCounts } from '@/comments/types';
@@ -167,7 +168,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                       designSystem={ds}
                       width={thumbWidth}
                       page={
-                        deck.pageNumbers ? { index: i, count: deck.slides.length } : undefined
+                        showsPageNumbers(deck) ? { index: i, count: deck.slides.length } : undefined
                       }
                     />
                   )}
