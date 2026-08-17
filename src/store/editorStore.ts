@@ -22,6 +22,7 @@ import {
   DEFAULT_DESIGN_SYSTEM,
   EMU_PER_POINT,
   expandSelection,
+  inchesToEmu,
   marginBox,
   marginGuides,
   outerGroupId,
@@ -90,6 +91,30 @@ function nextFontSize(current: number, dir: 'up' | 'down'): number {
   return prev ?? current;
 }
 
+/** How far each successive paste steps clear of the one before it. */
+const PASTE_STEP = inchesToEmu(0.1);
+
+/** A detached deep copy — the deck holds only plain JSON, so this is enough. */
+const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/**
+ * What a cut or copy puts on the clipboard: detached copies, never live
+ * references into a slide.
+ *
+ * Charts are carried as their SPEC rather than as the rectangles they compiled
+ * to, because a chart's elements are owned by the chart — pasting the shapes
+ * alone would hand them to the original chart, which would delete them on its
+ * next recompile.
+ */
+interface ObjectClipboard {
+  elements: SlideElement[];
+  charts: Array<{ spec: ChartSpec; frame: Rect }>;
+  /** The slide it was taken from: pasting back onto it steps clear of the original. */
+  sourceSlideId: string;
+  /** Pastes made onto that source slide, so a run of ⌘V fans out instead of stacking. */
+  pastes: number;
+}
+
 interface EditorState {
   deck: Deck;
   designSystem: DesignSystem;
@@ -117,6 +142,14 @@ interface EditorState {
    * register, not document state, so it survives undo and isn't autosaved.
    */
   formatClipboard: ElementFormat | null;
+
+  /**
+   * Cut/copy buffer for whole objects. Outside the deck for the same reason as
+   * the format painter — which is what lets you cut, undo the cut, and still
+   * paste — and detached from the slide it came from, so the copy doesn't
+   * change when the original does.
+   */
+  clipboard: ObjectClipboard | null;
 
   /**
    * Whether the margin guides are painted on the canvas. View state, not deck
@@ -169,6 +202,11 @@ interface EditorState {
 
   // element mutations (all commit unless transient)
   addElement: (el: SlideElement) => void;
+  /**
+   * Add several elements as ONE step — a callout card is four boxes that must
+   * arrive, select and undo together, not four presses of ⌘Z.
+   */
+  addElements: (els: SlideElement[]) => void;
   updateElement: (id: string, patch: Partial<SlideElement>, transient?: boolean) => void;
   setRect: (id: string, rect: Rect, transient?: boolean) => void;
   /** Commit several boxes at once (a group transform) as ONE history step. */
@@ -212,6 +250,17 @@ interface EditorState {
   /** Nudge list indent level, clamped to the model's 0..4. */
   indentParagraphs: (ids: string[], delta: number) => void;
   deleteSelected: () => void;
+
+  // object clipboard
+  /** Copy the selection, then take it off the slide. */
+  cutSelection: () => void;
+  copySelection: () => void;
+  /**
+   * Drop the buffer onto the current slide and select what landed. Pasting back
+   * onto the slide it came from offsets each copy; pasting anywhere else keeps
+   * the objects where they sat, so a layout moved between slides stays put.
+   */
+  pasteClipboard: () => void;
 
   // format painter
   copyFormat: (id?: string) => void;
@@ -418,6 +467,7 @@ export const useEditor = create<EditorState>()(
     future: [],
     transientBase: null,
     formatClipboard: null,
+    clipboard: null,
     showGuides: true,
     pendingFitId: null,
 
@@ -805,6 +855,21 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    addElements(els) {
+      if (!els.length) return;
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        slide.elements.push(...els);
+        s.selectedIds = els.map((el) => el.id);
+        s.deck.updatedAt = new Date(0).toISOString();
+        // Unlike a lone text box, a multi-part object arrives already sized by
+        // whatever built it, so there is nothing to shrink-wrap here.
+        s.pendingFitId = null;
+      });
+    },
+
     updateElement(id, patch, transient = false) {
       get().beginChange(transient);
       set((s) => {
@@ -1124,6 +1189,88 @@ export const useEditor = create<EditorState>()(
           if (!body) continue;
           for (const p of body.paragraphs) p.level = clampLevel((p.level ?? 0) + delta);
         }
+      });
+    },
+
+    copySelection() {
+      const { selectedIds, currentSlideId, deck } = get();
+      const slide = slideById(deck, currentSlideId);
+      if (!slide || !selectedIds.length) return;
+
+      // Chart parts are carried as the chart, not as their rectangles — see
+      // `ObjectClipboard`.
+      const charts = chartsForElements(slide, selectedIds).map((c) => ({
+        spec: clone(c.spec),
+        frame: { ...c.frame },
+      }));
+      const elements = slide.elements
+        .filter((e) => selectedIds.includes(e.id) && !e.chartRef)
+        .map(clone);
+      if (!elements.length && !charts.length) return;
+
+      set((s) => {
+        s.clipboard = { elements, charts, sourceSlideId: slide.id, pastes: 0 };
+      });
+    },
+
+    cutSelection() {
+      const before = get().clipboard;
+      get().copySelection();
+      // Nothing copyable under the selection means nothing to cut: leave both
+      // the slide and the buffer as they were.
+      if (get().clipboard === before) return;
+      get().deleteSelected();
+    },
+
+    pasteClipboard() {
+      const clip = get().clipboard;
+      if (!clip) return;
+      get().commit();
+
+      // Back onto its own slide, each paste steps clear of the last so the
+      // copies fan out instead of hiding under one another.
+      const onSource = get().currentSlideId === clip.sourceSlideId;
+      const step = onSource ? PASTE_STEP * (clip.pastes + 1) : 0;
+
+      // Pasted groups are their OWN groups, exactly as duplicates are: shared
+      // group ids would let ungrouping the copy reach into the original.
+      const gidMap = new Map<string, string>();
+      const remapGid = (g: string) => {
+        const next = gidMap.get(g) ?? `g-${nanoid(8)}`;
+        gidMap.set(g, next);
+        return next;
+      };
+
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        const newIds: string[] = [];
+
+        for (const chart of clip.charts) {
+          const copy = insertChartInto(
+            slide,
+            clone(chart.spec),
+            { ...chart.frame, x: chart.frame.x + step, y: chart.frame.y + step },
+            s.designSystem,
+          );
+          newIds.push(
+            ...slide.elements.filter((e) => e.chartRef?.chartId === copy.id).map((e) => e.id),
+          );
+        }
+
+        for (const el of clip.elements) {
+          const copy = clone(el);
+          copy.id = `${el.id}-${nanoid(4)}`;
+          if (copy.groupIds) copy.groupIds = copy.groupIds.map(remapGid);
+          copy.rect = { ...copy.rect, x: copy.rect.x + step, y: copy.rect.y + step };
+          slide.elements.push(copy);
+          newIds.push(copy.id);
+        }
+
+        s.selectedIds = newIds;
+        s.editingId = null;
+        s.croppingId = null;
+        if (onSource) s.clipboard = { ...clip, pastes: clip.pastes + 1 };
       });
     },
 
@@ -1667,14 +1814,23 @@ function emptyDeck(): Deck {
  * place both are already to hand. It's idempotent, so a deck that's already
  * current passes straight through.
  */
-export function loadDeck(deck: Deck, ds?: DesignSystem) {
+/**
+ * `startAt` is the slide to open on — the one the user was last looking at in
+ * this document. Ignored when that slide is gone (deleted in another tab, or a
+ * different deck's id), which lands you on slide 1 rather than nowhere.
+ */
+export function loadDeck(deck: Deck, ds?: DesignSystem, startAt?: string | null) {
   const designSystem = ds ?? useEditor.getState().designSystem;
   const migrated = migrateDeck(deck, (chart) => compileChart(chart, designSystem).elements);
+  const landing =
+    (startAt && migrated.slides.some((sl) => sl.id === startAt) ? startAt : null) ??
+    migrated.slides[0]?.id ??
+    '';
   useEditor.setState((s) => ({
     ...s,
     deck: migrated,
     designSystem,
-    currentSlideId: migrated.slides[0]?.id ?? '',
+    currentSlideId: landing,
     selectedIds: [],
     editingId: null,
     croppingId: null,
