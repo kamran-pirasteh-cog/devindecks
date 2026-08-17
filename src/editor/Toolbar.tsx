@@ -11,10 +11,10 @@ import { useComments } from '@/store/commentStore';
 import { makeShape } from './factories';
 import { LinePopover } from './LinePopover';
 import { TextPopover } from './TextPopover';
+import { CalloutPopover } from './CalloutPopover';
 import { ShortcutsModal } from './ShortcutsModal';
 import { ChartPopover } from './ChartPopover';
 import { ImportSlidesDialog } from './ImportSlidesDialog';
-import { commentAnchorId } from './commentAnchor';
 import { OVERLAY_Z } from './layers';
 import { FIT_TO_MARGINS_BUTTON } from '@/flags';
 import type { ShapePreset } from '@/model';
@@ -75,9 +75,6 @@ export function Toolbar() {
     (s) => !s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.elements.length,
   );
   const selCount = useEditor((s) => s.selectedIds.length);
-  const selectedIds = useEditor((s) => s.selectedIds);
-  const currentSlideId = useEditor((s) => s.currentSlideId);
-  const startDraft = useComments((s) => s.startDraft);
   const togglePanel = useComments((s) => s.togglePanel);
   const panelOpen = useComments((s) => s.panelOpen);
   const openThreads = useComments((s) => s.threads.filter((t) => !t.resolved).length);
@@ -90,6 +87,8 @@ export function Toolbar() {
   const lineAnchorRef = useRef<HTMLDivElement>(null);
   const [showImport, setShowImport] = useState(false);
   const textAnchorRef = useRef<HTMLDivElement>(null);
+  const [showCallout, setShowCallout] = useState(false);
+  const calloutAnchorRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="flex items-center gap-0.5 border-b border-zinc-200 bg-white px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-950">
@@ -102,6 +101,17 @@ export function Toolbar() {
       </button>
       {showImport ? <ImportSlidesDialog onClose={() => setShowImport(false)} /> : null}
       <Divider />
+      <div ref={calloutAnchorRef} className="relative flex">
+        <Btn onClick={() => setShowCallout((v) => !v)} title="Add callout card">
+          {/* The text button's serif T, boxed — the card is type on a fill. */}
+          <span className="flex h-4 w-5 items-center justify-center rounded-[3px] bg-zinc-800 font-serif text-[10px] leading-none text-white dark:bg-zinc-200 dark:text-zinc-900">
+            T
+          </span>
+        </Btn>
+        {showCallout ? (
+          <CalloutPopover onClose={() => setShowCallout(false)} anchorRef={calloutAnchorRef} />
+        ) : null}
+      </div>
       <div ref={textAnchorRef} className="relative flex">
         <Btn onClick={() => setShowText((v) => !v)} title="Add text">
           <span className="font-serif">T</span>
@@ -118,7 +128,6 @@ export function Toolbar() {
           <LinePopover onClose={() => setShowLine(false)} anchorRef={lineAnchorRef} />
         ) : null}
       </div>
-      <Divider />
       {SHAPES.map((s) => (
         <Btn key={s.preset} onClick={() => addElement(makeShape(s.preset))} title={`Add ${s.preset}`}>
           {s.label}
@@ -181,27 +190,11 @@ export function Toolbar() {
       >
         Comments
         {openThreads > 0 ? (
-          <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-400 px-1 text-[10px] font-semibold text-amber-950">
+          <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-300 px-1 text-[10px] font-semibold text-amber-900">
             {openThreads}
           </span>
         ) : null}
       </button>
-      {/* New comment sits with the panel toggle rather than out among the
-          drawing tools: one is where comments live, the other how you add one. */}
-      <Btn
-        onClick={() =>
-          startDraft(
-            currentSlideId,
-            commentAnchorId(selectedIds, useEditor.getState().currentSlide().elements),
-          )
-        }
-        title={
-          selectedIds.length ? 'Comment on selection (⌘⌥M)' : 'Comment on this slide (⌘⌥M)'
-        }
-        variant="primary"
-      >
-        +
-      </Btn>
       <Divider />
       <button
         onClick={() => setShowShortcuts(true)}

@@ -141,6 +141,86 @@ export const readableAngle = (deg: number, isText: boolean) =>
 const FLIP_ALIGN = { left: 'right', right: 'left', center: 'center', justify: 'justify' } as const;
 const FLIP_ANCHOR = { top: 'bottom', bottom: 'top', middle: 'middle' } as const;
 
+type Align = keyof typeof FLIP_ALIGN;
+type Anchor = keyof typeof FLIP_ANCHOR;
+
+/**
+ * Which text reads horizontally however the chart is turned.
+ *
+ * The distinction is whether the words run ALONG the thing they label or sit
+ * BESIDE it. An axis title runs along its axis, so it turns with the axis and
+ * ends up reading up the side of a turned chart — which is where an axis title
+ * belongs. A tick, a category name, a data label and a total all sit beside a
+ * mark, and a number on its side is just harder to read; those stand back up.
+ *
+ * The chart's own title, its unit note and its legend never reach here at all:
+ * they're solved against the chart's real box and left out of the turn — see
+ * `compileCartesian`.
+ */
+function readsHorizontally(el: SlideElement): boolean {
+  const ref = el.chartRef;
+  if (el.type !== 'text' || !ref) return false;
+  if (ref.part === 'label' || ref.part === 'total') return true;
+  return ref.part === 'axis' && ref.sub === 'tick';
+}
+
+/**
+ * Where each end of a text box lands after a quarter turn.
+ *
+ * A box's alignment is written in its own frame — "the words sit at the +x end"
+ * — and standing the type back up doesn't move the plot it was hugging. So the
+ * ends have to be re-labelled: after a 90° turn the +x end of the old box is
+ * the +y end of the new one, which means a right-aligned tick label becomes a
+ * bottom-anchored one. Get this wrong and every label drifts to the far side of
+ * its own gutter, away from the axis it belongs to.
+ */
+const ALIGN_TO_ANCHOR = { left: 'top', right: 'bottom', center: 'middle', justify: 'middle' } as const;
+const ANCHOR_TO_ALIGN = { top: 'right', bottom: 'left', middle: 'center' } as const;
+
+function turnedEnds(align: Align, anchor: Anchor, rot: QuarterTurn) {
+  switch (rot) {
+    case 90:
+      return { align: ANCHOR_TO_ALIGN[anchor], anchor: ALIGN_TO_ANCHOR[align] };
+    case 270:
+      // The mirror of 90°: both mappings run the other way round.
+      return {
+        align: FLIP_ALIGN[ANCHOR_TO_ALIGN[anchor]],
+        anchor: FLIP_ANCHOR[ALIGN_TO_ANCHOR[align]],
+      };
+    case 180:
+      return { align: FLIP_ALIGN[align], anchor: FLIP_ANCHOR[anchor] };
+    default:
+      return { align, anchor };
+  }
+}
+
+/**
+ * Stand a label back up.
+ *
+ * Only the centre moves. The box arrives already shaped the way the words will
+ * want it — the placers lay a label out in its final proportions and position
+ * it by the footprint it will occupy on the way there, matching the gutter
+ * `solveFrame` cut under `uprightText` — so all that is left is to drop the
+ * angle and re-label the ends.
+ */
+function standUp(el: SlideElement, rect: Rect, rot: QuarterTurn): SlideElement {
+  const upright: SlideElement = { ...el, rect, rotation: undefined };
+  if (upright.type !== 'text' || !upright.body) return upright;
+  const anchor = upright.body.anchor ?? 'middle';
+  // A chart label is one paragraph, so the box's single alignment is the one
+  // that decides the new anchor; each paragraph then takes the new align.
+  const align = upright.body.paragraphs[0]?.align ?? 'center';
+  const ends = turnedEnds(align, anchor, rot);
+  return {
+    ...upright,
+    body: {
+      ...upright.body,
+      anchor: ends.anchor,
+      paragraphs: upright.body.paragraphs.map((p) => ({ ...p, align: ends.align })),
+    },
+  };
+}
+
 /**
  * Un-flip a label without moving the words.
  *
@@ -174,6 +254,7 @@ export function turnElements(
   if (!rot) return elements;
   return elements.map((el) => {
     const { rect } = turnRect(el.rect, frame, rot);
+    if (readsHorizontally(el)) return standUp(el, rect, rot);
     const turned: SlideElement = { ...el, rect, rotation: norm360((el.rotation ?? 0) + rot) };
     return el.type === 'text' && isUpsideDown(turned.rotation ?? 0) ? unflipText(turned) : turned;
   });

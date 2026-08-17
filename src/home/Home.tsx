@@ -19,7 +19,7 @@ import {
   seedIfFirstRun,
   setDocFolder,
 } from '@/docs/repository';
-import { listFolders, type DocFolder } from '@/docs/folders';
+import { getFolder, listFolders, type DocFolder } from '@/docs/folders';
 import { FolderRail, type FolderScope } from './FolderRail';
 import { DocCard } from './DocCard';
 import { NewDocModal } from './NewDocModal';
@@ -186,6 +186,11 @@ export function Home() {
   const [docs, setDocs] = useState<Deck[]>([]);
   const [folders, setFolders] = useState<DocFolder[]>([]);
   const [folderCounts, setFolderCounts] = useState<Record<string, number>>({});
+  // Documents/Reports are local state, but the query string seeds it so both
+  // the tab (`?tab=reports`, how Admin links back to Reports) and the folder
+  // (`?folder=`, how the editor's header crumb links back here) are
+  // addressable from another route.
+  const searchParams = useSearchParams();
   const [scope, setScope] = useState<FolderScope>({ kind: 'all' });
   const [allTags, setAllTags] = useState<string[]>([]);
   const [allOwners, setAllOwners] = useState<string[]>([]);
@@ -194,10 +199,6 @@ export function Home() {
   const [clientFilter, setClientFilter] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('updated');
-  // Documents/Reports are local state, but `?tab=reports` seeds it so the tab
-  // is addressable from another route — that's how Admin's copy of the tab
-  // strip links back to Reports.
-  const searchParams = useSearchParams();
   const [tab, setTab] = useState<Tab>(
     searchParams.get('tab') === 'reports' ? 'reports' : 'documents',
   );
@@ -227,6 +228,15 @@ export function Home() {
   useEffect(() => {
     seedIfFirstRun();
     refreshDocs();
+    // Opening a folder from elsewhere (the editor's header crumb). Applied
+    // after the seed so a first-run folder is already on disk, and only for an
+    // id that still exists — a stale link lands on All documents rather than
+    // scoping the grid to nothing.
+    const id = searchParams.get('folder');
+    if (id && getFolder(id)) setScope({ kind: 'folder', id });
+    // Mount only: the rail owns the scope from here on, and re-running this
+    // would yank you back to the folder in the URL after every navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** Drop-onto-a-folder, and the card menu's "Move to folder", land here. */

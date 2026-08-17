@@ -22,6 +22,7 @@ import {
   DEFAULT_DESIGN_SYSTEM,
   EMU_PER_POINT,
   expandSelection,
+  inchesToEmu,
   marginBox,
   marginGuides,
   outerGroupId,
@@ -90,6 +91,30 @@ function nextFontSize(current: number, dir: 'up' | 'down'): number {
   return prev ?? current;
 }
 
+/** How far each successive paste steps clear of the one before it. */
+const PASTE_STEP = inchesToEmu(0.1);
+
+/** A detached deep copy — the deck holds only plain JSON, so this is enough. */
+const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/**
+ * What a cut or copy puts on the clipboard: detached copies, never live
+ * references into a slide.
+ *
+ * Charts are carried as their SPEC rather than as the rectangles they compiled
+ * to, because a chart's elements are owned by the chart — pasting the shapes
+ * alone would hand them to the original chart, which would delete them on its
+ * next recompile.
+ */
+interface ObjectClipboard {
+  elements: SlideElement[];
+  charts: Array<{ spec: ChartSpec; frame: Rect }>;
+  /** The slide it was taken from: pasting back onto it steps clear of the original. */
+  sourceSlideId: string;
+  /** Pastes made onto that source slide, so a run of ⌘V fans out instead of stacking. */
+  pastes: number;
+}
+
 interface EditorState {
   deck: Deck;
   designSystem: DesignSystem;
@@ -117,6 +142,14 @@ interface EditorState {
    * register, not document state, so it survives undo and isn't autosaved.
    */
   formatClipboard: ElementFormat | null;
+
+  /**
+   * Cut/copy buffer for whole objects. Outside the deck for the same reason as
+   * the format painter — which is what lets you cut, undo the cut, and still
+   * paste — and detached from the slide it came from, so the copy doesn't
+   * change when the original does.
+   */
+  clipboard: ObjectClipboard | null;
 
   /**
    * Whether the margin guides are painted on the canvas. View state, not deck
@@ -169,6 +202,11 @@ interface EditorState {
 
   // element mutations (all commit unless transient)
   addElement: (el: SlideElement) => void;
+  /**
+   * Add several elements as ONE step — a callout card is four boxes that must
+   * arrive, select and undo together, not four presses of ⌘Z.
+   */
+  addElements: (els: SlideElement[]) => void;
   updateElement: (id: string, patch: Partial<SlideElement>, transient?: boolean) => void;
   setRect: (id: string, rect: Rect, transient?: boolean) => void;
   /** Commit several boxes at once (a group transform) as ONE history step. */
@@ -212,6 +250,17 @@ interface EditorState {
   /** Nudge list indent level, clamped to the model's 0..4. */
   indentParagraphs: (ids: string[], delta: number) => void;
   deleteSelected: () => void;
+
+  // object clipboard
+  /** Copy the selection, then take it off the slide. */
+  cutSelection: () => void;
+  copySelection: () => void;
+  /**
+   * Drop the buffer onto the current slide and select what landed. Pasting back
+   * onto the slide it came from offsets each copy; pasting anywhere else keeps
+   * the objects where they sat, so a layout moved between slides stays put.
+   */
+  pasteClipboard: () => void;
 
   // format painter
   copyFormat: (id?: string) => void;
@@ -418,6 +467,7 @@ export const useEditor = create<EditorState>()(
     future: [],
     transientBase: null,
     formatClipboard: null,
+    clipboard: null,
     showGuides: true,
     pendingFitId: null,
 
@@ -805,6 +855,21 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    addElements(els) {
+      if (!els.length) return;
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        slide.elements.push(...els);
+        s.selectedIds = els.map((el) => el.id);
+        s.deck.updatedAt = new Date(0).toISOString();
+        // Unlike a lone text box, a multi-part object arrives already sized by
+        // whatever built it, so there is nothing to shrink-wrap here.
+        s.pendingFitId = null;
+      });
+    },
+
     updateElement(id, patch, transient = false) {
       get().beginChange(transient);
       set((s) => {
@@ -1127,6 +1192,88 @@ export const useEditor = create<EditorState>()(
       });
     },
 
+    copySelection() {
+      const { selectedIds, currentSlideId, deck } = get();
+      const slide = slideById(deck, currentSlideId);
+      if (!slide || !selectedIds.length) return;
+
+      // Chart parts are carried as the chart, not as their rectangles — see
+      // `ObjectClipboard`.
+      const charts = chartsForElements(slide, selectedIds).map((c) => ({
+        spec: clone(c.spec),
+        frame: { ...c.frame },
+      }));
+      const elements = slide.elements
+        .filter((e) => selectedIds.includes(e.id) && !e.chartRef)
+        .map(clone);
+      if (!elements.length && !charts.length) return;
+
+      set((s) => {
+        s.clipboard = { elements, charts, sourceSlideId: slide.id, pastes: 0 };
+      });
+    },
+
+    cutSelection() {
+      const before = get().clipboard;
+      get().copySelection();
+      // Nothing copyable under the selection means nothing to cut: leave both
+      // the slide and the buffer as they were.
+      if (get().clipboard === before) return;
+      get().deleteSelected();
+    },
+
+    pasteClipboard() {
+      const clip = get().clipboard;
+      if (!clip) return;
+      get().commit();
+
+      // Back onto its own slide, each paste steps clear of the last so the
+      // copies fan out instead of hiding under one another.
+      const onSource = get().currentSlideId === clip.sourceSlideId;
+      const step = onSource ? PASTE_STEP * (clip.pastes + 1) : 0;
+
+      // Pasted groups are their OWN groups, exactly as duplicates are: shared
+      // group ids would let ungrouping the copy reach into the original.
+      const gidMap = new Map<string, string>();
+      const remapGid = (g: string) => {
+        const next = gidMap.get(g) ?? `g-${nanoid(8)}`;
+        gidMap.set(g, next);
+        return next;
+      };
+
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (!slide) return;
+        const newIds: string[] = [];
+
+        for (const chart of clip.charts) {
+          const copy = insertChartInto(
+            slide,
+            clone(chart.spec),
+            { ...chart.frame, x: chart.frame.x + step, y: chart.frame.y + step },
+            s.designSystem,
+          );
+          newIds.push(
+            ...slide.elements.filter((e) => e.chartRef?.chartId === copy.id).map((e) => e.id),
+          );
+        }
+
+        for (const el of clip.elements) {
+          const copy = clone(el);
+          copy.id = `${el.id}-${nanoid(4)}`;
+          if (copy.groupIds) copy.groupIds = copy.groupIds.map(remapGid);
+          copy.rect = { ...copy.rect, x: copy.rect.x + step, y: copy.rect.y + step };
+          slide.elements.push(copy);
+          newIds.push(copy.id);
+        }
+
+        s.selectedIds = newIds;
+        s.editingId = null;
+        s.croppingId = null;
+        if (onSource) s.clipboard = { ...clip, pastes: clip.pastes + 1 };
+      });
+    },
+
     /**
      * Pick up the formatting of one element. Defaults to the first selected
      * element (PowerPoint samples a single source, never a mixed selection).
@@ -1222,43 +1369,75 @@ export const useEditor = create<EditorState>()(
      * bodily to the edge, exactly as PowerPoint treats it. For a selection with
      * no groups in it this is the old element-wise behaviour unchanged.
      *
-     * The edge modes ESCALATE: the mode names a DIRECTION OF TRAVEL, and each
+     * ONE unit selected is the simple case, and it does the simple thing: the
+     * object lands ON the named guide in a single press — left/right guides,
+     * the bottom guide, the content-top guide below the title band for top, and
+     * the paper's own middle for the two centre modes. No walk, no escalation:
+     * with nothing to align TO, "align left" can only mean the left margin, and
+     * a chord that parked the object somewhere else first reads as a bug.
+     *
+     * With SEVERAL units the edge modes ESCALATE: the mode names a DIRECTION OF
+     * TRAVEL, and each
      * press slides the selection to the next line it meets going that way.
      *
      *   1. objects not yet flush → line them up on their own outermost edge
-     *   2. flush (a single object always is) → travel to the next stop: a margin
-     *      guide, the content-top guide, or the slide edge, whichever comes first
+     *   2. flush → travel to the next stop: a margin guide, the content-top
+     *      guide, or the slide edge, whichever comes first
      *   3. …repeat, one line per press, until there is nothing further that way,
      *      where it stops dead rather than cycling
      *
-     * A stop counts when EITHER edge of the selection can land on it — an object
+     * A stop counts when EITHER edge of the selection can land on it — a block
      * overhanging the left guide moves right onto that guide (its left edge),
      * and keeps going to the right guide (its right edge) and then the paper's
-     * right edge. A single object also stops centred on the slide, passing
-     * through the middle on its way across. Moves that would carry the selection
-     * off the slide are not offered, which is what makes the walk terminate.
+     * right edge. Moves that would carry the selection off the slide are not
+     * offered, which is what makes the walk terminate.
      *
      * Every step past the first moves the whole selection by ONE shift (they
      * share the edge by then), so the layout inside it survives the trip.
      *
-     * The centre modes have nowhere to escalate to: they centre on the selection
-     * with several units and on the margin frame with one.
+     * The centre modes never escalate: they centre on the selection's own span
+     * with several units, and on the slide with one.
      */
     align(mode) {
       const s = get();
       const { selectedIds } = s;
       const boxes = unitBoxes(s, selectedIds);
       if (boxes.length === 0) return;
-      const frame = marginBox(s.deck.slideSize);
+
+      /** Half a point — under this two edges are the same edge to any eye. */
+      const EPS = EMU_PER_POINT / 2;
+
+      // One unit: land it on the guide the button names, in one press.
+      if (boxes.length === 1) {
+        const { ids, r } = boxes[0];
+        const { w: sw, h: sh } = s.deck.slideSize;
+        const g = marginGuides(s.deck.slideSize);
+        const [left, right] = g.vertical;
+        // horizontal[1] is the content-top guide — the dotted line under the
+        // title band, which is where "align top" belongs: hanging body content
+        // off the paper's top margin would put it inside the title.
+        const [, contentTop, bottom] = g.horizontal;
+        const horizontal = mode === 'left' || mode === 'right' || mode === 'hcenter';
+        const d =
+          mode === 'left' ? left - r.x
+          : mode === 'right' ? right - (r.x + r.w)
+          : mode === 'hcenter' ? sw / 2 - r.w / 2 - r.x
+          : mode === 'top' ? contentTop - r.y
+          : mode === 'bottom' ? bottom - (r.y + r.h)
+          : sh / 2 - r.h / 2 - r.y; // vcenter
+        if (Math.abs(d) <= EPS) return; // already there — no undo step for a no-op
+        get().commit();
+        set(shiftUnits([horizontal ? { ids, dx: d, dy: 0 } : { ids, dx: 0, dy: d }]));
+        return;
+      }
 
       if (mode === 'hcenter' || mode === 'vcenter') {
-        const single = boxes.length === 1;
         const lo = mode === 'hcenter'
-          ? (single ? frame.x : Math.min(...boxes.map((b) => b.r.x)))
-          : (single ? frame.y : Math.min(...boxes.map((b) => b.r.y)));
+          ? Math.min(...boxes.map((b) => b.r.x))
+          : Math.min(...boxes.map((b) => b.r.y));
         const hi = mode === 'hcenter'
-          ? (single ? frame.x + frame.w : Math.max(...boxes.map((b) => b.r.x + b.r.w)))
-          : (single ? frame.y + frame.h : Math.max(...boxes.map((b) => b.r.y + b.r.h)));
+          ? Math.max(...boxes.map((b) => b.r.x + b.r.w))
+          : Math.max(...boxes.map((b) => b.r.y + b.r.h));
         const centre = (lo + hi) / 2;
         get().commit();
         set(shiftUnits(boxes.map((b) => {
@@ -1270,8 +1449,6 @@ export const useEditor = create<EditorState>()(
         return;
       }
 
-      /** Half a point — under this two edges are the same edge to any eye. */
-      const EPS = EMU_PER_POINT / 2;
       const horizontal = mode === 'left' || mode === 'right';
       /** −1 travels toward the top-left corner, +1 toward the bottom-right. */
       const dir = mode === 'left' || mode === 'top' ? -1 : 1;
@@ -1301,22 +1478,16 @@ export const useEditor = create<EditorState>()(
       // top edge while the bottom guide takes the bottom. Without that, both
       // edges would want each line and the selection would stop on every guide
       // twice, once hanging off each side of it.
-      //
-      // The slide's centre line is a stop too, met by the object's own centre —
-      // but only for a single object, where "centred" is unambiguous. With
-      // several units selected the chord is about their shared edge, and a
-      // centre stop would slide the block off that reading.
       const guides = marginGuides(s.deck.slideSize);
       const size = horizontal ? s.deck.slideSize.w : s.deck.slideSize.h;
       const lines = horizontal ? guides.vertical : guides.horizontal;
-      type Stop = { at: number; on: 'lo' | 'hi' | 'centre' };
+      type Stop = { at: number; on: 'lo' | 'hi' };
       const stops: Stop[] = [
         { at: 0, on: 'lo' },
         // The last guide on each axis (right / bottom) closes the frame; the
         // ones before it (left, and top + content-top) open it.
         ...lines.map((at, i): Stop => ({ at, on: i < lines.length - 1 ? 'lo' : 'hi' })),
         { at: size, on: 'hi' },
-        ...(boxes.length === 1 ? [{ at: size / 2, on: 'centre' } as Stop] : []),
       ];
 
       const lo = Math.min(...boxes.map((b) => (horizontal ? b.r.x : b.r.y)));
@@ -1327,7 +1498,7 @@ export const useEditor = create<EditorState>()(
 
       let best: number | null = null;
       for (const stop of stops) {
-        const from = stop.on === 'lo' ? lo : stop.on === 'hi' ? hi : (lo + hi) / 2;
+        const from = stop.on === 'lo' ? lo : hi;
         const d = stop.at - from;
         if (d * dir <= EPS) continue; // not a move, or not the way we're going
         if (!oversized && (lo + d < -EPS || hi + d > size + EPS)) continue;
@@ -1643,14 +1814,23 @@ function emptyDeck(): Deck {
  * place both are already to hand. It's idempotent, so a deck that's already
  * current passes straight through.
  */
-export function loadDeck(deck: Deck, ds?: DesignSystem) {
+/**
+ * `startAt` is the slide to open on — the one the user was last looking at in
+ * this document. Ignored when that slide is gone (deleted in another tab, or a
+ * different deck's id), which lands you on slide 1 rather than nowhere.
+ */
+export function loadDeck(deck: Deck, ds?: DesignSystem, startAt?: string | null) {
   const designSystem = ds ?? useEditor.getState().designSystem;
   const migrated = migrateDeck(deck, (chart) => compileChart(chart, designSystem).elements);
+  const landing =
+    (startAt && migrated.slides.some((sl) => sl.id === startAt) ? startAt : null) ??
+    migrated.slides[0]?.id ??
+    '';
   useEditor.setState((s) => ({
     ...s,
     deck: migrated,
     designSystem,
-    currentSlideId: migrated.slides[0]?.id ?? '',
+    currentSlideId: landing,
     selectedIds: [],
     editingId: null,
     croppingId: null,

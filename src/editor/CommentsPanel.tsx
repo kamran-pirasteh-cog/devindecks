@@ -14,7 +14,7 @@ import { useComments, COMMENT_AUTHOR } from '@/store/commentStore';
 import { useEditor } from '@/store/editorStore';
 import type { CommentThread } from '@/comments/types';
 import type { SlideElement } from '@/model';
-import { elementLabel } from './commentAnchor';
+import { commentAnchorId, elementLabel } from './commentAnchor';
 import { useResizableWidth } from './useResizableWidth';
 import { ResizeHandle } from './ResizeHandle';
 
@@ -298,6 +298,7 @@ export function CommentsPanel() {
   const draft = useComments((s) => s.draft);
   const slides = useEditor((s) => s.deck.slides);
   const currentSlideId = useEditor((s) => s.currentSlideId);
+  const selectedIds = useEditor((s) => s.selectedIds);
   const store = useComments.getState;
 
   const slideIndex = useMemo(
@@ -375,6 +376,28 @@ export function CommentsPanel() {
             />
             Resolved
           </label>
+        </div>
+
+        {/* Starting a comment lives with the comments, not on the toolbar: the
+            panel is already open when you're thinking about them. */}
+        <div className="border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+          <button
+            onClick={() =>
+              store().startDraft(
+                currentSlideId,
+                commentAnchorId(selectedIds, useEditor.getState().currentSlide().elements),
+              )
+            }
+            disabled={!!draft}
+            title={
+              selectedIds.length ? 'Comment on selection (⌘⌥M)' : 'Comment on this slide (⌘⌥M)'
+            }
+            className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-zinc-200 bg-white text-[11px] font-medium text-zinc-600 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            <span aria-hidden>+</span>
+            New comment
+            {selectedIds.length ? ' on selection' : ''}
+          </button>
         </div>
 
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">

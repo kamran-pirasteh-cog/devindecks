@@ -11,7 +11,7 @@ import type { LinearScale } from '../scale/linear';
 import type { ChartTheme } from '../theme';
 import type { Mark, MarkTextStyle } from '../mark';
 import { rectFromEdges } from '../mark';
-import type { FrameLayout } from '../layout/frame';
+import { fitted, type FrameLayout } from '../layout/frame';
 import { lineHeightEmu, type TextMeasurer } from '@/render/measureText';
 
 /**
@@ -48,11 +48,26 @@ export function projector(plot: Rect, scale: LinearScale, horizontal: boolean): 
   };
 }
 
+/**
+ * A chart label's style. NO WRAPPING by default — see `wrap` on
+ * `MarkTextStyle`.
+ *
+ * Nearly every box a chart draws text in was measured from that text: a tick
+ * label, a data label, a legend entry, a node name. The engine has already
+ * decided the string sits on one line, so a renderer that disagrees by half a
+ * point shouldn't get to break "1,250" across two of them — which is precisely
+ * what an axis of five-digit ticks did, and it read as the chart being broken.
+ *
+ * The exceptions are boxes sized to something OTHER than their text — a title
+ * across the frame, a category label given its whole band — and they ask for
+ * wrapping explicitly by passing `wrap`.
+ */
 export const textStyle = (
   role: ChartTheme['text'][keyof ChartTheme['text']],
   align: MarkTextStyle['align'],
   anchor: MarkTextStyle['anchor'],
   rotation?: number,
+  wrap = false,
 ): MarkTextStyle => ({
   font: role.font,
   sizePt: role.sizePt,
@@ -63,6 +78,7 @@ export const textStyle = (
   align,
   anchor,
   rotation,
+  wrap,
 });
 
 export interface CartesianInput {
@@ -90,6 +106,12 @@ export interface CartesianInput {
   categoryAxisTitle?: string;
   unitNote?: string;
   legend?: LegendSpec & { items: LegendItem[] };
+  /**
+   * The chart will be turned and its labels stood back up. Every label box
+   * below is therefore laid out on its SIDE, matching the gutters `solveFrame`
+   * cut for it under the same flag; `standUp` trades the sides back.
+   */
+  uprightText?: boolean;
 }
 
 export interface LegendItem {
@@ -121,9 +143,30 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     categoryAxisTitle,
     unitNote,
     legend,
+    uprightText,
   } = input;
 
   const { plot, horizontal } = proj;
+  // The same swap `solveFrame` reserves its gutters with — see `uprightText`.
+  const xExtent = (w: EMU, h: EMU): EMU => (uprightText ? h : w);
+  const yExtent = (w: EMU, h: EMU): EMU => (uprightText ? w : h);
+
+  /**
+   * A label box, sized the way the words will end up and placed by the footprint
+   * it occupies until then.
+   *
+   * On an unturned chart the two are the same box. On a turned one they differ
+   * by a quarter turn: the gutter was cut for a label lying on its side, so the
+   * FOOTPRINT (`fw` × `fh`) is what decides where the box sits, while the box
+   * itself keeps the proportions the upright words need. Both share a centre,
+   * which is the only thing `standUp` carries across.
+   */
+  const boxAt = (cx: EMU, cy: EMU, w: EMU, h: EMU): Rect => ({
+    x: Math.round(cx - w / 2),
+    y: Math.round(cy - h / 2),
+    w: Math.round(w),
+    h: Math.round(h),
+  });
   const marks: Mark[] = [];
   const gap = theme.sizes.axisGapEmu;
   const valueAxisId = horizontal ? 'x' : 'y';
@@ -179,10 +222,16 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
   if (showValueAxisLabels) {
     const style = textStyle(theme.text.tick, horizontal ? 'center' : 'right', 'middle');
     const h = lineHeightEmu(style);
+    // `fitted`, and the same call in `solveFrame`: the gutter the frame reserved
+    // and the box the label is drawn in are the same measurement, and they have
+    // to stay the same measurement or the labels sit outside their own gutter.
     const w = Math.max(
-      ...tickLabels.map((t) => measurer.measure(t, style).wEmu),
+      fitted(Math.max(...tickLabels.map((t) => measurer.measure(t, style).wEmu))),
       pointsToEmu(1),
     );
+    // Footprint: what the label costs the gutter on the way to standing up.
+    const fw = xExtent(w, h);
+    const fh = yExtent(w, h);
     scale.ticks.forEach((t, i) => {
       const at = proj.value(t);
       marks.push({
@@ -191,8 +240,8 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
         text: tickLabels[i] ?? '',
         style,
         rect: horizontal
-          ? { x: Math.round(at - w / 2), y: Math.round(plot.y + plot.h + gap), w, h }
-          : { x: Math.round(plot.x - gap - w), y: Math.round(at - h / 2), w, h },
+          ? boxAt(at, plot.y + plot.h + gap + fh / 2, w, h)
+          : boxAt(plot.x - gap - fw / 2, at, w, h),
       });
     });
   }
@@ -205,8 +254,8 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     categoryLabels.forEach((label, i) => {
       const centre = proj.category(categoryCenters[i] ?? 0);
       if (horizontal) {
-        const w = Math.max(
-          ...categoryLabels.map((t) => measurer.measure(t, style).wEmu),
+        const widest = Math.max(
+          fitted(Math.max(...categoryLabels.map((t) => measurer.measure(t, style).wEmu))),
           pointsToEmu(1),
         );
         marks.push({
@@ -214,26 +263,42 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
           ref: { chartId, part: 'axis', axis: categoryAxisId, sub: 'tick', i },
           text: label,
           style,
-          rect: { x: Math.round(plot.x - gap - w), y: Math.round(centre - h / 2), w, h },
+          rect: boxAt(plot.x - gap - xExtent(widest, h) / 2, centre, widest, h),
         });
       } else {
         // A banded label gets its whole band, so long names centre and wrap
         // rather than colliding. A continuous one is sized to its own text —
         // a band would be meaningless and would overlap its neighbours.
-        const w = continuousCategoryAxis
-          ? Math.round(measurer.measure(label, style).wEmu + pointsToEmu(2))
-          : Math.round(plot.w * slot);
+        const own = Math.round(fitted(measurer.measure(label, style).wEmu) + pointsToEmu(2));
+        const band = Math.round(plot.w * slot);
+        const widest = Math.max(
+          fitted(Math.max(...categoryLabels.map((t) => measurer.measure(t, style).wEmu))),
+          pointsToEmu(1),
+        );
+        // A band is a SLOT, not a text extent: it keeps its size whichever way
+        // round the chart ends up, and turns from a width into a height. The
+        // gutter it sits across is the text extent, and that one trades sides.
+        const box = continuousCategoryAxis
+          ? { w: own, h }
+          : uprightText
+            ? { w: widest, h: band }
+            : { w: band, h };
+        const fw = continuousCategoryAxis ? xExtent(own, h) : band;
+        const fh = continuousCategoryAxis ? yExtent(own, h) : yExtent(widest, h);
         // The first and last labels of a continuous axis are centred on the
         // plot's edges, so half of each would hang outside the chart. Nudging
         // them inward beats letting them escape the frame — Excel does the
         // same, and nobody notices a few points of off-centring at the ends.
-        const x = clampTo(centre - w / 2, w, bounds);
+        const cx = clampTo(centre - fw / 2, fw, bounds) + fw / 2;
         marks.push({
           kind: 'text',
           ref: { chartId, part: 'axis', axis: categoryAxisId, sub: 'tick', i },
           text: label,
-          style,
-          rect: { x: Math.round(x), y: Math.round(plot.y + plot.h + gap), w, h },
+          // The banded case is the one label on a chart that genuinely wants to
+          // wrap: its box is the band, not the text, and a long category name
+          // reads better on two lines than overlapping its neighbour.
+          style: continuousCategoryAxis ? style : { ...style, wrap: true },
+          rect: boxAt(cx, plot.y + plot.h + gap + fh / 2, box.w, box.h),
         });
       }
     });
@@ -245,7 +310,8 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
       kind: 'text',
       ref: { chartId, part: 'title' },
       text: title,
-      style: textStyle(theme.text.title, 'left', 'top'),
+      // Sized to the frame, not to the string: a long title SHOULD wrap.
+      style: textStyle(theme.text.title, 'left', 'top', undefined, true),
       rect: layout.title,
     });
   }
@@ -254,7 +320,7 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
       kind: 'text',
       ref: { chartId, part: 'axis', axis: valueAxisId, sub: 'unitNote' },
       text: unitNote,
-      style: textStyle(theme.text.tick, 'left', 'top'),
+      style: textStyle(theme.text.tick, 'left', 'top', undefined, true),
       rect: layout.unitNote,
     });
   }
@@ -293,7 +359,15 @@ function rotatedAxisTitle(
   theme: ChartTheme,
   horizontalSlot: boolean,
 ): Mark {
-  const style = textStyle(theme.text.axisTitle, 'center', 'middle', horizontalSlot ? undefined : -90);
+  // Given the whole gutter rather than its own width, so a long title wraps
+  // inside the slot instead of running out of the chart.
+  const style = textStyle(
+    theme.text.axisTitle,
+    'center',
+    'middle',
+    horizontalSlot ? undefined : -90,
+    true,
+  );
   if (horizontalSlot) {
     return { kind: 'text', ref: { chartId, part: 'axis', axis, sub: 'title' }, text, style, rect: slot };
   }
@@ -328,14 +402,21 @@ function placeLegend(
   const marks: Mark[] = [];
 
   const horizontal = legend.position === 'top' || legend.position === 'bottom';
-  const widths = legend.items.map((it) => sw + gap + measurer.measure(it.name, style).wEmu);
+  // `fitted`, like every other box measured to its own string: a series name
+  // that wrapped inside its legend entry used to overlap the entry beneath it.
+  const widths = legend.items.map((it) => sw + gap + fitted(measurer.measure(it.name, style).wEmu));
 
   if (horizontal) {
     const spacing = theme.sizes.axisGapEmu * 2;
     const total = widths.reduce((a, w) => a + w, 0) + spacing * (widths.length - 1);
     let x = slot.x + Math.max(0, (slot.w - total) / 2);
     legend.items.forEach((it, i) => {
-      marks.push(...legendItem(chartId, it, x, slot.y, sw, gap, h, widths[i], style));
+      // A row of many long series names can be wider than the slot it's centred
+      // in. Its boxes are still not allowed out of the chart — an element whose
+      // rect leaves the frame is one that survives a crop, an export and a
+      // thumbnail as a stray label floating beside the chart.
+      const w = Math.min(widths[i], Math.max(0, slot.x + slot.w - x));
+      marks.push(...legendItem(chartId, it, x, slot.y, sw, gap, h, w, style));
       x += widths[i] + spacing;
     });
   } else {
@@ -371,7 +452,15 @@ function legendItem(
       ref: { chartId, part: 'legend.item', series: `${item.seriesKey}.label` },
       text: item.name,
       style,
-      rect: { x: Math.round(x + sw + gap), y: Math.round(y), w: Math.round(w - sw - gap), h },
+      // `w` is the whole entry and the swatch takes the front of it. Clamped at
+      // zero: a legend squeezed narrower than its own swatch must still emit a
+      // box with a real size, not a negative one.
+      rect: {
+        x: Math.round(x + sw + gap),
+        y: Math.round(y),
+        w: Math.max(0, Math.round(w - sw - gap)),
+        h,
+      },
     },
   ];
 }

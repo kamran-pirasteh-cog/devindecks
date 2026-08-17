@@ -16,11 +16,13 @@ import { dataShapeOf } from './chart/shape';
 import {
   isButterflySpec,
   isGridSpec,
+  isHorizontal,
   isSankeySpec,
   isWaterfallSpec,
   isXYSpec,
   type ChartSpec,
 } from './chart/spec';
+import { supportsOrientation, supportsTurn } from './chart/orientation';
 import type { SheetColumn, SheetSchema, SheetSeries } from './sheet';
 
 const text = (key: string, header: string): SheetColumn => ({
@@ -200,15 +202,45 @@ const quarterIso = (q: number, year: string): string =>
 /* ------------------------------------------------------------------ */
 
 /**
+ * Which way do the CATEGORIES run in the picture?
+ *
+ * Two things decide it and they compose. Orientation is the first: a column
+ * chart runs its categories across the bottom, a bar chart runs them down the
+ * side. A quarter TURN of the whole chart is the second, and it swaps the
+ * answer — a column chart turned 90° reads exactly like a bar chart.
+ *
+ * The turn only counts for a kind that can actually be turned — the compiler
+ * ignores the rotation on the rest — and only where the categories run along
+ * an AXIS. A pie can be turned, but turning it spins the wheel rather than
+ * standing the categories on end, so its sheet stays as it was.
+ */
+export function categoriesRunDown(spec: ChartSpec, turn = 0): boolean {
+  const turnable = supportsTurn(spec.kind) && supportsOrientation(spec.kind);
+  const quarter = turnable ? ((((Math.round(turn / 90) * 90) % 360) + 360) % 360) : 0;
+  const sideways = quarter === 90 || quarter === 270;
+  // XOR: either one turns the categories on their side, both put them back.
+  return isHorizontal(spec) !== sideways;
+}
+
+/**
  * Is this chart edited with its categories running ACROSS the sheet?
  *
  * Only the category grid, and only where nothing else in the sheet is indexed
  * by row. A Mekko's column-width band is one value per category and lives in a
  * row band, so transposing it would put the band at right angles to the thing
  * it sizes; it keeps the classic layout until the band can follow.
+ *
+ * And only while the categories really do run across the PICTURE. The whole
+ * reason to transpose is that the sheet should read the way the chart reads;
+ * on a bar chart, or on anything turned onto its side, that argument runs the
+ * other way and the canonical one-row-per-category layout is the matching one.
  */
-export function transposesInDatasheet(spec: ChartSpec): boolean {
-  return dataShapeOf(spec.kind).form === 'grid' && spec.kind !== 'mekko';
+export function transposesInDatasheet(spec: ChartSpec, turn = 0): boolean {
+  return (
+    dataShapeOf(spec.kind).form === 'grid' &&
+    spec.kind !== 'mekko' &&
+    !categoriesRunDown(spec, turn)
+  );
 }
 
 /**
@@ -221,10 +253,15 @@ export function transposesInDatasheet(spec: ChartSpec): boolean {
  * it top to bottom in the sheet directly beneath it. The research contract is
  * unaffected: an agent still returns one record per period, which is the shape
  * a source table comes in.
+ *
+ * That argument is about the DIRECTION the categories run, not about the chart
+ * kind, so `turn` — the chart's quarter-turn rotation — belongs here: turning
+ * the chart onto its side turns the sheet with it. Defaults to upright, for
+ * the callers that hold a bare spec and no placed chart.
  */
-export function datasheetSchemaFor(spec: ChartSpec): SheetSchema {
+export function datasheetSchemaFor(spec: ChartSpec, turn = 0): SheetSchema {
   const canonical = sheetSchemaFor(spec);
-  if (!transposesInDatasheet(spec)) return canonical;
+  if (!transposesInDatasheet(spec, turn)) return canonical;
 
   const shape = dataShapeOf(spec.kind);
   const single = shape.form === 'grid' && shape.seriesLimit === 1;
@@ -252,8 +289,8 @@ export function datasheetSchemaFor(spec: ChartSpec): SheetSchema {
 }
 
 /** The column groups the datasheet shows — categories when transposed. */
-export function datasheetSeriesFor(spec: ChartSpec): SheetSeries[] {
-  if (transposesInDatasheet(spec) && isGridSpec(spec)) {
+export function datasheetSeriesFor(spec: ChartSpec, turn = 0): SheetSeries[] {
+  if (transposesInDatasheet(spec, turn) && isGridSpec(spec)) {
     return spec.data.categories.map((c) => ({ key: c.key, name: c.label }));
   }
   return sheetSeriesFor(spec);

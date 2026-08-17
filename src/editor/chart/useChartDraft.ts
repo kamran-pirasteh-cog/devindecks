@@ -41,7 +41,12 @@ export function useChartDraft(chart: ChartInstance): ChartDraft {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pending = useRef<SheetModel | null>(null);
 
-  const sheet = useMemo(() => sheetFromSpec(chart.spec), [chart.spec]);
+  // The grid follows the chart's rotation: turning the chart onto its side
+  // turns the sheet with it, so the two read the same way round.
+  const sheet = useMemo(
+    () => sheetFromSpec(chart.spec, chart.rotation ?? 0),
+    [chart.spec, chart.rotation],
+  );
 
   const diagnostics = useMemo(
     () => specFromSheet(sheet, chart.spec).diagnostics,
