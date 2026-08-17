@@ -5,7 +5,7 @@
  * Loads a document by id from the repository, wires global keyboard shortcuts,
  * and autosaves. Everything below routes through the store command layer.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEditor, loadDeck, type AlignMode } from '@/store/editorStore';
@@ -73,6 +73,8 @@ export function Editor({
   const ds = useEditor((s) => s.designSystem);
   const ready = useEditor((s) => s.currentSlideId !== '');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Set when a save is refused (storage full) — the one failure the user must see. */
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Load the requested document, template, layout, or the sample when opened bare.
   useEffect(() => {
@@ -116,9 +118,17 @@ export function Editor({
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         const deck = useEditor.getState().deck;
-        if (layoutId) saveLayoutFromSlide(layoutId, deck.slides[0], deck.title);
-        else if (templateId) saveTemplateFromDeck(templateId, deck);
-        else saveDoc(deck);
+        try {
+          if (layoutId) saveLayoutFromSlide(layoutId, deck.slides[0], deck.title);
+          else if (templateId) saveTemplateFromDeck(templateId, deck);
+          else saveDoc(deck);
+          setSaveError(null);
+        } catch (err) {
+          // Autosave runs on a timer, so a throw here has nowhere to go — it
+          // would be an unhandled rejection and a deck that silently stops
+          // saving. Say it in the header instead, and keep it said.
+          setSaveError((err as Error).message);
+        }
       }, 500);
     });
     return () => {
@@ -363,6 +373,14 @@ export function Editor({
           />
         </div>
         <div className="flex items-center gap-2">
+          {saveError ? (
+            <span
+              title={saveError}
+              className="max-w-md truncate rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+            >
+              Not saved — {saveError}
+            </span>
+          ) : null}
           <span className="text-[11px] text-zinc-400">
             {ds.name} · v{ds.version}
           </span>

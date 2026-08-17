@@ -23,6 +23,7 @@ import {
 } from '@/model';
 import { parseXml, attr, child, descendants, textOf } from '../xml';
 import { parsePptx } from './index';
+import { OpcPackage } from './opc';
 import { parseTheme, resolveColorNode, toColorRef, DEFAULT_COLOR_MAP } from './color';
 import { custGeomToPath, presetToPath, presetToShape } from './geometry';
 import { ZipArchive } from '../zip';
@@ -200,6 +201,20 @@ async function roundTrip(source: Deck) {
   return { imported: await parsePptx(blob, ds), buffer: blob };
 }
 
+/**
+ * Reopen a real .pptx with some parts replaced. Used to hand the importer the
+ * shape a PowerPoint-authored deck has but our exporter doesn't produce — one
+ * media part shared by several pictures.
+ */
+async function rezip(buffer: ArrayBuffer, edits: Record<string, string>): Promise<ArrayBuffer> {
+  const zip = ZipArchive.open(buffer);
+  const files: Record<string, string | Uint8Array> = {};
+  for (const name of zip.names()) {
+    files[name] = name in edits ? edits[name] : ((await zip.read(name)) ?? new Uint8Array());
+  }
+  return makeStoredZip(files);
+}
+
 const SAMPLE: Slide[] = [
   {
     id: 's1',
@@ -332,6 +347,61 @@ describe('pptx round trip', () => {
     const pic = imported.slides[0].slide.elements.find(isPicture);
     expect(pic?.src.startsWith('data:image/png;base64,')).toBe(true);
     expect(pic?.crop).toBeUndefined();
+  });
+
+  it('reads a shared media part out of the zip once, not once per use', async () => {
+    // A logo on 30 slides is ONE part in a PowerPoint-authored deck, and decoding
+    // it per use is what made a big deck's images multiply. Our own exporter
+    // writes a part per picture, so the fixture is rewired to share one — which
+    // is what a real deck looks like.
+    const png =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const rect = { x: 0, y: 0, w: inchesToEmu(1), h: inchesToEmu(1) };
+    const source = deck([
+      {
+        id: 'a',
+        elements: [
+          { id: 'i1', type: 'picture', src: png, rect },
+          { id: 'i2', type: 'picture', src: png, rect },
+        ],
+      },
+    ]);
+    const built = (await buildPptx(source, ds).write({ outputType: 'arraybuffer' })) as ArrayBuffer;
+
+    const relsPart = 'ppt/slides/_rels/slide1.xml.rels';
+    const rels = (await ZipArchive.open(built).readText(relsPart))!;
+    const targets = [...rels.matchAll(/Target="([^"]*media\/[^"]+)"/g)].map((m) => m[1]);
+    expect(new Set(targets).size).toBe(2); // the exporter's two copies…
+    const shared = rels.replaceAll(targets[1], targets[0]); // …collapsed into one
+    const blob = await rezip(built, { [relsPart]: shared });
+
+    const real = OpcPackage.prototype.bytes;
+    const reads: string[] = [];
+    OpcPackage.prototype.bytes = function (part: string) {
+      reads.push(part);
+      return real.call(this, part);
+    };
+    let imported;
+    try {
+      imported = await parsePptx(blob, ds);
+    } finally {
+      OpcPackage.prototype.bytes = real;
+    }
+
+    const media = reads.filter((p) => p.includes('/media/'));
+    expect(media).toEqual([targets[0].replace('../', 'ppt/')]);
+    // …and both pictures still arrive with their bytes.
+    const pics = imported.slides[0].slide.elements.filter(isPicture);
+    expect(pics).toHaveLength(2);
+    expect(pics.every((p) => p.src.startsWith('data:image/png;base64,'))).toBe(true);
+  });
+
+  it('reports progress once per slide', async () => {
+    const seen: Array<[number, number]> = [];
+    const pptx = buildPptx(deck(SAMPLE), ds);
+    const buf = (await pptx.write({ outputType: 'arraybuffer' })) as ArrayBuffer;
+    await parsePptx(buf, ds, { onProgress: (done, total) => seen.push([done, total]) });
+    expect(seen).toEqual(SAMPLE.map((_, i) => [i + 1, SAMPLE.length]));
   });
 
   it('round-trips a cropped picture as srcRect, box and all', async () => {
@@ -472,15 +542,15 @@ async function buildMinimalPackage(): Promise<ArrayBuffer> {
 }
 
 /** Build an uncompressed (method 0) zip — enough for the reader to open. */
-function makeStoredZip(files: Record<string, string>): ArrayBuffer {
+function makeStoredZip(files: Record<string, string | Uint8Array>): ArrayBuffer {
   const enc = new TextEncoder();
   const chunks: Uint8Array[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;
 
-  for (const [name, text] of Object.entries(files)) {
+  for (const [name, content] of Object.entries(files)) {
     const nameBytes = enc.encode(name);
-    const data = enc.encode(text);
+    const data = typeof content === 'string' ? enc.encode(content) : content;
     const crc = crc32(data);
 
     const local = new Uint8Array(30 + nameBytes.length);
