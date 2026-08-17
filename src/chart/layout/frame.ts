@@ -49,6 +49,18 @@ export interface FrameInput {
    * to the RIGHT of the last point and need a gutter of their own.
    */
   endLabels?: string[];
+  /**
+   * This layout will be turned a quarter of the way round, and its labels will
+   * be stood back up afterwards — see `standUp` in `turn.ts`.
+   *
+   * It changes the arithmetic of every text gutter and nothing else. A label
+   * that ends up horizontal in the finished chart lies on its SIDE in the box
+   * solved here, so it costs its height where it would have cost its width and
+   * its width where it would have cost its height. Reserve the unturned extents
+   * and the labels come out standing in gutters cut for lying down: a category
+   * name a line-height wide, spilling across the plot.
+   */
+  uprightText?: boolean;
 }
 
 export interface FrameLayout {
@@ -72,11 +84,32 @@ const styleOf = (r: ChartTheme['text'][keyof ChartTheme['text']]): TextStyleMetr
   caps: r.caps,
 });
 
+/**
+ * The slack every box measured to its own text carries.
+ *
+ * A measurement is an ESTIMATE of what a font engine will do — the canvas
+ * measurer is exact about advance widths and still can't account for the
+ * renderer rounding the box to whole pixels, hinting a glyph a hair wider, or
+ * substituting a face before the webfont lands. A box sized to the measurement
+ * exactly is therefore a coin flip, and losing it is not subtle: the label wraps
+ * mid-number, so a 5-tick axis paints "1," over "250" across two lines and the
+ * whole gutter reads as garbage. One point of slack costs a rounding error's
+ * worth of plot and takes that failure off the table.
+ *
+ * Belt and braces with `wrap: false` (see `textStyle`): the slack keeps the
+ * label inside its box, and the no-wrap keeps a label that outgrows its box
+ * anyway on one line, where it overhangs by a hair instead of stacking.
+ */
+export const TEXT_SLACK: EMU = pointsToEmu(1);
+
+/** A measured extent, plus the slack a real font engine needs. */
+export const fitted = (measured: EMU): EMU => (measured > 0 ? measured + TEXT_SLACK : 0);
+
 const widestOf = (
   labels: string[],
   style: TextStyleMetrics,
   m: TextMeasurer,
-): EMU => labels.reduce((w, t) => Math.max(w, m.measure(t, style).wEmu), 0);
+): EMU => fitted(labels.reduce((w, t) => Math.max(w, m.measure(t, style).wEmu), 0));
 
 /**
  * How many value ticks a plot of this size should carry. Driven by available
@@ -112,7 +145,16 @@ export function solveFrame(input: FrameInput): FrameLayout {
     continuousCategoryAxis,
     outsideValueLabels,
     endLabels,
+    uprightText,
   } = input;
+
+  // Every text extent below is read through one of these two rather than taken
+  // straight from the measurer. They are the identity for an upright chart; for
+  // one that will be turned and its labels stood back up, they swap — which is
+  // the whole of "the layout knows which way the type will end up". See
+  // `uprightText`.
+  const xExtent = (w: EMU, h: EMU): EMU => (uprightText ? h : w);
+  const yExtent = (w: EMU, h: EMU): EMU => (uprightText ? w : h);
 
   const pad = padding ?? { l: 0, t: 0, r: 0, b: 0 };
   let left = frame.x + pad.l;
@@ -146,8 +188,12 @@ export function solveFrame(input: FrameInput): FrameLayout {
 
   // --- legend, on its side ---
   if (legend?.items.length) {
+    // `fitted`, matching `placeLegend`: the gutter a side legend reserves and
+    // the width its entries are drawn at are the same measurement.
     const itemW = (t: string) =>
-      theme.sizes.legendSwatchEmu + theme.sizes.labelGapEmu + measurer.measure(t, legendStyle).wEmu;
+      theme.sizes.legendSwatchEmu +
+      theme.sizes.labelGapEmu +
+      fitted(measurer.measure(t, legendStyle).wEmu);
     if (legend.position === 'top' || legend.position === 'bottom') {
       const h = lineHeightEmu(legendStyle);
       if (legend.position === 'top') {
@@ -205,59 +251,69 @@ export function solveFrame(input: FrameInput): FrameLayout {
       widestOf(endLabels, endLabelStyle, measurer),
       widestOf(endLabels, styleOf(theme.text.endLabelEmphasis), measurer),
     );
+    const endLine = lineHeightEmu(endLabelStyle);
     // Three gaps of clearance plus the padding the placer adds to the text box.
-    right -= widest + theme.sizes.labelGapEmu * 3 + pointsToEmu(5);
+    right -= xExtent(widest, endLine) + theme.sizes.labelGapEmu * 3 + pointsToEmu(5);
     // Turned on its side, the last point is at the BOTTOM of the plot and its
     // label is centred on it, so half a line hangs below the plot as well as
     // the label's width hanging past its right.
-    if (horizontal) bottom -= lineHeightEmu(endLabelStyle) / 2;
+    if (horizontal) bottom -= yExtent(widest, endLine) / 2;
   }
   if (outsideValueLabels) {
+    // A bar's label runs off its right-hand tip, so the cost is the WIDTH of
+    // the widest number. The tick labels are the same values in the same
+    // format, which makes them a sound proxy — and one we already have, before
+    // any data label has been formatted.
+    const labelW = widestOf(tickLabels, dataLabelStyle, measurer);
+    const labelH = lineHeightEmu(dataLabelStyle);
     if (horizontal) {
-      // A bar's label runs off its right-hand tip, so the cost is the WIDTH of
-      // the widest number. The tick labels are the same values in the same
-      // format, which makes them a sound proxy — and one we already have,
-      // before any data label has been formatted.
-      right -= widestOf(tickLabels, dataLabelStyle, measurer) + theme.sizes.labelGapEmu * 2;
+      right -= xExtent(labelW, labelH) + theme.sizes.labelGapEmu * 2;
     } else {
       // Only the TOP is reserved. A label under a negative bar hangs into the
       // category-label gutter, which is already there; reserving both ends
       // would cost every ordinary chart two lines of plot to protect a case
       // most charts don't have.
-      top += lineHeightEmu(dataLabelStyle) + theme.sizes.labelGapEmu * 2;
+      top += yExtent(labelW, labelH) + theme.sizes.labelGapEmu * 2;
     }
   }
 
   // --- tick and category label gutters ---
   const tickW = showValueAxisLabels ? widestOf(tickLabels, tickStyle, measurer) : 0;
   const tickH = showValueAxisLabels ? lineHeightEmu(tickStyle) : 0;
-  const catW = showCategoryAxisLabels ? widestOf(categoryLabels, catStyle, measurer) : 0;
+  const catWidest = showCategoryAxisLabels ? widestOf(categoryLabels, catStyle, measurer) : 0;
+  // A continuous axis's labels are centred on their tick rather than given a
+  // band, and the placer pads each one by 2pt so neighbours don't touch. The
+  // gutter has to reserve the same 2pt — same measurement, same box, the rule
+  // `fitted` exists for — or the widest label hangs out of the chart by exactly
+  // that much. Invisible while the label lay along its gutter; a visible notch
+  // once the chart is turned and the label stands up across it.
+  const catW = catWidest && continuousCategoryAxis ? catWidest + pointsToEmu(2) : catWidest;
   const catH = showCategoryAxisLabels ? lineHeightEmu(catStyle) : 0;
 
   if (horizontal) {
     // Values run along the bottom, categories down the left.
-    if (showCategoryAxisLabels) left += catW + gap;
-    if (showValueAxisLabels) bottom -= tickH + gap;
+    if (showCategoryAxisLabels) left += xExtent(catW, catH) + gap;
+    if (showValueAxisLabels) bottom -= yExtent(tickW, tickH) + gap;
     // Half the first and last tick label overhang the plot horizontally.
-    if (showValueAxisLabels) right -= tickW / 2;
+    if (showValueAxisLabels) right -= xExtent(tickW, tickH) / 2;
     if (showCategoryAxisLabels && continuousCategoryAxis) {
       // The mirror of the vertical case below: a line or area places its first
       // and last categories ON the plot's edges, so half of each of those
       // labels hangs past the end of the plot — off the top and bottom here,
       // rather than off the left and right.
-      top += catH / 2;
-      bottom -= catH / 2;
+      top += yExtent(catW, catH) / 2;
+      bottom -= yExtent(catW, catH) / 2;
     }
   } else {
-    if (showValueAxisLabels) left += tickW + gap;
-    if (showCategoryAxisLabels) bottom -= catH + gap;
+    if (showValueAxisLabels) left += xExtent(tickW, tickH) + gap;
+    if (showCategoryAxisLabels) bottom -= yExtent(catW, catH) + gap;
     // The topmost tick label is centred on the plot's top edge.
-    if (showValueAxisLabels) top += tickH / 2;
+    if (showValueAxisLabels) top += yExtent(tickW, tickH) / 2;
     if (showCategoryAxisLabels && continuousCategoryAxis) {
       // The end labels straddle the plot's edges; without this they run off
       // the chart entirely.
-      left += catW / 2;
-      right -= catW / 2;
+      left += xExtent(catW, catH) / 2;
+      right -= xExtent(catW, catH) / 2;
     }
   }
 

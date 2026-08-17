@@ -41,20 +41,6 @@ function FolderIcon({ open }: { open?: boolean }) {
   );
 }
 
-function DocsIcon() {
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden className="h-3.5 w-3.5 shrink-0">
-      <path
-        d="M3.25 2.75h6l3.5 3.5v7h-9.5v-10.5Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function PlusIcon() {
   return (
     <svg viewBox="0 0 16 16" aria-hidden className="h-3 w-3 shrink-0">
@@ -352,7 +338,6 @@ export function FolderRail({
         // Dropping here takes a document out of its folder — the way back out,
         // now that there's no separate "Unfiled" row.
         onDropDoc={(docId) => onFileDoc(docId, undefined)}
-        icon={<DocsIcon />}
       />
 
       {/* pr-1, matching the rows' menu slot, so the button's right edge lines up

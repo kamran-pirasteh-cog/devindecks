@@ -183,18 +183,29 @@ export function ArrangeBar() {
       {/* Stacking order first: it's the one cluster that works on a single
           object, so it heads the bar rather than sitting below actions that are
           greyed out. */}
-      {/* The filled box is the selection, the dashed one its neighbour; SVG
-          paints in document order, so the filled box comes last to read as in
-          front and first to read as behind. */}
-      <Btn onClick={() => reorder('front')} title="Bring to front">
+      {/* The filled box is the selection, the dashed one its neighbour. Paint
+          order can't carry the depth on its own — neither shape is opaque, so
+          the overlap would look the same either way — so whichever box is
+          BEHIND is drawn with its overlapped corner cut away. Front: whole
+          solid box, dashed outline broken where it passes under it. Back: the
+          exact inverse — whole dashed box, solid notched around it. */}
+      <Btn onClick={() => reorder('front')} title="Bring to front (⌘⇧])">
         <Icon>
-          <rect x={6} y={6} width={8} height={8} rx={1} strokeDasharray="2 1.5" />
+          <path
+            d="M11.2 6H13A1 1 0 0 1 14 7V13A1 1 0 0 1 13 14H7A1 1 0 0 1 6 13V11.2"
+            strokeDasharray="2 1.5"
+            strokeLinecap="round"
+          />
           <Box x={2} y={2} w={8} h={8} />
         </Icon>
       </Btn>
-      <Btn onClick={() => reorder('back')} title="Send to back">
+      <Btn onClick={() => reorder('back')} title="Send to back (⌘⇧[)">
         <Icon>
-          <Box x={2} y={2} w={8} h={8} />
+          <path
+            d="M2.75 2H9.25A.75.75 0 0 1 10 2.75V4.8H4.8V10H2.75A.75.75 0 0 1 2 9.25V2.75A.75.75 0 0 1 2.75 2Z"
+            fill="currentColor"
+            stroke="none"
+          />
           <rect x={6} y={6} width={8} height={8} rx={1} strokeDasharray="2 1.5" />
         </Icon>
       </Btn>

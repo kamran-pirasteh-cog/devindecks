@@ -61,6 +61,13 @@ const CHROME_SELECTOR =
 const normalizeDeg = (d: number) => ((Math.round(d) % 360) + 360) % 360;
 
 /**
+ * The eighth-turns a free rotate is magnetic to. Anything upright, on its side
+ * or on a clean diagonal is almost always what the author meant, so the handle
+ * catches near those angles — but only near them, so 37° is still reachable.
+ */
+const SNAP_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315, 360];
+
+/**
  * What a mousedown on an already-selected object means once the mouse comes
  * back up without having dragged: 'only' collapses a multi-selection to the
  * object (its group, if it has one), 'toggle' is the shift-click case, and
@@ -981,6 +988,21 @@ export function EditorCanvas() {
       return;
     }
 
+    // Moveable listens for the press on its TARGET node, and a selected chart's
+    // target is its backdrop — which every mark is painted on top of. So a
+    // press on a bar, a slice or a ribbon never reaches Moveable and no drag
+    // ever starts. Most charts hide that: the plot is mostly bare backdrop, so
+    // the press usually lands somewhere draggable. A Sankey's ribbons cover
+    // nearly the whole plot, and the chart simply could not be moved — every
+    // attempt came back as the drill-in deferred below. Hand the press over.
+    //
+    // Synchronously, unlike Selecto's replay for an object that ISN'T selected
+    // yet: that one waits a frame for the selection to commit and Moveable to
+    // mount, and here the target — the backdrop — is already Moveable's.
+    if (soleChart && id !== chartBackdropId && selectedIds.includes(id)) {
+      moveableRef.current?.dragStart(e.nativeEvent);
+    }
+
     // Mousedown on something already selected is ambiguous with the start of a
     // drag (a plain drag moves the whole group, a shift-drag axis-locks), so
     // defer the selection change to mouseup and drop it if a drag begins.
@@ -1039,8 +1061,13 @@ export function EditorCanvas() {
             They are stacking contexts, so anything they open — the swatch
             popovers — rides along instead of being sliced by the selection
             outline of the object it is formatting. */}
+        {/* Spans the slide (`left-0 right-0`) rather than shrinking to the bar,
+            so the bar has a definite width to wrap against; `justify-end` still
+            holds it flush to the right edge. `pointer-events-none` keeps the now
+            slide-wide strip from swallowing presses on the empty space above the
+            slide, which is one of the ways you clear a selection. */}
         <div
-          className="absolute bottom-full right-0 mb-2 flex justify-end"
+          className="pointer-events-none absolute bottom-full left-0 right-0 mb-2 flex justify-end"
           style={{ zIndex: OVERLAY_Z }}
         >
           <SelectionFormatBar onOpenChartData={setOpenChartId} />
@@ -1284,6 +1311,9 @@ export function EditorCanvas() {
             // Charts snap to the four orientations — a chart at 37° is a
             // mistake, not a design. Everything else rotates freely.
             throttleRotate={soleChart ? 90 : 0}
+            // Everything else is free, but magnetic to the eighth-turns.
+            snapRotationDegrees={soleChart ? undefined : SNAP_ANGLES}
+            snapRotationThreshold={6}
             // Snapping a bar to the slide's margins would be meaningless — the
             // only thing a part can do is nudge a label a few px off its anchor.
             snappable={!chartPart}
@@ -1477,16 +1507,15 @@ export function EditorCanvas() {
                 store().setRect(id, rect);
               }
             }}
-            // Group resize, PowerPoint-style: dragging ONE handle of a
-            // multi-selection applies the SAME scale factors to every selected
-            // object, but each one is scaled about its OWN anchor corner — so
-            // the objects change size in place and never move relative to each
-            // other. (Google Slides instead rescales the selection's bounding
-            // box, which slides the objects around; that is not what we want.)
+            // Group resize, PowerPoint-style: the selection scales as ONE
+            // object. Dragging a handle applies the same scale factors to every
+            // selected object's SIZE *and* to its OFFSET from the group box's
+            // fixed edge, so the members keep their relative spacing and the
+            // group's outline tracks the handle exactly — a 2× wider group has
+            // members twice as wide and twice as far apart.
             //
-            // Moveable's per-target child events describe exactly that bounding
-            // box behaviour, so they're deliberately unused here: only the group
-            // box's own dimensions are read, to derive the scale factors.
+            // Moveable's per-target child events are deliberately unused: only
+            // the group box's own dimensions are read, to derive the factors.
             onResizeGroupStart={(e) => {
               beginResize(e.inputEvent);
               groupResizeRef.current = [];
@@ -1524,12 +1553,23 @@ export function EditorCanvas() {
               // ⌘/Ctrl does on both axes.
               const [dirX, dirY] = e.direction as [number, number];
               const fromCenter = resizeFromCenterRef.current;
-              const anchor = (dir: number, from: number, size: number, next: number) =>
-                fromCenter || dir === 0
-                  ? from + (size - next) / 2
-                  : dir > 0
-                    ? from
-                    : from + size - next;
+              // The group box as it stood when the gesture began — the frame
+              // every member's offset is measured against.
+              const starts = groupResizeStartRef.current;
+              const bounds = (get: (s: (typeof starts)[number]) => [number, number]) => {
+                const lo = Math.min(...starts.map((s) => get(s)[0]));
+                const hi = Math.max(...starts.map((s) => get(s)[0] + get(s)[1]));
+                return [lo, hi] as const;
+              };
+              const [gx0, gx1] = bounds((s) => [s.x, s.w]);
+              const [gy0, gy1] = bounds((s) => [s.y, s.h]);
+              // The point that stays put: the held edge, or the group's centre
+              // when the drag grows about it. Positions scale about it too,
+              // which is what makes the selection behave as one object.
+              const pivot = (dir: number, lo: number, hi: number) =>
+                fromCenter || dir === 0 ? (lo + hi) / 2 : dir > 0 ? lo : hi;
+              const px = pivot(dirX, gx0, gx1);
+              const py = pivot(dirY, gy0, gy1);
 
               const boxes: Record<string, { x: number; y: number; w: number; h: number }> = {};
               const rects: { id: string; rect: Rect }[] = [];
@@ -1540,8 +1580,8 @@ export function EditorCanvas() {
                 const w = start.w === 0 ? 0 : Math.max(4, start.w * sx);
                 const h = start.h === 0 ? 0 : Math.max(4, start.h * sy);
                 const box = {
-                  x: anchor(dirX, start.x, start.w, w),
-                  y: anchor(dirY, start.y, start.h, h),
+                  x: px + (start.x - px) * sx,
+                  y: py + (start.y - py) * sy,
                   w,
                   h,
                 };

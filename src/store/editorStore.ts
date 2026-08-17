@@ -1222,43 +1222,75 @@ export const useEditor = create<EditorState>()(
      * bodily to the edge, exactly as PowerPoint treats it. For a selection with
      * no groups in it this is the old element-wise behaviour unchanged.
      *
-     * The edge modes ESCALATE: the mode names a DIRECTION OF TRAVEL, and each
+     * ONE unit selected is the simple case, and it does the simple thing: the
+     * object lands ON the named guide in a single press — left/right guides,
+     * the bottom guide, the content-top guide below the title band for top, and
+     * the paper's own middle for the two centre modes. No walk, no escalation:
+     * with nothing to align TO, "align left" can only mean the left margin, and
+     * a chord that parked the object somewhere else first reads as a bug.
+     *
+     * With SEVERAL units the edge modes ESCALATE: the mode names a DIRECTION OF
+     * TRAVEL, and each
      * press slides the selection to the next line it meets going that way.
      *
      *   1. objects not yet flush → line them up on their own outermost edge
-     *   2. flush (a single object always is) → travel to the next stop: a margin
-     *      guide, the content-top guide, or the slide edge, whichever comes first
+     *   2. flush → travel to the next stop: a margin guide, the content-top
+     *      guide, or the slide edge, whichever comes first
      *   3. …repeat, one line per press, until there is nothing further that way,
      *      where it stops dead rather than cycling
      *
-     * A stop counts when EITHER edge of the selection can land on it — an object
+     * A stop counts when EITHER edge of the selection can land on it — a block
      * overhanging the left guide moves right onto that guide (its left edge),
      * and keeps going to the right guide (its right edge) and then the paper's
-     * right edge. A single object also stops centred on the slide, passing
-     * through the middle on its way across. Moves that would carry the selection
-     * off the slide are not offered, which is what makes the walk terminate.
+     * right edge. Moves that would carry the selection off the slide are not
+     * offered, which is what makes the walk terminate.
      *
      * Every step past the first moves the whole selection by ONE shift (they
      * share the edge by then), so the layout inside it survives the trip.
      *
-     * The centre modes have nowhere to escalate to: they centre on the selection
-     * with several units and on the margin frame with one.
+     * The centre modes never escalate: they centre on the selection's own span
+     * with several units, and on the slide with one.
      */
     align(mode) {
       const s = get();
       const { selectedIds } = s;
       const boxes = unitBoxes(s, selectedIds);
       if (boxes.length === 0) return;
-      const frame = marginBox(s.deck.slideSize);
+
+      /** Half a point — under this two edges are the same edge to any eye. */
+      const EPS = EMU_PER_POINT / 2;
+
+      // One unit: land it on the guide the button names, in one press.
+      if (boxes.length === 1) {
+        const { ids, r } = boxes[0];
+        const { w: sw, h: sh } = s.deck.slideSize;
+        const g = marginGuides(s.deck.slideSize);
+        const [left, right] = g.vertical;
+        // horizontal[1] is the content-top guide — the dotted line under the
+        // title band, which is where "align top" belongs: hanging body content
+        // off the paper's top margin would put it inside the title.
+        const [, contentTop, bottom] = g.horizontal;
+        const horizontal = mode === 'left' || mode === 'right' || mode === 'hcenter';
+        const d =
+          mode === 'left' ? left - r.x
+          : mode === 'right' ? right - (r.x + r.w)
+          : mode === 'hcenter' ? sw / 2 - r.w / 2 - r.x
+          : mode === 'top' ? contentTop - r.y
+          : mode === 'bottom' ? bottom - (r.y + r.h)
+          : sh / 2 - r.h / 2 - r.y; // vcenter
+        if (Math.abs(d) <= EPS) return; // already there — no undo step for a no-op
+        get().commit();
+        set(shiftUnits([horizontal ? { ids, dx: d, dy: 0 } : { ids, dx: 0, dy: d }]));
+        return;
+      }
 
       if (mode === 'hcenter' || mode === 'vcenter') {
-        const single = boxes.length === 1;
         const lo = mode === 'hcenter'
-          ? (single ? frame.x : Math.min(...boxes.map((b) => b.r.x)))
-          : (single ? frame.y : Math.min(...boxes.map((b) => b.r.y)));
+          ? Math.min(...boxes.map((b) => b.r.x))
+          : Math.min(...boxes.map((b) => b.r.y));
         const hi = mode === 'hcenter'
-          ? (single ? frame.x + frame.w : Math.max(...boxes.map((b) => b.r.x + b.r.w)))
-          : (single ? frame.y + frame.h : Math.max(...boxes.map((b) => b.r.y + b.r.h)));
+          ? Math.max(...boxes.map((b) => b.r.x + b.r.w))
+          : Math.max(...boxes.map((b) => b.r.y + b.r.h));
         const centre = (lo + hi) / 2;
         get().commit();
         set(shiftUnits(boxes.map((b) => {
@@ -1270,8 +1302,6 @@ export const useEditor = create<EditorState>()(
         return;
       }
 
-      /** Half a point — under this two edges are the same edge to any eye. */
-      const EPS = EMU_PER_POINT / 2;
       const horizontal = mode === 'left' || mode === 'right';
       /** −1 travels toward the top-left corner, +1 toward the bottom-right. */
       const dir = mode === 'left' || mode === 'top' ? -1 : 1;
@@ -1301,22 +1331,16 @@ export const useEditor = create<EditorState>()(
       // top edge while the bottom guide takes the bottom. Without that, both
       // edges would want each line and the selection would stop on every guide
       // twice, once hanging off each side of it.
-      //
-      // The slide's centre line is a stop too, met by the object's own centre —
-      // but only for a single object, where "centred" is unambiguous. With
-      // several units selected the chord is about their shared edge, and a
-      // centre stop would slide the block off that reading.
       const guides = marginGuides(s.deck.slideSize);
       const size = horizontal ? s.deck.slideSize.w : s.deck.slideSize.h;
       const lines = horizontal ? guides.vertical : guides.horizontal;
-      type Stop = { at: number; on: 'lo' | 'hi' | 'centre' };
+      type Stop = { at: number; on: 'lo' | 'hi' };
       const stops: Stop[] = [
         { at: 0, on: 'lo' },
         // The last guide on each axis (right / bottom) closes the frame; the
         // ones before it (left, and top + content-top) open it.
         ...lines.map((at, i): Stop => ({ at, on: i < lines.length - 1 ? 'lo' : 'hi' })),
         { at: size, on: 'hi' },
-        ...(boxes.length === 1 ? [{ at: size / 2, on: 'centre' } as Stop] : []),
       ];
 
       const lo = Math.min(...boxes.map((b) => (horizontal ? b.r.x : b.r.y)));
@@ -1327,7 +1351,7 @@ export const useEditor = create<EditorState>()(
 
       let best: number | null = null;
       for (const stop of stops) {
-        const from = stop.on === 'lo' ? lo : stop.on === 'hi' ? hi : (lo + hi) / 2;
+        const from = stop.on === 'lo' ? lo : hi;
         const d = stop.at - from;
         if (d * dir <= EPS) continue; // not a move, or not the way we're going
         if (!oversized && (lo + d < -EPS || hi + d > size + EPS)) continue;

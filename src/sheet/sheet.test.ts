@@ -241,6 +241,38 @@ describe('datasheetSchemaFor — time runs across, not down', () => {
     expect(sheet.rows[0].slice(1).map(cellText)).toEqual(['420', '512', '640']);
   });
 
+  it('reads down the rows when the chart does — a bar chart', () => {
+    // Categories run down the side of a bar chart, so they run down the sheet
+    // too rather than sitting at right angles to the picture above them.
+    const sheet = sheetFromSpec({ ...column(), kind: 'bar' });
+    expect(sheet.schema.layout).toBe('recordsDown');
+    expect(sheet.rows.map((r) => cellText(r[0]))).toEqual(['FY23', 'FY24', 'FY25']);
+    expect(sheet.series.map((s) => s.name)).toEqual(['Enterprise', 'Mid-Market', 'SMB']);
+  });
+
+  it('turns with the chart: a column chart on its side reads like a bar chart', () => {
+    for (const turn of [90, 270]) {
+      const sheet = sheetFromSpec(column(), turn);
+      expect(sheet.schema.layout).toBe('recordsDown');
+      expect(sheet.rows.map((r) => cellText(r[0]))).toEqual(['FY23', 'FY24', 'FY25']);
+    }
+    // A half turn leaves the categories running across, so the sheet does too.
+    expect(sheetFromSpec(column(), 180).schema.layout).toBe('seriesDown');
+  });
+
+  it('turns a bar chart BACK, because two flips cancel', () => {
+    const sheet = sheetFromSpec({ ...column(), kind: 'bar' }, 90);
+    expect(sheet.schema.layout).toBe('seriesDown');
+    expect(sheet.series.map((s) => s.name)).toEqual(['FY23', 'FY24', 'FY25']);
+  });
+
+  it('ignores a rotation on a kind that cannot be turned', () => {
+    // The compiler refuses to turn a scatter, so the sheet must not pretend it
+    // did — and a pie has no side to lie on either.
+    expect(sheetFromSpec(defaultChartSpec('scatter'), 90).schema.layout).toBe('recordsDown');
+    expect(sheetFromSpec(defaultChartSpec('pie'), 90).schema.layout).toBe('seriesDown');
+  });
+
   it('swaps the caps over with the axes', () => {
     const caps = sheetFromSpec(defaultChartSpec('pie')).schema.caps;
     // Slices can be added without limit; a second ring cannot.

@@ -185,7 +185,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                     title={`${commentCounts[slide.id]} open ${
                       commentCounts[slide.id] === 1 ? 'comment' : 'comments'
                     }`}
-                    className="pointer-events-none absolute bottom-1 left-1 flex h-4 items-center gap-0.5 rounded bg-amber-400 px-1 text-[9px] font-semibold text-amber-950"
+                    className="pointer-events-none absolute bottom-1 left-1 flex h-5 items-center gap-0.5 rounded bg-amber-300 px-1 text-[9px] font-semibold leading-none text-amber-900"
                   >
                     💬 {commentCounts[slide.id]}
                   </span>

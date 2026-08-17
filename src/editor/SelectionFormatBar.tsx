@@ -30,7 +30,9 @@ import {
   type DesignSystem,
   type FontFamily,
   type Outline,
+  type ParaAlign,
   type SlideElement,
+  type VerticalAnchor,
 } from '@/model';
 import { useEditor } from '@/store/editorStore';
 
@@ -256,6 +258,85 @@ function CornerIcon({ rounded }: { rounded: boolean }) {
   );
 }
 
+/**
+ * Paragraph-alignment glyphs. The ragged edge is the whole tell, so the rules
+ * are drawn at mixed lengths and pushed to the edge the text would sit on;
+ * justify squares both ends off instead.
+ */
+const RAGGED = [10.4, 7.2, 10.4, 6];
+
+function ParaAlignIcon({ align }: { align: ParaAlign }) {
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden fill="none">
+      {RAGGED.map((len, i) => {
+        const w = align === 'justify' ? RAGGED[0] : len;
+        const x = align === 'right' ? 12 - w : align === 'center' ? 7 - w / 2 : 2;
+        const y = 3.2 + i * 2.6;
+        return (
+          <line
+            key={i}
+            x1={x}
+            y1={y}
+            x2={x + w}
+            y2={y}
+            stroke="currentColor"
+            strokeWidth={1.3}
+            strokeLinecap="round"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+/**
+ * Vertical-anchor glyphs: a block of text moved within its frame. The frame is
+ * drawn — faintly — because three short rules shifted by 3px read as identical
+ * without an edge to be near.
+ */
+function AnchorIcon({ anchor }: { anchor: VerticalAnchor }) {
+  const top = anchor === 'top' ? 3.4 : anchor === 'middle' ? 5.1 : 6.8;
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden fill="none">
+      <rect
+        x={1.2}
+        y={1.2}
+        width={11.6}
+        height={11.6}
+        rx={1}
+        stroke="currentColor"
+        strokeWidth={1}
+        opacity={0.3}
+      />
+      {[0, 1, 2].map((i) => (
+        <line
+          key={i}
+          x1={3.4}
+          y1={top + i * 1.9}
+          x2={10.6}
+          y2={top + i * 1.9}
+          stroke="currentColor"
+          strokeWidth={1.3}
+          strokeLinecap="round"
+        />
+      ))}
+    </svg>
+  );
+}
+
+const PARA_ALIGNS: { value: ParaAlign; label: string }[] = [
+  { value: 'left', label: 'Align text left' },
+  { value: 'center', label: 'Center text' },
+  { value: 'right', label: 'Align text right' },
+  { value: 'justify', label: 'Justify text' },
+];
+
+const ANCHORS: { value: VerticalAnchor; label: string }[] = [
+  { value: 'top', label: 'Align text top' },
+  { value: 'middle', label: 'Center text vertically' },
+  { value: 'bottom', label: 'Align text bottom' },
+];
+
 function outlineOf(el: SlideElement | undefined): Outline | undefined {
   if (!el || el.type === 'picture') return undefined;
   return 'outline' in el ? el.outline : undefined;
@@ -328,6 +409,22 @@ export function SelectionFormatBar({
   const listKind = (kind: BulletKind) =>
     paragraphs.length > 0 && paragraphs.every((p) => p.bullet === kind);
 
+  // Both alignment readouts span the WHOLE selection, unlike the font and size
+  // fields above, which show the primary element's value. A select-all over a
+  // mix of left-, center- and right-aligned boxes would otherwise light "Right"
+  // just because the primary box happened to be right-aligned — for a pressed
+  // toggle that's a claim about every box, so nothing lights unless they agree.
+  const textBodies = selected.flatMap((e) =>
+    (e.type === 'text' || e.type === 'shape') && e.body ? [e.body] : [],
+  );
+  // Unset reads as its rendered value ('left' / 'top', per `SlideView`), so a
+  // fresh box shows Left and Top lit rather than no alignment at all.
+  const allParagraphs = textBodies.flatMap((b) => b.paragraphs);
+  const paraAlignIs = (a: ParaAlign) =>
+    allParagraphs.length > 0 && allParagraphs.every((p) => (p.align ?? 'left') === a);
+  const anchorIs = (v: VerticalAnchor) =>
+    textBodies.length > 0 && textBodies.every((b) => (b.anchor ?? 'top') === v);
+
   /** Border edits patch whatever outline exists, falling back to a real one. */
   const patchOutline = (patch: Partial<Outline>) =>
     store().setOutline(selectedIds, { ...(outline ?? OUTLINE_FALLBACK), ...patch });
@@ -335,7 +432,13 @@ export function SelectionFormatBar({
   return (
     <div
       // See the module comment: the canvas keys off this class.
-      className="dd-format-bar flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+      //
+      // Wrapping, because this is the one cluster-heavy bar: a text-bearing
+      // shape shows font, size, list, align, color, fill and border at once,
+      // which outgrows a narrow window. It's anchored to the slide's right edge
+      // and grows leftward, so without this the leftmost groups slide out under
+      // the filmstrip. Rows are right-aligned so it stays flush to that edge.
+      className="dd-format-bar pointer-events-auto flex max-w-full flex-wrap items-center justify-end gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
       role="toolbar"
       aria-label="Format selection"
       onContextMenu={(e) => e.stopPropagation()}
@@ -409,6 +512,50 @@ export function SelectionFormatBar({
                   className="flex h-7 w-7 items-center justify-center rounded border border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   {glyph}
+                </button>
+              ))}
+            </div>
+          </Group>
+          {/* Both axes, in one cluster: horizontal alignment is a paragraph
+              property, the vertical anchor belongs to the body, but from the
+              outside they're the same question — which edge does the text sit
+              on — so splitting them across two groups only made it harder to
+              find. Mirrors the ⌘⌥Ctrl+arrow chords. */}
+          <Group label="Align">
+            <div className="flex gap-0.5">
+              {PARA_ALIGNS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => store().patchParagraphs(selectedIds, { align: value })}
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={paraAlignIs(value)}
+                  className={`flex h-7 w-7 items-center justify-center rounded border ${
+                    paraAlignIs(value)
+                      ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  <ParaAlignIcon align={value} />
+                </button>
+              ))}
+              <Divider />
+              {ANCHORS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => store().setAnchor(selectedIds, value)}
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={anchorIs(value)}
+                  className={`flex h-7 w-7 items-center justify-center rounded border ${
+                    anchorIs(value)
+                      ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  <AnchorIcon anchor={value} />
                 </button>
               ))}
             </div>
@@ -586,7 +733,7 @@ function PictureFormatCluster({
 
   return (
     <div
-      className="dd-format-bar flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+      className="dd-format-bar pointer-events-auto flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
       role="toolbar"
       aria-label="Format picture"
       onContextMenu={(e) => e.stopPropagation()}
@@ -673,7 +820,7 @@ function ChartFormatCluster({
 
   return (
     <div
-      className="dd-format-bar flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+      className="dd-format-bar pointer-events-auto flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
       role="toolbar"
       aria-label="Format chart"
       onContextMenu={(e) => e.stopPropagation()}

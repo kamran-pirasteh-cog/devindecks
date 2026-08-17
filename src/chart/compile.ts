@@ -56,7 +56,7 @@ import { placeXY } from './place/xy';
 import { placeAnnotations } from './decorate/annotations';
 import { resolveChartTheme, type ChartTheme } from './theme';
 import { emitMarks } from './emit';
-import { layoutFrame, snapQuarterTurn, turnElements } from './turn';
+import { layoutFrame, snapQuarterTurn, turnElements, type QuarterTurn } from './turn';
 import type { Mark } from './mark';
 
 export interface CompileDiagnostic {
@@ -88,6 +88,28 @@ export const SUPPORTED_KINDS: ChartSpec['kind'][] = [
 
 export const isSupported = (spec: ChartSpec): boolean => SUPPORTED_KINDS.includes(spec.kind);
 
+/**
+ * The furniture that belongs to the chart's BOX rather than to the picture in
+ * it, and so sits out the turn: the title, the unit note under it, the legend.
+ *
+ * All three are solved against the chart's real frame and drawn upright there.
+ * Turning them buys nothing — a title spanning the frame becomes a strip down
+ * the side, where horizontal type only fits by eating inches of the chart's
+ * width — and costs the one place a reader looks first.
+ */
+const isChrome = (mark: Mark): boolean =>
+  mark.ref.part === 'title' ||
+  mark.ref.part === 'legend.item' ||
+  mark.ref.part === 'legend.box' ||
+  (mark.ref.part === 'axis' && mark.ref.sub === 'unitNote');
+
+/** What a `compile*` pass hands back: its marks, and the box they turn about. */
+interface Placed {
+  marks: Mark[];
+  /** Transposed at 90° and 270° so the turn lands back on the chart's box. */
+  innerFrame: Rect;
+}
+
 export function compileChart(
   chart: ChartInstance,
   ds: DesignSystem,
@@ -112,15 +134,13 @@ export function compileChart(
   // can't be turned are compiled upright whatever angle they carry, so an old
   // deck with a turned scatter in it comes back readable rather than sideways.
   const rotation = supportsTurn(spec.kind) ? snapQuarterTurn(chart.rotation ?? 0) : 0;
-  const frame = layoutFrame(chart.frame, rotation);
-  const laid: ChartInstance = frame === chart.frame ? chart : { ...chart, frame };
 
-  const marks =
+  const { marks, innerFrame } =
     spec.kind === 'sankey'
-      ? compileSankey(laid, spec, theme, measurer, diagnostics)
+      ? compileSankey(chart, spec, theme, measurer, rotation, diagnostics)
       : spec.kind === 'scatter' || spec.kind === 'bubble'
-        ? compileXY(laid, theme, measurer, diagnostics)
-        : compileCartesian(laid, theme, measurer, diagnostics);
+        ? compileXY(chart, theme, measurer, diagnostics)
+        : compileCartesian(chart, theme, measurer, rotation, diagnostics);
 
   if (!marks.length) return { elements: [], diagnostics };
 
@@ -133,16 +153,56 @@ export function compileChart(
     kind: 'rect',
     ref: { chartId: chart.id, part: 'plot' },
     name: 'Chart area',
-    rect: frame,
+    // The chart's real box, whatever the turn: the backdrop is the thing being
+    // turned, not a thing that turns.
+    rect: chart.frame,
     fill: theme.plotBackground
       ? { kind: 'solid', color: theme.plotBackground }
       : { kind: 'solid', color: token('surface.base'), alpha: 0 },
   };
 
-  // Laid out upright, then turned — see `turn.ts`. At 0° this is identity.
-  const elements = turnElements(emitMarks([backdrop, ...marks], chart.groupId), frame, rotation);
+  // Only the chart proper turns. Its title, unit note and legend belong to the
+  // BOX rather than to the picture inside it — a title reading up the side of a
+  // turned chart is nobody's idea of a title — so they were solved against the
+  // real frame and are left where they are. See `isChrome`.
+  const chrome = marks.filter(isChrome);
+  const inner = marks.filter((m) => !isChrome(m));
+
+  const elements = [
+    ...emitMarks([backdrop, ...chrome], chart.groupId),
+    // Laid out upright in `innerFrame`, then turned onto the real one — see
+    // `turn.ts`. At 0° this is identity.
+    ...turnElements(emitMarks(inner, chart.groupId), innerFrame, rotation),
+  ];
 
   return { elements, diagnostics };
+}
+
+/**
+ * Reserve the chrome against the chart's REAL box, before any turn.
+ *
+ * Returns the bands the title, unit note and legend occupy, and — as `plot` —
+ * the box left over for the chart itself. Everything downstream is solved
+ * inside that leftover box, which is what keeps the turn from ever reaching the
+ * chrome. Passing no axis labels is deliberate: this pass knows nothing about
+ * ticks, and reserving them twice would push the plot in by two gutters.
+ */
+function solveChrome(input: {
+  frame: Rect;
+  theme: ChartTheme;
+  measurer: TextMeasurer;
+  horizontal: boolean;
+  title?: string;
+  unitNote?: string;
+  legend?: { items: string[]; position: 'top' | 'right' | 'bottom' | 'left' };
+}): FrameLayout {
+  return solveFrame({
+    ...input,
+    tickLabels: [],
+    categoryLabels: [],
+    showValueAxisLabels: false,
+    showCategoryAxisLabels: false,
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -159,19 +219,30 @@ function compileSankey(
   spec: SankeySpec,
   theme: ChartTheme,
   measurer: TextMeasurer,
+  rotation: QuarterTurn,
   diagnostics: CompileDiagnostic[],
-): Mark[] {
+): Placed {
+  const empty = { marks: [], innerFrame: chart.frame };
   if (!spec.data.nodes.length) {
     diagnostics.push({
       severity: 'warning',
       code: 'chart-empty',
       message: 'This chart has no data yet.',
     });
-    return [];
+    return empty;
   }
 
-  const layout = solveFrame({
+  const chrome = solveChrome({
     frame: chart.frame,
+    theme,
+    measurer,
+    horizontal: false,
+    title: spec.title,
+  });
+  const innerFrame = layoutFrame(chrome.plot, rotation);
+
+  const layout = solveFrame({
+    frame: innerFrame,
     theme,
     measurer,
     horizontal: false,
@@ -179,7 +250,6 @@ function compileSankey(
     categoryLabels: [],
     showValueAxisLabels: false,
     showCategoryAxisLabels: false,
-    title: spec.title,
     padding: spec.plotPadding,
   });
 
@@ -192,29 +262,32 @@ function compileSankey(
   });
   diagnostics.push(...layoutDiagnostics);
 
-  if (!marks.length) return [];
+  if (!marks.length) return empty;
 
-  return [
-    ...marks,
-    ...placeCartesianFurniture({
-      chartId: chart.id,
-      theme,
-      measurer,
-      layout,
-      proj: projector(layout.plot, makeScale(0, 1, 1), false),
-      scale: makeScale(0, 1, 1),
-      bounds: chart.frame,
-      tickLabels: [],
-      categoryLabels: [],
-      categoryCenters: [],
-      showValueAxisLabels: false,
-      showCategoryAxisLabels: false,
-      showValueAxisLine: false,
-      showCategoryAxisLine: false,
-      gridlines: false,
-      title: spec.title,
-    }),
-  ];
+  return {
+    innerFrame,
+    marks: [
+      ...marks,
+      ...placeCartesianFurniture({
+        chartId: chart.id,
+        theme,
+        measurer,
+        layout: chrome,
+        proj: projector(chrome.plot, makeScale(0, 1, 1), false),
+        scale: makeScale(0, 1, 1),
+        bounds: chart.frame,
+        tickLabels: [],
+        categoryLabels: [],
+        categoryCenters: [],
+        showValueAxisLabels: false,
+        showCategoryAxisLabels: false,
+        showValueAxisLine: false,
+        showCategoryAxisLine: false,
+        gridlines: false,
+        title: spec.title,
+      }),
+    ],
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -225,10 +298,15 @@ function compileCartesian(
   chart: ChartInstance,
   theme: ChartTheme,
   measurer: TextMeasurer,
+  rotation: QuarterTurn,
   diagnostics: CompileDiagnostic[],
-): Mark[] {
+): Placed {
   const spec = chart.spec;
   const horizontal = isHorizontal(spec);
+  // A quarter turn stands the labels back up afterwards, so the gutters they
+  // sit in have to be cut for horizontal type — see `uprightText` in
+  // `frame.ts`. A half turn leaves every label the way up it already was.
+  const uprightText = rotation === 90 || rotation === 270;
   const isPie = spec.kind === 'pie' || spec.kind === 'donut';
 
   // Derive first — everything downstream reads the resolved numbers, not the
@@ -264,7 +342,7 @@ function compileCartesian(
       code: 'chart-empty',
       message: 'This chart has no data yet.',
     });
-    return [];
+    return { marks: [], innerFrame: chart.frame };
   }
 
   const valueAxis = spec.axes.y;
@@ -344,11 +422,28 @@ function compileCartesian(
       ['auto', 'outsideEnd', 'above'].includes(labelSpec.placement)) ||
       (spec.decorations.totals?.show ?? false));
 
-  const frameInputBase = {
+  // The chart's own box first — title, unit note, legend — then the turn, then
+  // the axes inside whatever is left. Solving the chrome against the real frame
+  // is what lets it sit out the turn; see `solveChrome`.
+  const chrome = solveChrome({
     frame: chart.frame,
     theme,
     measurer,
     horizontal,
+    title: spec.title,
+    unitNote: showAxes ? valueAxis.unitNote : undefined,
+    legend: spec.legend.show
+      ? { items: legendItems.map((i) => i.name), position: spec.legend.position }
+      : undefined,
+  });
+  const innerFrame = layoutFrame(chrome.plot, rotation);
+
+  const frameInputBase = {
+    frame: innerFrame,
+    theme,
+    measurer,
+    horizontal,
+    uprightText,
     outsideValueLabels,
     endLabels:
       spec.kind === 'line' && spec.endLabels ? endLabelTexts(spec, derived) : undefined,
@@ -356,25 +451,24 @@ function compileCartesian(
     showValueAxisLabels: showAxes && valueAxis.show,
     showCategoryAxisLabels: showAxes && categoryAxis.show,
     continuousCategoryAxis: edgeCategories,
-    title: spec.title,
     valueAxisTitle: showAxes ? valueAxis.title : undefined,
     categoryAxisTitle: showAxes ? categoryAxis.title : undefined,
-    unitNote: showAxes ? valueAxis.unitNote : undefined,
-    legend: spec.legend.show
-      ? { items: legendItems.map((i) => i.name), position: spec.legend.position }
-      : undefined,
     padding: spec.plotPadding,
   };
 
+  // The extent one tick label costs ALONG its own axis. Upright labels on a
+  // turned chart lie across that axis instead, so the two swap and a turned
+  // value axis budgets for the width of "1,250" rather than for a line height.
+  const tickAlong = uprightText === horizontal ? tickLineH : tickLineH * 3;
+
   // Pass 1: guess the tick budget from the frame, since there's no plot yet.
-  const firstExtent = horizontal ? chart.frame.w : chart.frame.h;
-  let { scale, ticks } = solve(maxTicksFor(firstExtent, horizontal ? tickLineH * 3 : tickLineH));
+  const firstExtent = horizontal ? innerFrame.w : innerFrame.h;
+  let { scale, ticks } = solve(maxTicksFor(firstExtent, tickAlong));
   let layout: FrameLayout = solveFrame({ ...frameInputBase, tickLabels: ticks });
 
   // Pass 2: re-solve against the plot we actually got.
   const plotExtent = horizontal ? layout.plot.w : layout.plot.h;
-  const budget = maxTicksFor(plotExtent, horizontal ? tickLineH * 3 : tickLineH);
-  const second = solve(budget);
+  const second = solve(maxTicksFor(plotExtent, tickAlong));
   if (second.scale.step !== scale.step || second.scale.max !== scale.max) {
     scale = second.scale;
     ticks = second.ticks;
@@ -384,15 +478,16 @@ function compileCartesian(
   const proj = projector(layout.plot, scale, horizontal);
   const centers = centersFor(spec, derived);
 
-  const body = placeBody(chart, spec, derived, proj, scale, theme, measurer, layout);
+  const body = placeBody(chart, spec, derived, proj, scale, theme, measurer, layout, uprightText);
 
   if (isPie) {
-    // A pie has no axes or gridlines; only its title and legend are furniture.
+    // A pie has no axes or gridlines; only its title and legend are furniture,
+    // and both are chrome — solved against the real frame, left out of the turn.
     const furniture = placeCartesianFurniture({
       chartId: chart.id,
       theme,
       measurer,
-      layout,
+      layout: chrome,
       proj,
       scale,
       bounds: chart.frame,
@@ -407,9 +502,34 @@ function compileCartesian(
       title: spec.title,
       legend: spec.legend.show ? { ...spec.legend, items: legendItems } : undefined,
     });
-    return [...furniture, ...body];
+    return { marks: [...furniture, ...body], innerFrame };
   }
 
+  // The chrome, drawn against the real frame …
+  const outer = placeCartesianFurniture({
+    chartId: chart.id,
+    theme,
+    measurer,
+    layout: chrome,
+    proj,
+    scale,
+    bounds: chart.frame,
+    tickLabels: [],
+    categoryLabels: [],
+    categoryCenters: [],
+    showValueAxisLabels: false,
+    showCategoryAxisLabels: false,
+    showValueAxisLine: false,
+    showCategoryAxisLine: false,
+    gridlines: false,
+    title: spec.title,
+    unitNote: valueAxis.unitNote,
+    legend: spec.legend.show ? { ...spec.legend, items: legendItems } : undefined,
+  });
+
+  // … and the axes, drawn inside the turned box. `bounds` is that box too: the
+  // clamp that keeps an end label on the chart has to be measured in the space
+  // the label is actually laid out in.
   const furniture = placeCartesianFurniture({
     chartId: chart.id,
     theme,
@@ -417,7 +537,8 @@ function compileCartesian(
     layout,
     proj,
     scale,
-    bounds: chart.frame,
+    bounds: innerFrame,
+    uprightText,
     tickLabels: ticks,
     categoryLabels: derived.categoryLabels,
     categoryCenters: centers,
@@ -427,11 +548,8 @@ function compileCartesian(
     showValueAxisLine: false,
     showCategoryAxisLine: categoryAxis.show,
     gridlines: spec.decorations.gridlines.major?.show ?? theme.gridlines.major,
-    title: spec.title,
     valueAxisTitle: valueAxis.title,
     categoryAxisTitle: categoryAxis.title,
-    unitNote: valueAxis.unitNote,
-    legend: spec.legend.show ? { ...spec.legend, items: legendItems } : undefined,
   });
 
   const annotations = placeAnnotations({
@@ -447,7 +565,7 @@ function compileCartesian(
 
   // Furniture first so marks paint over the gridlines; annotations last so
   // they're never buried by the data they're describing.
-  return [...furniture, ...body, ...annotations];
+  return { marks: [...outer, ...furniture, ...body, ...annotations], innerFrame };
 }
 
 /** 0..1 category positions, which differ by chart family. */
@@ -482,8 +600,9 @@ function placeBody(
   theme: ChartTheme,
   measurer: TextMeasurer,
   layout: FrameLayout,
+  uprightText: boolean,
 ): Mark[] {
-  const common = { chartId: chart.id, derived, proj, scale, theme, measurer };
+  const common = { chartId: chart.id, derived, proj, scale, theme, measurer, uprightText };
 
   switch (spec.kind) {
     case 'column':
@@ -569,9 +688,12 @@ function compileXY(
   theme: ChartTheme,
   measurer: TextMeasurer,
   diagnostics: CompileDiagnostic[],
-): Mark[] {
+): Placed {
   const spec = chart.spec as import('@/model').ScatterSpec | import('@/model').BubbleSpec;
   const points = spec.data.series.flatMap((s) => s.points);
+  // An x/y plot is never turned — `supportsTurn` refuses it — so it is solved
+  // in its own frame and the split below costs it nothing.
+  const innerFrame = chart.frame;
 
   if (!points.length) {
     diagnostics.push({
@@ -579,7 +701,7 @@ function compileXY(
       code: 'chart-empty',
       message: 'This chart has no data yet.',
     });
-    return [];
+    return { marks: [], innerFrame };
   }
 
   const tickStyle = {
@@ -683,7 +805,7 @@ function compileXY(
     measurer,
   });
 
-  return [...furniture, ...body];
+  return { marks: [...furniture, ...body], innerFrame };
 }
 
 export type { Rect };

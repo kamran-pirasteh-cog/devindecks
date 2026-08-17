@@ -210,11 +210,11 @@ export function DocCard({
                     setRenaming(false);
                   }
                 }}
-                className="w-full rounded border border-indigo-300 bg-white px-1 py-0.5 text-xs font-medium outline-none dark:bg-zinc-800"
+                className="w-full rounded border border-indigo-300 bg-white px-1 py-0.5 text-sm font-medium outline-none dark:bg-zinc-800"
               />
             ) : (
               <div className="flex items-center gap-1.5">
-                <span className="truncate text-xs font-medium text-zinc-800 dark:text-zinc-100">
+                <span className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">
                   {deck.title}
                 </span>
                 {tags.length ? (
@@ -222,7 +222,7 @@ export function DocCard({
                     {tags.map((t) => (
                       <span
                         key={t}
-                        className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                        className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
                       >
                         {t}
                       </span>
@@ -231,13 +231,13 @@ export function DocCard({
                 ) : null}
               </div>
             )}
-            <div className="mt-0.5 text-[10px] text-zinc-400">
+            <div className="mt-0.5 text-xs text-zinc-400">
               {deck.slides.length} slide{deck.slides.length === 1 ? '' : 's'} · Owner:{' '}
               <span className={deck.owner ? 'text-zinc-500 dark:text-zinc-300' : 'italic'}>
                 {deck.owner ?? 'Unassigned'}
               </span>
             </div>
-            <div className="mt-0.5 text-[10px] text-zinc-400">
+            <div className="mt-0.5 text-xs text-zinc-400">
               Created {timeAgo(deck.createdAt)} · Last updated {timeAgo(deck.updatedAt)}
             </div>
           </div>

@@ -218,6 +218,44 @@ export function buildRamp(seedHex: string, count: number): string[] {
   return out.slice(0, count);
 }
 
+/* ------------------------------------------------------------------ */
+/* The flow ladder                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A Sankey's ribbons are OPAQUE and they stack, so they can't be told apart by
+ * alpha the way translucent ones are — they need their own tonal ladder, wider
+ * than the categorical band at both ends. Pale is safe here in a way it isn't
+ * for a bar: a ribbon a reader can only just see is still legible as flow,
+ * because its neighbours bracket it.
+ */
+const FLOW_L_MIN = 0.45;
+const FLOW_L_MAX = 0.86;
+
+/**
+ * The seed hue at position `t` (0 = deepest, 1 = palest) of the flow ladder.
+ *
+ * Continuous rather than an n-step array: a diagram with thirty ribbons wants a
+ * smooth gradient down the stack, and one with four wants distinct steps — the
+ * caller decides by choosing `t`, and both come out of the same formula.
+ */
+export function flowTint(seedHex: string, t: number): string {
+  const seed = hexToOklch(seedHex);
+  // Cap where the ladder STARTS, not just where the seed sits: a seed already
+  // at 0.8 would leave no room to climb and every ribbon would be the same
+  // near-white.
+  const l0 = clamp(seed.l, FLOW_L_MIN, 0.62);
+  const grey = seed.c < 0.02;
+  const u = clamp(t, 0, 1);
+  return oklchToHex({
+    l: l0 + (FLOW_L_MAX - l0) * u,
+    // Chroma tapers less steeply than the categorical ramp's. A Sankey's pale
+    // end should still read as the brand hue, not as grey.
+    c: (grey ? 0.14 : seed.c) * (1 - 0.3 * u),
+    h: grey ? 264 : seed.h,
+  });
+}
+
 /**
  * A darker/lighter variant of a colour, for `paletteOverflow: 'shade'` — the
  * ninth series in a five-colour palette should be a shade of the fourth, not
