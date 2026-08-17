@@ -1,24 +1,28 @@
 'use client';
 
 /**
- * Inspector — the constrained style surface. Every control here only exposes
- * choices from the safe vocabulary (token colors, the three allowed fonts, real
- * outline widths), so the inspector itself is a guardrail: you can't dial in
- * something that breaks on export.
+ * Inspector — the constrained style surface. Every control here leads with the
+ * safe vocabulary (token colors, the three allowed fonts, real outline widths),
+ * so the inspector is a guardrail by default: you can't dial in something that
+ * breaks on export. The one door out is the custom swatch at the end of each
+ * palette, which pins a raw hex — deliberate, visible, and last in the row.
  */
 import {
   ALLOWED_FONTS,
   emuToInches,
   emuToPoints,
   inchesToEmu,
+  hex as hexRef,
   pointsToEmu,
   token,
+  type ColorRef,
   type ColorToken,
   type FontFamily,
   type Rect,
   type SlideElement,
 } from '@/model';
 import { useEditor } from '@/store/editorStore';
+import { CustomColorSwatch, customHexOf } from './color';
 
 function NumField({
   label,
@@ -62,12 +66,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Swatches({
   colors,
+  current,
   onPick,
   allowNone,
   onNone,
 }: {
   colors: ColorToken[];
-  onPick: (id: string) => void;
+  /** What's set now, so the custom swatch can show it and seed its panel. */
+  current?: ColorRef;
+  onPick: (color: ColorRef) => void;
   allowNone?: boolean;
   onNone?: () => void;
 }) {
@@ -85,12 +92,17 @@ function Swatches({
       {colors.map((c) => (
         <button
           key={c.id}
-          onClick={() => onPick(c.id)}
+          onClick={() => onPick(token(c.id))}
           title={c.name}
           className="h-6 w-6 rounded border border-black/10 ring-offset-1 hover:ring-2 hover:ring-indigo-400"
           style={{ background: c.hex }}
         />
       ))}
+      <CustomColorSwatch
+        value={customHexOf(current)}
+        active={current?.kind === 'hex'}
+        onPick={(h) => onPick(hexRef(h))}
+      />
     </div>
   );
 }
@@ -123,6 +135,14 @@ export function Inspector() {
     primary.type === 'text' || (primary.type === 'shape' && primary.body)
       ? primary.body?.paragraphs[0]?.runs[0]
       : undefined;
+  // The primary element's values, same rule the rest of the panel follows: a
+  // multi-selection reads from the first, and picking writes to all of them.
+  const currentFill =
+    (primary.type === 'text' || primary.type === 'shape') && primary.fill?.kind === 'solid'
+      ? primary.fill.color
+      : undefined;
+  const currentOutlineColor =
+    primary.type !== 'picture' && 'outline' in primary ? primary.outline?.color : undefined;
 
   const setRect = (patch: Partial<Rect>) => {
     if (!single) return;
@@ -155,7 +175,8 @@ export function Inspector() {
         <Section title="Fill">
           <Swatches
             colors={ds.colors}
-            onPick={(id) => store().setFill(selectedIds, { kind: 'solid', color: token(id) })}
+            current={currentFill}
+            onPick={(color) => store().setFill(selectedIds, { kind: 'solid', color })}
             allowNone
             onNone={() => store().setFill(selectedIds, { kind: 'none' })}
           />
@@ -165,9 +186,10 @@ export function Inspector() {
       <Section title="Outline">
         <Swatches
           colors={ds.colors}
-          onPick={(id) =>
+          current={currentOutlineColor}
+          onPick={(color) =>
             store().setOutline(selectedIds, {
-              color: token(id),
+              color,
               widthEmu: inchesToEmu(0.02),
               dash: 'solid',
             })
@@ -268,7 +290,11 @@ export function Inspector() {
 
             <div>
               <div className="mb-1.5 text-[10px] uppercase tracking-wider text-zinc-400">Text color</div>
-              <Swatches colors={ds.colors} onPick={(id) => store().patchRuns(selectedIds, { color: token(id) })} />
+              <Swatches
+                colors={ds.colors}
+                current={firstRun?.color}
+                onPick={(color) => store().patchRuns(selectedIds, { color })}
+              />
             </div>
           </div>
         </Section>

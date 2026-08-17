@@ -124,7 +124,7 @@ describe('colour resolution', () => {
   });
 
   it('snaps an exact brand hex to its token and leaves others literal', () => {
-    expect(toColorRef('#4F46E5', ds)).toEqual({ kind: 'token', token: 'brand.accent' });
+    expect(toColorRef('#2600FF', ds)).toEqual({ kind: 'token', token: 'brand.accent' });
     expect(toColorRef('#123456', ds)).toEqual({ kind: 'hex', hex: '#123456' });
   });
 });

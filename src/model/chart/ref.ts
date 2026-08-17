@@ -18,7 +18,8 @@ export type ChartRef =
       chartId: string;
       part: 'axis';
       axis: AxisId;
-      sub: 'line' | 'title' | 'tick' | 'grid' | 'unitNote';
+      // `tick` is the NUMBER; `tickMark` is the little rule beside it.
+      sub: 'line' | 'title' | 'tick' | 'tickMark' | 'grid' | 'unitNote';
       i?: number;
     }
   | { chartId: string; part: 'legend.item'; series: string }

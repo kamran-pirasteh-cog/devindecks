@@ -23,12 +23,16 @@ import {
   chartFontFromRun,
   chartElementIdsBefore,
   chartsForElements,
+  clearChartFormatting,
   detachChartFrom,
   insertChartInto,
+  recolorLegendEntry,
+  legendEntryColor,
   recompileInto,
   repairChartSelection,
   removeChartFrom,
   chartElementRects,
+  deleteChartParts,
   resizeChartFrames,
   syncChartGeometry,
   translateChartFrames,
@@ -290,6 +294,197 @@ describe('applyChartFormat', () => {
       (e) => e.chartRef?.part === 'mark' && e.chartRef.point === key,
     );
     expect(fillOf(after)).toMatchObject({ color: { kind: 'hex', hex: '#FF0000' } });
+  });
+});
+
+describe('recolorLegendEntry', () => {
+  // A bar is a shape and a pie slice is a path, and both carry a fill.
+  const fillOf = (el: SlideElement | undefined) =>
+    el && 'fill' in el ? JSON.stringify(el.fill) : '';
+
+  /** The legend key a swatch carries, which is what the panel hands the action. */
+  const legendKeys = (slide: Slide): string[] =>
+    slide.elements
+      .filter((e) => e.chartRef?.part === 'legend.item')
+      .map((e) => legendSeriesKey(e.chartRef as Extract<ChartRef, { part: 'legend.item' }>));
+
+  it('recolours the whole series a legend key stands for', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+
+    expect(
+      recolorLegendEntry(spec, 's0', { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } }),
+    ).toBe(true);
+    expect(spec.data.series[0].format?.fill).toMatchObject({
+      color: { kind: 'hex', hex: '#FF0000' },
+    });
+
+    recompileInto(slide, chart.id, DS);
+    const marks = slide.elements.filter(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.series === 's0',
+    );
+    expect(marks.length).toBeGreaterThan(1);
+    expect(marks.every((e) => fillOf(e).includes('#FF0000'))).toBe(true);
+  });
+
+  it('takes the key from the legend as compiled, swatch or text', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    for (const key of legendKeys(slide)) {
+      expect(
+        recolorLegendEntry(spec, key, { kind: 'solid', color: { kind: 'hex', hex: '#123456' } }),
+      ).toBe(true);
+    }
+  });
+
+  it('clears the per-point fills that would shadow the colour just set', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    spec.data.series[0].pointOverrides = {
+      c1: { format: { fill: { kind: 'solid', color: { kind: 'hex', hex: '#00FF00' } } } },
+    };
+
+    recolorLegendEntry(spec, 's0', { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } });
+    expect(spec.data.series[0].pointOverrides!.c1.format?.fill).toBeUndefined();
+  });
+
+  it('repaints a line with the colour, outline and all', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('line'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    spec.data.series[0].format = {
+      outline: { color: { kind: 'hex', hex: '#000000' }, widthEmu: 12700, dash: 'solid' },
+    };
+
+    recolorLegendEntry(spec, 's0', { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } });
+    // A line takes its colour from the outline: a stale one left behind would
+    // recolour the dots and leave the line black.
+    expect(spec.data.series[0].format?.outline?.color).toMatchObject({ hex: '#FF0000' });
+  });
+
+  it("gives a pie's legend entry the SLICE, since that is what it lists", () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('pie'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    const key = legendKeys(slide)[0]!;
+
+    expect(
+      recolorLegendEntry(spec, key, { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } }),
+    ).toBe(true);
+    expect(spec.data.series[0].pointOverrides?.[key]?.format?.fill).toMatchObject({
+      color: { kind: 'hex', hex: '#FF0000' },
+    });
+    // The other slices keep the palette.
+    expect(Object.keys(spec.data.series[0].pointOverrides!)).toEqual([key]);
+
+    recompileInto(slide, chart.id, DS);
+    const slice = slide.elements.find(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.point === key,
+    );
+    expect(fillOf(slice)).toContain('#FF0000');
+  });
+
+  it('clearing puts the entry back on the palette rather than writing a colour', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+
+    recolorLegendEntry(spec, 's0', { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } });
+    expect(recolorLegendEntry(spec, 's0', undefined)).toBe(true);
+    expect(spec.data.series[0].format?.fill).toBeUndefined();
+    expect(legendEntryColor(spec, 's0')).toEqual({ fill: undefined });
+  });
+
+  it('says no to a key that addresses nothing, so it costs no undo step', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(recolorLegendEntry(spec, 'nope', { kind: 'none' })).toBe(false);
+    expect(legendEntryColor(spec, 'nope')).toBeNull();
+  });
+});
+
+describe('clearChartFormatting', () => {
+  it('drops hand-applied colour and type, and says it did', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+
+    const ids = slide.elements
+      .filter((e) => e.chartRef?.part === 'mark' && e.chartRef.series === 's0')
+      .map((e) => e.id);
+    applyChartFormat(slide, ids, { fill: { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } } });
+    spec.titleFont = { sizePt: 30 };
+    spec.legend.font = { bold: true };
+    spec.axes.y.font = { sizePt: 6 };
+    spec.palette = [{ kind: 'hex', hex: '#123456' }];
+    spec.data.series[1]!.pointOverrides = {
+      c1: { format: { fill: { kind: 'solid', color: { kind: 'hex', hex: '#00FF00' } } } },
+    };
+
+    expect(clearChartFormatting(spec)).toBe(true);
+    expect(spec.data.series[0]!.format).toBeUndefined();
+    expect(spec.titleFont).toBeUndefined();
+    expect(spec.legend.font).toBeUndefined();
+    expect(spec.axes.y.font).toBeUndefined();
+    expect(spec.palette).toBeUndefined();
+    // The override carried nothing but the colour, so the entry goes too.
+    expect(spec.data.series[1]!.pointOverrides).toBeUndefined();
+
+    // And the chart draws again — at the brand's colours, not the red.
+    recompileInto(slide, chart.id, DS);
+    const marks = slide.elements.filter(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.series === 's0',
+    );
+    expect(marks.length).toBeGreaterThan(0);
+    for (const m of marks) {
+      const fill = isShape(m) ? (m as ShapeElement).fill : undefined;
+      expect(JSON.stringify(fill)).not.toContain('FF0000');
+    }
+  });
+
+  it('keeps the data and the choices that are not formatting', () => {
+    const spec = defaultChartSpec('column', 'stacked') as ColumnBarSpec;
+    const before = JSON.parse(
+      JSON.stringify({
+        categories: spec.data.categories,
+        values: spec.data.series.map((s) => s.values),
+      }),
+    );
+    spec.decorations.labels.show = true;
+    spec.decorations.labels.placement = 'insideEnd';
+    spec.decorations.labels.font = { sizePt: 14 };
+    spec.axes.y.max = 500;
+    spec.data.series[0]!.pointOverrides = { c1: { hidden: true, labelOffset: { dx: 9, dy: 9 } } };
+
+    clearChartFormatting(spec);
+
+    expect({
+      categories: spec.data.categories,
+      values: spec.data.series.map((s) => s.values),
+    }).toEqual(before);
+    expect(spec.decorations.labels.show).toBe(true);
+    expect(spec.decorations.labels.placement).toBe('insideEnd');
+    expect(spec.decorations.labels.font).toBeUndefined();
+    expect(spec.axes.y.max).toBe(500);
+    expect(spec.stack).toBe('stacked');
+    // A hidden point is a content decision; only the nudge was formatting.
+    expect(spec.data.series[0]!.pointOverrides!.c1).toEqual({ hidden: true });
+  });
+
+  it('reports no change for a chart nobody restyled, so it costs no undo step', () => {
+    expect(clearChartFormatting(defaultChartSpec('column'))).toBe(false);
+    expect(clearChartFormatting(defaultChartSpec('waterfall'))).toBe(false);
+  });
+
+  it('resets a waterfall bar, whose format lives on the item', () => {
+    const spec = defaultChartSpec('waterfall') as WaterfallSpec;
+    spec.data.items[0]!.format = { fill: { kind: 'solid', color: { kind: 'hex', hex: '#FF0000' } } };
+    expect(clearChartFormatting(spec)).toBe(true);
+    expect(spec.data.items[0]!.format).toBeUndefined();
   });
 });
 
@@ -632,5 +827,182 @@ describe('chartFontFromRun', () => {
   it('keeps what a chart can store and drops what it cannot', () => {
     expect(chartFontFromRun({ sizePt: 14, bold: true })).toEqual({ sizePt: 14, bold: true });
     expect(chartFontFromRun({ italic: true, underline: true })).toBeNull();
+  });
+});
+
+describe('deleteChartParts', () => {
+  const partIds = (slide: Slide, pred: (r: ChartRef) => boolean) =>
+    slide.elements.filter((e) => e.chartRef && pred(e.chartRef)).map((e) => e.id);
+
+  const columnChart = (patch: (s: ColumnBarSpec) => void = () => {}) => {
+    const slide = emptySlide();
+    const spec = defaultChartSpec('column', 'clustered') as ColumnBarSpec;
+    spec.title = 'Revenue';
+    spec.legend.show = true;
+    spec.decorations.labels.show = true;
+    patch(spec);
+    const chart = insertChartInto(slide, spec, FRAME, DS);
+    return { slide, chart, spec: slide.charts![0].spec as ColumnBarSpec };
+  };
+
+  it('hides the legend instead of deleting the chart', () => {
+    const { slide, chart } = columnChart();
+    const ids = partIds(slide, (r) => r.part === 'legend.box' || r.part === 'legend.item');
+    expect(ids.length).toBeGreaterThan(0);
+
+    const { handled, removed } = deleteChartParts(slide, ids, DS);
+    expect(removed).toEqual([]);
+    expect(handled.size).toBe(ids.length);
+    expect(slide.charts).toHaveLength(1);
+    expect((slide.charts![0].spec as ColumnBarSpec).legend.show).toBe(false);
+    expect(partIds(slide, (r) => r.part.startsWith('legend'))).toEqual([]);
+
+    // And it stays gone, which an element-level delete could not promise.
+    recompileInto(slide, chart.id, DS);
+    expect(partIds(slide, (r) => r.part.startsWith('legend'))).toEqual([]);
+  });
+
+  it('clears the title', () => {
+    const { slide } = columnChart();
+    const ids = partIds(slide, (r) => r.part === 'title');
+    deleteChartParts(slide, ids, DS);
+    expect((slide.charts![0].spec as ColumnBarSpec).title).toBeUndefined();
+    expect(partIds(slide, (r) => r.part === 'title')).toEqual([]);
+  });
+
+  it('switches off one data label as a point override, leaving the rest', () => {
+    const { slide } = columnChart();
+    const one = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0' && e.chartRef.point === 'c1',
+    )!;
+
+    deleteChartParts(slide, [one.id], DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].pointOverrides!.c1.label!.show).toBe(false);
+    expect(spec.data.series[0].labels?.show).not.toBe(false);
+    expect(
+      partIds(slide, (r) => r.part === 'label' && r.series === 's0' && r.point === 'c1'),
+    ).toEqual([]);
+    expect(partIds(slide, (r) => r.part === 'label' && r.series === 's0').length).toBeGreaterThan(0);
+  });
+
+  it("writes to the series when every one of its labels is selected", () => {
+    const { slide } = columnChart();
+    const ids = partIds(slide, (r) => r.part === 'label' && r.series === 's0');
+    deleteChartParts(slide, ids, DS);
+
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].labels?.show).toBe(false);
+    expect(spec.data.series[0].pointOverrides).toBeUndefined();
+    expect(partIds(slide, (r) => r.part === 'label' && r.series === 's0')).toEqual([]);
+    // The other series still has its numbers.
+    expect(partIds(slide, (r) => r.part === 'label' && r.series === 's1').length).toBeGreaterThan(0);
+  });
+
+  it('hides an axis, and its gridlines separately', () => {
+    const { slide } = columnChart((s) => {
+      s.decorations.gridlines.major = { show: true };
+    });
+    const tick = slide.elements.find(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'y' && e.chartRef.sub === 'tick',
+    )!;
+    deleteChartParts(slide, [tick.id], DS);
+    expect((slide.charts![0].spec as ColumnBarSpec).axes.y.show).toBe(false);
+
+    const grid = slide.elements.find(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'grid',
+    );
+    if (grid) {
+      deleteChartParts(slide, [grid.id], DS);
+      expect(
+        (slide.charts![0].spec as ColumnBarSpec).decorations.gridlines.major?.show,
+      ).toBe(false);
+    }
+  });
+
+  it('hides one bar as a point override', () => {
+    const { slide } = columnChart();
+    const bar = slide.elements.find(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.series === 's0' && e.chartRef.point === 'c1',
+    )!;
+    deleteChartParts(slide, [bar.id], DS);
+
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].pointOverrides!.c1.hidden).toBe(true);
+    expect(
+      partIds(slide, (r) => r.part === 'mark' && r.series === 's0' && r.point === 'c1'),
+    ).toEqual([]);
+    expect(slide.charts).toHaveLength(1);
+  });
+
+  it('takes the legend key with a series whose every mark is deleted', () => {
+    const { slide } = columnChart();
+    const ids = partIds(slide, (r) => r.part === 'mark' && r.series === 's0');
+    deleteChartParts(slide, ids, DS);
+
+    expect(partIds(slide, (r) => r.part === 'mark' && r.series === 's0')).toEqual([]);
+    const keys = slide.elements.filter(
+      (e) => e.chartRef?.part === 'legend.item' && legendSeriesKey(e.chartRef) === 's0',
+    );
+    expect(keys).toEqual([]);
+    // The other series keeps its key.
+    expect(
+      slide.elements.some(
+        (e) => e.chartRef?.part === 'legend.item' && legendSeriesKey(e.chartRef) === 's1',
+      ),
+    ).toBe(true);
+  });
+
+  it('deletes a line whose mark is one path for the whole series', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('line'), FRAME, DS);
+    const line = slide.elements.find(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.series === 's0' && e.chartRef.point === 'line',
+    )!;
+
+    deleteChartParts(slide, [line.id], DS);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    // Expanded to the real points — 'line' is an id, not a datum.
+    expect(spec.data.series[0].pointOverrides?.line).toBeUndefined();
+    expect(Object.values(spec.data.series[0].pointOverrides!).every((o) => o.hidden)).toBe(true);
+    expect(partIds(slide, (r) => r.part === 'mark' && r.series === 's0')).toEqual([]);
+    expect(slide.charts!.find((c) => c.id === chart.id)).toBeDefined();
+  });
+
+  it('deletes the whole chart when the whole chart is selected', () => {
+    const { slide, chart } = columnChart();
+    const ids = slide.elements.filter((e) => e.chartRef?.chartId === chart.id).map((e) => e.id);
+
+    const { removed } = deleteChartParts(slide, ids, DS);
+    expect(removed).toEqual([chart.id]);
+    expect(slide.charts).toHaveLength(0);
+    expect(slide.elements.some((e) => e.chartRef?.chartId === chart.id)).toBe(false);
+  });
+
+  it('deletes the chart when the plot backdrop is selected — the plot IS the chart', () => {
+    const { slide, chart } = columnChart();
+    const plot = slide.elements.find((e) => e.chartRef?.part === 'plot')!;
+    const { removed } = deleteChartParts(slide, [plot.id], DS);
+    expect(removed).toEqual([chart.id]);
+    expect(slide.charts).toHaveLength(0);
+  });
+
+  it('leaves a part with no spec switch alone rather than eating the chart', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('waterfall'), FRAME, DS);
+    const bar = slide.elements.find((e) => e.chartRef?.part === 'mark')!;
+
+    const { handled, removed } = deleteChartParts(slide, [bar.id], DS);
+    expect(removed).toEqual([]);
+    expect(handled.size).toBe(0);
+    expect(slide.charts).toHaveLength(1);
+    expect(slide.elements.find((e) => e.id === bar.id)).toBeDefined();
+  });
+
+  it('ignores a selection with no chart in it', () => {
+    const slide = emptySlide();
+    const { handled, removed } = deleteChartParts(slide, ['title-1'], DS);
+    expect(handled.size).toBe(0);
+    expect(removed).toEqual([]);
   });
 });

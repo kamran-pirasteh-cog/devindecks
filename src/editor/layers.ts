@@ -15,3 +15,10 @@ export const OVERLAY_Z = MOVEABLE_Z + 1000;
 
 /** Full-screen dialogs, which must also cover the overlays. */
 export const MODAL_Z = MOVEABLE_Z + 2000;
+
+/**
+ * The custom-colour panel — the topmost thing in the editor, because it opens
+ * from INSIDE all of the above: a toolbar popover, a canvas panel, and the chart
+ * data dialog all have a palette with a custom swatch on the end of it.
+ */
+export const COLOR_PANEL_Z = MODAL_Z + 100;

@@ -46,6 +46,8 @@ export function placeXY(input: XYInput): Mark[] {
 
     for (const p of s.points) {
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+      const override = s.pointOverrides?.[p.key];
+      if (override?.hidden) continue;
 
       let diameter = s.format?.marker?.sizeEmu ?? DEFAULT_MARKER;
       if (spec.kind === 'bubble') {

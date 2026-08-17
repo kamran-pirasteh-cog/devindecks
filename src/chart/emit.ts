@@ -34,6 +34,8 @@ function roleFor(mark: Mark): string {
       switch (mark.ref.sub) {
         case 'grid':
           return 'chart.gridline';
+        case 'tickMark':
+          return 'chart.axis';
         case 'line':
           return 'chart.axis';
         case 'title':

@@ -36,7 +36,7 @@ function rank(ref: ChartRef): number {
     case 'axis':
       // The text of an axis is aimed at; its line and gridlines are furniture
       // that happens to lie across everything else.
-      return ref.sub === 'line' || ref.sub === 'grid' ? 3 : 0;
+      return ref.sub === 'line' || ref.sub === 'grid' || ref.sub === 'tickMark' ? 3 : 0;
     case 'plot':
     case 'legend.box':
       return 4;
@@ -87,6 +87,75 @@ const contains = (r: HitTarget['rect'], x: number, y: number, pad: number) =>
   x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad;
 
 /**
+ * An axis is a BAND, not the handful of numbers printed along it.
+ *
+ * A value axis is usually drawn as nothing but its tick labels — a column of
+ * boxes a tenth of an inch tall with an inch of blank gutter between them, and
+ * often no axis rule at all (`showValueAxisLine` is off by default). Testing the
+ * point against those boxes alone means the only way to reach the axis is to
+ * land on a digit: aim at the gutter between "200" and "300", which is where the
+ * axis visibly IS, and the click finds nothing. Every other app lets you click
+ * anywhere down the axis, so the parts are unioned back into the strip a reader
+ * would point at.
+ *
+ * Only the axis proper — its numbers, its tick marks and its rule. Gridlines
+ * span the plot, and the axis title and unit note are full-width rows above or
+ * beside it; unioning either in would stretch the band across the whole chart
+ * and swallow clicks meant for the plot.
+ */
+function axisBands(elements: SlideElement[]): { rect: HitTarget['rect']; refs: HitTarget[] }[] {
+  const byAxis = new Map<string, HitTarget[]>();
+  for (const el of elements) {
+    const ref = el.chartRef;
+    if (!ref || ref.part !== 'axis') continue;
+    if (ref.sub !== 'tick' && ref.sub !== 'tickMark' && ref.sub !== 'line') continue;
+    const list = byAxis.get(ref.axis) ?? [];
+    list.push({ ref, rect: visualRect(el) });
+    byAxis.set(ref.axis, list);
+  }
+  return [...byAxis.values()].map((refs) => {
+    const x0 = Math.min(...refs.map((r) => r.rect.x));
+    const y0 = Math.min(...refs.map((r) => r.rect.y));
+    const x1 = Math.max(...refs.map((r) => r.rect.x + r.rect.w));
+    const y1 = Math.max(...refs.map((r) => r.rect.y + r.rect.h));
+    return { rect: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, refs };
+  });
+}
+
+/**
+ * The band the axis a part belongs to occupies, for framing it on the canvas.
+ *
+ * A hover or selection ring drawn on one tick's own box is a ring around three
+ * digits, which reads as "this number" when what is selected — and what the
+ * panel edits — is the whole axis. Null for anything that isn't part of an axis
+ * proper, which keeps every other part framed by its own rect.
+ */
+export function axisBandFor(
+  elements: SlideElement[],
+  ref: ChartRef,
+): HitTarget['rect'] | null {
+  if (ref.part !== 'axis') return null;
+  // The axis title and the unit note are their own boxes somewhere off the
+  // axis — framing them as the axis would put the ring nowhere near them.
+  if (ref.sub !== 'tick' && ref.sub !== 'tickMark' && ref.sub !== 'line') return null;
+  const band = axisBands(elements).find((b) =>
+    b.refs.some((t) => t.ref.part === 'axis' && t.ref.axis === ref.axis),
+  );
+  return band?.rect ?? null;
+}
+
+/** Of an axis's own parts, the one nearest the point — what the click means. */
+function nearestIn(refs: HitTarget[], x: number, y: number): ChartRef {
+  const dist = (t: HitTarget) =>
+    Math.hypot(t.rect.x + t.rect.w / 2 - x, t.rect.y + t.rect.h / 2 - y);
+  // Ties and near-ties go to a tick: the numbers are what an axis click is
+  // about, and the popover it opens is the same for every sub-part anyway.
+  const ticks = refs.filter((t) => t.ref.part === 'axis' && t.ref.sub === 'tick');
+  const pool = ticks.length ? ticks : refs;
+  return pool.reduce((best, t) => (dist(t) < dist(best) ? t : best)).ref;
+}
+
+/**
  * The part at (x, y), in the same EMU space as the elements' rects.
  *
  * `pad` widens every candidate — a tick label is a few hundredths of an inch
@@ -121,6 +190,15 @@ export function hitTestChart(
     ) {
       best = { ref: el.chartRef, rect };
     }
+  }
+
+  // The axis band is consulted only when nothing more specific answered, so a
+  // click on a bar standing in front of the axis is still a click on the bar,
+  // and only the furniture — the plot backdrop, a gridline, the axis rule —
+  // gives way to it.
+  if (!best || rank(best.ref) >= 3) {
+    const band = axisBands(elements).find((b) => contains(b.rect, x, y, pad));
+    if (band) return nearestIn(band.refs, x, y);
   }
 
   return best?.ref ?? null;

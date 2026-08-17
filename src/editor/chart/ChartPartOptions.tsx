@@ -32,6 +32,7 @@ import {
   convertData,
   chartOrientation,
   emuToPoints,
+  hex as hexRef,
   isGridSpec,
   isXYSpec,
   legendSeriesKey,
@@ -45,6 +46,7 @@ import {
   type ChartKind,
   type ChartRef,
   type ChartSpec,
+  type ColorRef,
   type DashStyle,
   type DesignSystem,
   type GridSeries,
@@ -57,7 +59,9 @@ import {
   type XYSeries,
 } from '@/model';
 import { SUPPORTED_KINDS } from '@/chart/compile';
+import { legendEntryColor, recolorLegendEntry } from '@/store/chartActions';
 import { emphasisSeriesKey } from '@/chart/place/lineArea';
+import { CustomColorSwatch, customHexOf } from '../color';
 import { describePart } from './previewHitTest';
 
 /** Mutate the spec in place. The owner turns that into whatever a write means. */
@@ -232,24 +236,33 @@ function Swatches({
   onPick,
 }: {
   ds: DesignSystem;
-  current?: string;
-  onPick: (tokenId: string) => void;
+  /** What's set now — a token id, a hex, or nothing (following the brand). */
+  current?: ColorRef;
+  onPick: (color: ColorRef) => void;
 }) {
+  const currentToken = current?.kind === 'token' ? current.token : undefined;
   return (
     <span className="flex items-center gap-1">
       {ds.colors.slice(0, 7).map((c) => (
         <button
           key={c.id}
           type="button"
-          onClick={() => onPick(c.id)}
+          onClick={() => onPick(token(c.id))}
           title={c.name}
           aria-label={c.name}
           className={`h-4 w-4 rounded-full ring-1 ${
-            current === c.id ? 'ring-2 ring-indigo-500' : 'ring-black/15'
+            currentToken === c.id ? 'ring-2 ring-indigo-500' : 'ring-black/15'
           }`}
           style={{ background: c.hex }}
         />
       ))}
+      <CustomColorSwatch
+        value={customHexOf(current)}
+        active={current?.kind === 'hex'}
+        onPick={(h) => onPick(hexRef(h))}
+        size="h-4 w-4"
+        shape="rounded-full"
+      />
     </span>
   );
 }
@@ -328,7 +341,11 @@ export function ChartPartOptions({
       case 'axis': {
         const axis = part.axis;
         const ax = spec.axes[axis];
-        const value = axis === 'y';
+        // The axis that carries NUMBERS — the value axis, or a scatter's
+        // continuous x — is the one with a range and a step to set. A banded
+        // category axis has a list of names instead of a domain.
+        const value =
+          axis !== 'x' || spec.kind === 'scatter' || spec.kind === 'bubble';
         return (
           <>
             <Group label="Show">
@@ -408,6 +425,20 @@ export function ChartPartOptions({
               </>
             ) : null}
 
+            <Group label="Tick marks">
+              <select
+                value={ax?.tickMarks ?? 'none'}
+                onChange={(e) =>
+                  setAxis(axis, (a) => (a.tickMarks = e.target.value as typeof a.tickMarks))
+                }
+                className={`${FIELD} w-20`}
+              >
+                <option value="none">None</option>
+                <option value="out">Outside</option>
+                <option value="in">Inside</option>
+              </select>
+            </Group>
+
             <Group label="Type size">
               <AutoNumber
                 value={ax?.font?.sizePt}
@@ -433,16 +464,14 @@ export function ChartPartOptions({
             <Swatches
               ds={ds}
               current={
-                series.format?.fill?.kind === 'solid' && series.format.fill.color.kind === 'token'
-                  ? series.format.fill.color.token
-                  : undefined
+                series.format?.fill?.kind === 'solid' ? series.format.fill.color : undefined
               }
-              onPick={(id) =>
+              onPick={(color) =>
                 setSeriesFormat((f) => {
-                  f.fill = { kind: 'solid', color: token(id) };
+                  f.fill = { kind: 'solid', color };
                   // A line takes its colour from the outline; leaving the old
                   // one set would repaint the dots and leave the line grey.
-                  if (f.outline) f.outline = { ...f.outline, color: token(id) };
+                  if (f.outline) f.outline = { ...f.outline, color };
                 })
               }
             />
@@ -720,9 +749,26 @@ export function ChartPartOptions({
 
       /* --- legend --- */
       case 'legend.item':
-      case 'legend.box':
+      case 'legend.box': {
+        // A legend key stands for its whole series (a slice, in a pie's legend),
+        // so the swatch recolours all of it — `recolorLegendEntry` finds the node
+        // that owns the colour and clears the per-point fills that would shadow
+        // it. `null` where the key addresses nothing writable.
+        const legendKey = part.part === 'legend.item' ? legendSeriesKey(part) : null;
+        const legendColor = legendKey ? legendEntryColor(spec, legendKey) : null;
         return (
           <>
+            {legendKey && legendColor ? (
+              <Group label="Color">
+                <Swatches
+                  ds={ds}
+                  current={legendColor.fill?.kind === 'solid' ? legendColor.fill.color : undefined}
+                  onPick={(color) =>
+                    patch((s) => recolorLegendEntry(s, legendKey, { kind: 'solid', color }))
+                  }
+                />
+              </Group>
+            ) : null}
             <Group label="Legend">
               <Toggle
                 on={spec.legend.show}
@@ -743,6 +789,10 @@ export function ChartPartOptions({
                 <option value="right">Right</option>
                 <option value="bottom">Bottom</option>
                 <option value="left">Left</option>
+                {/* Inside the plot, level with the top of the y axis: costs the
+                    data no gutter, which is why it's worth its own entry. */}
+                <option value="insideTopLeft">Inside top left</option>
+                <option value="insideTopRight">Inside top right</option>
               </select>
             </Group>
             {series ? (
@@ -756,6 +806,7 @@ export function ChartPartOptions({
             ) : null}
           </>
         );
+      }
 
       /* --- the chart's title --- */
       case 'title':

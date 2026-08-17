@@ -205,7 +205,7 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
     buildSpec: () => {
       const spec = defaultChartSpec('area', 'stacked100');
       spec.title = 'Revenue mix';
-      spec.palette = [token('brand.accent'), token('brand.primary'), token('ink.muted')];
+      spec.palette = [token('brand.accent'), token('ink.strong'), token('ink.muted')];
       return spec;
     },
   },

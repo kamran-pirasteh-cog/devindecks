@@ -255,6 +255,8 @@ export function ChartStyleSection({
                 <option value="right">Right</option>
                 <option value="bottom">Bottom</option>
                 <option value="left">Left</option>
+                <option value="insideTopLeft">Inside top left</option>
+                <option value="insideTopRight">Inside top right</option>
               </select>
             </Row>
             <Row label="Data labels">

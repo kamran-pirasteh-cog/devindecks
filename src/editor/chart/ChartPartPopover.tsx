@@ -30,6 +30,7 @@
 import {
   emuToPoints,
   FONTS,
+  hex as hexRef,
   isGridSpec,
   legendSeriesKey,
   pointsToEmu,
@@ -46,11 +47,14 @@ import {
   type LabelFont,
   type LabelPlacement,
   type LabelSpec,
+  type LegendPosition,
   type MarkerShape,
   type Outline,
   type Slide,
 } from '@/model';
+import { legendEntryColor, recolorLegendEntry } from '@/store/chartActions';
 import { useEditor } from '@/store/editorStore';
+import { CustomColorSwatch, customHexOf } from '../color';
 import { MOVEABLE_Z } from '../layers';
 import { seriesRender } from './ChartPartOptions';
 
@@ -112,18 +116,58 @@ const WEIGHTS = [0.75, 1, 1.5, 2, 3, 4];
  * Pressing the active one clears the override rather than doing nothing, so a
  * face set by accident goes back to the brand's without a trip to the menu.
  */
-const FACES: { value: FontFamily; glyph: string; css: string }[] = [
-  { value: 'Geist', glyph: 'Aa', css: FONTS.Geist.cssStack },
-  { value: 'Source Serif 4', glyph: 'Aa', css: FONTS['Source Serif 4'].cssStack },
-  { value: 'Geist Mono', glyph: 'Aa', css: FONTS['Geist Mono'].cssStack },
+const FACES: { value: FontFamily; label: string; css: string }[] = [
+  { value: 'Geist', label: 'Sans', css: FONTS.Geist.cssStack },
+  { value: 'Source Serif 4', label: 'Serif', css: FONTS['Source Serif 4'].cssStack },
+  { value: 'Geist Mono', label: 'Mono', css: FONTS['Geist Mono'].cssStack },
 ];
 
-const SIDES: { value: 'top' | 'right' | 'bottom' | 'left'; glyph: string }[] = [
-  { value: 'top', glyph: '↑' },
-  { value: 'right', glyph: '→' },
-  { value: 'bottom', glyph: '↓' },
-  { value: 'left', glyph: '←' },
+/**
+ * The legend's six parking spots. The arrows are the four gutters; the corner
+ * glyphs are the two that float over the plot instead of taking one.
+ */
+const SIDES: { value: LegendPosition; glyph: string; title: string }[] = [
+  { value: 'top', glyph: '↑', title: 'Legend above the chart' },
+  { value: 'right', glyph: '→', title: 'Legend to the right' },
+  { value: 'bottom', glyph: '↓', title: 'Legend below the chart' },
+  { value: 'left', glyph: '←', title: 'Legend to the left' },
+  { value: 'insideTopLeft', glyph: '◤', title: 'Inside the chart, top left' },
+  { value: 'insideTopRight', glyph: '◥', title: 'Inside the chart, top right' },
 ];
+
+const TICK_MARKS: { value: 'none' | 'out' | 'in'; label: string; title: string }[] = [
+  { value: 'none', label: 'None', title: 'No tick marks' },
+  { value: 'out', label: 'Out', title: 'Tick marks outside the plot' },
+  { value: 'in', label: 'In', title: 'Tick marks inside the plot' },
+];
+
+/**
+ * A number that may be blank, and blank means AUTO rather than zero.
+ *
+ * An axis bound left empty is fitted to the data, so clearing the field has to
+ * write `undefined` — writing 0 would pin the axis to zero and look like the
+ * chart had ignored the edit.
+ */
+function AxisNumber({
+  value,
+  onChange,
+  title,
+}: {
+  value: number | undefined;
+  onChange: (v: number | undefined) => void;
+  title?: string;
+}) {
+  return (
+    <input
+      type="number"
+      value={value ?? ''}
+      placeholder="auto"
+      title={title}
+      onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
+      className={`${FIELD} text-right`}
+    />
+  );
+}
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -180,29 +224,37 @@ function Swatches({
   size = 'h-5 w-5',
 }: {
   ds: DesignSystem;
-  current?: string;
-  onPick: (tokenId: string) => void;
+  /** What's set now — a token, a hex, or nothing (following the brand). */
+  current?: ColorRef;
+  onPick: (color: ColorRef) => void;
   onClear?: () => void;
   size?: string;
 }) {
+  const currentToken = tokenOf(current);
   return (
     <div className="flex flex-wrap items-center gap-1">
       {ds.colors.map((c) => (
         <button
           key={c.id}
           type="button"
-          onClick={() => onPick(c.id)}
+          onClick={() => onPick(token(c.id))}
           title={c.name}
           aria-label={c.name}
-          aria-pressed={current === c.id}
+          aria-pressed={currentToken === c.id}
           className={`${size} rounded ${
-            current === c.id
+            currentToken === c.id
               ? 'ring-2 ring-indigo-500 ring-offset-1 dark:ring-offset-zinc-900'
               : 'ring-1 ring-black/10 dark:ring-zinc-600'
           }`}
           style={{ background: c.hex }}
         />
       ))}
+      <CustomColorSwatch
+        value={customHexOf(current)}
+        active={current?.kind === 'hex'}
+        onPick={(h) => onPick(hexRef(h))}
+        size={size}
+      />
       {onClear ? (
         <button
           type="button"
@@ -267,7 +319,7 @@ function TextRows({
           <span className="font-bold">B</span>
         </MiniButton>
       </Row>
-      <Row label="Face">
+      <Row label="Font">
         {FACES.map((f) => (
           <MiniButton
             key={f.value}
@@ -275,7 +327,7 @@ function TextRows({
             title={f.value}
             onClick={() => onPatch({ font: font?.font === f.value ? undefined : f.value })}
           >
-            <span style={{ fontFamily: f.css }}>{f.glyph}</span>
+            <span style={{ fontFamily: f.css }}>{f.label}</span>
           </MiniButton>
         ))}
       </Row>
@@ -283,8 +335,8 @@ function TextRows({
         <Swatches
           ds={ds}
           size="h-4 w-4"
-          current={tokenOf(font?.color)}
-          onPick={(id) => onPatch({ color: token(id) })}
+          current={font?.color}
+          onPick={(color) => onPatch({ color })}
           onClear={() => onPatch({ color: undefined })}
         />
       </Row>
@@ -482,8 +534,44 @@ export function ChartPartPopover({
     (r): r is Extract<ChartRef, { part: 'legend.item' | 'legend.box' }> =>
       r.part === 'legend.item' || r.part === 'legend.box',
   );
+  /**
+   * The series (or, in a pie's legend, the slice) the legend entry stands for,
+   * and the colour it is drawn in — the swatch IS the series, so clicking it is
+   * how you recolour all of it at once.
+   */
+  const legendKey =
+    legendRef?.part === 'legend.item' ? legendSeriesKey(legendRef) : null;
+  const legendColor = legendKey ? legendEntryColor(spec, legendKey) : null;
+
+  const setLegendColor = (color: ColorRef | null) => {
+    if (!legendKey) return;
+    store().patchChart(chart.id, (d) => {
+      recolorLegendEntry(d, legendKey, color === null ? undefined : { kind: 'solid', color });
+    });
+  };
+
   const totalRef = refs.find((r): r is Extract<ChartRef, { part: 'total' }> => r.part === 'total');
   const titleRef = refs.find((r): r is Extract<ChartRef, { part: 'title' }> => r.part === 'title');
+
+  /**
+   * Which axis carries numbers, and so has a range and a step to set.
+   *
+   * The value axis always does. The x axis does only where it's continuous —
+   * a scatter's — because a banded category axis has a list of names, not a
+   * domain: "from 1000 to 2000, every 250" means nothing to FY23, FY24, FY25.
+   */
+  const numericAxis =
+    !!axisRef &&
+    (axisRef.axis !== 'x' || spec.kind === 'scatter' || spec.kind === 'bubble');
+
+  /** Edit the axis the popover is open on. */
+  const patchAxis = (mutate: (a: NonNullable<ChartSpec['axes']['y']>) => void) => {
+    if (!axisRef) return;
+    store().patchChart(chart.id, (d) => {
+      const ax = d.axes[axisRef.axis];
+      if (ax) mutate(ax);
+    });
+  };
 
   /** Merge a font patch onto whatever the node already had. */
   const withFont = (cur: LabelFont | undefined, patch: Partial<LabelFont>): LabelFont => ({
@@ -502,6 +590,14 @@ export function ChartPartPopover({
     const first = pointKeys[0];
     const perPoint = first ? series?.pointOverrides?.[first]?.format?.outline : undefined;
     return perPoint ?? series?.format?.outline;
+  })();
+
+  /** The fill in force on the mark, read the same point-first way. */
+  const markFill: ColorRef | undefined = (() => {
+    const first = pointKeys[0];
+    const perPoint = first ? series?.pointOverrides?.[first]?.format?.fill : undefined;
+    const fill = perPoint ?? series?.format?.fill;
+    return fill?.kind === 'solid' ? fill.color : undefined;
   })();
 
   const setOutline = (patch: Partial<Outline> | null) => {
@@ -577,16 +673,16 @@ export function ChartPartPopover({
           <Row label="Color">
             <Swatches
               ds={ds}
-              current={tokenOf(
+              current={
                 series?.format?.outline?.color ??
-                  (series?.format?.fill?.kind === 'solid' ? series.format.fill.color : undefined),
-              )}
-              onPick={(id) =>
+                (series?.format?.fill?.kind === 'solid' ? series.format.fill.color : undefined)
+              }
+              onPick={(color) =>
                 patchSeriesFormat((f) => {
-                  f.fill = { kind: 'solid', color: token(id) };
+                  f.fill = { kind: 'solid', color };
                   // A line takes its colour from the outline; leaving the old
                   // one set would repaint the dots and leave the line grey.
-                  f.outline = { ...f.outline, color: token(id) } as Outline;
+                  f.outline = { ...f.outline, color } as Outline;
                 })
               }
             />
@@ -655,15 +751,16 @@ export function ChartPartPopover({
           <Row label="Fill">
             <Swatches
               ds={ds}
-              onPick={(id) => store().setFill(selectedIds, { kind: 'solid', color: token(id) })}
+              current={markFill}
+              onPick={(color) => store().setFill(selectedIds, { kind: 'solid', color })}
             />
           </Row>
           <Row label="Border">
             <Swatches
               ds={ds}
               size="h-4 w-4"
-              current={tokenOf(currentOutline?.color)}
-              onPick={(id) => setOutline({ color: token(id) })}
+              current={currentOutline?.color}
+              onPick={(color) => setOutline({ color })}
               onClear={() => setOutline(null)}
             />
           </Row>
@@ -782,6 +879,45 @@ export function ChartPartPopover({
               Grid
             </MiniButton>
           </Row>
+          {/* --- how far the axis runs, and how often it counts ---
+                  Only the axis that carries NUMBERS gets these: a banded
+                  category axis has no domain to bound and no step to set. */}
+          {numericAxis ? (
+            <>
+              <Row label="Range">
+                <AxisNumber
+                  value={spec.axes[axisRef.axis]?.min}
+                  title="Where the axis starts. Blank fits the data."
+                  onChange={(v) => patchAxis((a) => (a.min = v))}
+                />
+                <span className="shrink-0 text-[10px] text-zinc-400">to</span>
+                <AxisNumber
+                  value={spec.axes[axisRef.axis]?.max}
+                  title="Where the axis ends. Blank fits the data."
+                  onChange={(v) => patchAxis((a) => (a.max = v))}
+                />
+              </Row>
+              <Row label="Step">
+                <AxisNumber
+                  value={spec.axes[axisRef.axis]?.tickStep}
+                  title="Distance between ticks. Blank picks a round number that fits."
+                  onChange={(v) => patchAxis((a) => (a.tickStep = v))}
+                />
+              </Row>
+            </>
+          ) : null}
+          <Row label="Ticks">
+            {TICK_MARKS.map((t) => (
+              <MiniButton
+                key={t.value}
+                active={(spec.axes[axisRef.axis]?.tickMarks ?? 'none') === t.value}
+                title={t.title}
+                onClick={() => patchAxis((a) => (a.tickMarks = t.value))}
+              >
+                {t.label}
+              </MiniButton>
+            ))}
+          </Row>
           <TextRows
             ds={ds}
             font={spec.axes[axisRef.axis]?.font}
@@ -858,6 +994,18 @@ export function ChartPartPopover({
               and "put it on the right" shouldn't need aim. --- */}
       {legendRef && !markRefs.length ? (
         <>
+          {/* The swatch means the series, so this is the whole series' colour —
+              first in the panel because it is why anyone clicks a legend key. */}
+          {legendColor ? (
+            <Row label="Color">
+              <Swatches
+                ds={ds}
+                current={legendColor.fill?.kind === 'solid' ? legendColor.fill.color : undefined}
+                onPick={(color) => setLegendColor(color)}
+                onClear={() => setLegendColor(null)}
+              />
+            </Row>
+          ) : null}
           <Row label="Legend">
             <MiniButton
               active={spec.legend.show}
@@ -869,7 +1017,7 @@ export function ChartPartPopover({
               <MiniButton
                 key={s.value}
                 active={spec.legend.position === s.value}
-                title={`Legend on the ${s.value}`}
+                title={s.title}
                 onClick={() => store().patchChart(chart.id, (d) => (d.legend.position = s.value))}
               >
                 {s.glyph}

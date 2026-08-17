@@ -8,7 +8,7 @@ import {
   type ChartInstance,
   type SlideElement,
 } from '@/model';
-import { describePart, hitTestChart, rectOfPart } from './previewHitTest';
+import { axisBandFor, describePart, hitTestChart, rectOfPart } from './previewHitTest';
 
 const FRAME = { x: 0, y: 0, w: inchesToEmu(8), h: inchesToEmu(4) };
 
@@ -70,6 +70,44 @@ describe('hitTestChart', () => {
     if (!tick) return;
     const hit = hitTestChart(els, centreOf(tick).x, centreOf(tick).y, inchesToEmu(0.02));
     expect(hit?.part).toBe('axis');
+  });
+
+  /**
+   * The bug this covers: a value axis is drawn as nothing but a column of tick
+   * labels a tenth of an inch tall, so the only way to reach it was to land on a
+   * digit — aiming at the gutter between two numbers, which is where the axis
+   * visibly is, gave the plot and selected the whole chart.
+   */
+  it('takes the whole axis band, not just the digits printed on it', () => {
+    const els = elements();
+    const ticks = els.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'y' && e.chartRef.sub === 'tick',
+    );
+    expect(ticks.length).toBeGreaterThan(1);
+    const [a, b] = [ticks[0], ticks[1]].sort((p, q) => p.rect.y - q.rect.y);
+    // Squarely in the blank between two labels, and clear of both boxes.
+    const between = { x: centreOf(a).x, y: a.rect.y + a.rect.h + (b.rect.y - a.rect.y - a.rect.h) / 2 };
+    expect(between.y).toBeGreaterThan(a.rect.y + a.rect.h);
+    const hit = hitTestChart(els, between.x, between.y);
+    expect(hit).toMatchObject({ part: 'axis', axis: 'y' });
+  });
+
+  it('leaves a bar standing in front of the axis alone', () => {
+    const els = elements();
+    const bar = els.find((e) => e.chartRef?.part === 'mark')!;
+    // The bars nearest the axis are the ones a widened band would steal.
+    const hit = hitTestChart(els, bar.rect.x + 1, bar.rect.y + bar.rect.h * 0.9, inchesToEmu(0.05));
+    expect(hit?.part).toBe('mark');
+  });
+
+  it('still gives the plot for a point above the axis band', () => {
+    const els = elements();
+    const tick = els.find(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'y' && e.chartRef.sub === 'tick',
+    )!;
+    // Level with the tick column but well above its topmost label.
+    const hit = hitTestChart(els, centreOf(tick).x, 0);
+    expect(hit?.part).toBe('plot');
   });
 
   it('reaches a part just outside it when given slop', () => {
@@ -135,6 +173,31 @@ describe('rectOfPart', () => {
 
   it('returns null for a part this chart does not have', () => {
     expect(rectOfPart(elements(), { chartId: 'c1', part: 'title' })).toBeNull();
+  });
+});
+
+describe('axisBandFor', () => {
+  it('frames the axis a tick belongs to, so the ring is not around three digits', () => {
+    const els = elements();
+    const ticks = els.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'y' && e.chartRef.sub === 'tick',
+    );
+    const band = axisBandFor(els, ticks[0].chartRef!)!;
+    expect(band).not.toBeNull();
+    // Taller than any one label, and covering every one of them.
+    expect(band.h).toBeGreaterThan(ticks[0].rect.h);
+    for (const t of ticks) {
+      expect(t.rect.y).toBeGreaterThanOrEqual(band.y);
+      expect(t.rect.y + t.rect.h).toBeLessThanOrEqual(band.y + band.h);
+    }
+  });
+
+  it('is null for parts that are framed by their own box', () => {
+    const els = elements();
+    const bar = els.find((e) => e.chartRef?.part === 'mark')!;
+    expect(axisBandFor(els, bar.chartRef!)).toBeNull();
+    // The axis title sits off to the side of the axis, not along it.
+    expect(axisBandFor(els, { chartId: 'c1', part: 'axis', axis: 'y', sub: 'title' })).toBeNull();
   });
 });
 

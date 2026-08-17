@@ -53,6 +53,34 @@ export function reconcileChartElements(
   return out;
 }
 
+/**
+ * Move some of a chart's parts to the top of the chart's own run.
+ *
+ * Reconciling holds a survivor's z-slot on purpose: a recompile must not undo
+ * the author's layering. But a part can be MOVED by the spec into a place where
+ * its old slot is wrong — a legend dragged inside the plot has to paint over the
+ * bars, and it keeps the slot it held while it was sitting in a gutter under
+ * them, where being buried didn't matter. This lifts those parts back to where
+ * the compiler put them, and only those.
+ *
+ * The run's own bounds don't move, so anything the author layered above the
+ * chart stays above it.
+ */
+export function liftChartParts(
+  elements: SlideElement[],
+  chartId: string,
+  ids: string[],
+): SlideElement[] {
+  const lift = new Set(ids);
+  const lifted = elements.filter((el) => isChartElement(el, chartId) && lift.has(el.id));
+  if (!lifted.length) return elements;
+  const rest = elements.filter((el) => !lift.has(el.id));
+  // The last slot the chart still owns, which is where the lifted parts land.
+  const last = rest.findLastIndex((el) => isChartElement(el, chartId));
+  const at = last >= 0 ? last + 1 : rest.length;
+  return [...rest.slice(0, at), ...lifted, ...rest.slice(at)];
+}
+
 /** Remove every element belonging to a chart. */
 export const stripChartElements = (
   elements: SlideElement[],
@@ -62,8 +90,8 @@ export const stripChartElements = (
 /**
  * Detach: keep the primitives, drop the link back to the spec. One-way, and
  * that's deliberate — once an author edits the pieces by hand there is no
- * honest way to fold those edits back into a spec, so "Break apart" says so
- * rather than silently regenerating over their work.
+ * honest way to fold those edits back into a spec, so ungrouping a chart says
+ * so rather than silently regenerating over their work.
  */
 export function detachChartElements(
   elements: SlideElement[],

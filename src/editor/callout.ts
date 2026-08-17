@@ -1,19 +1,29 @@
 /**
- * Callout cards — a filled box with a text box sitting on top of it, inserted
- * together as one group.
+ * Callout cards — a filled box with one text box PER SLOT sitting on top of it,
+ * inserted together as one group.
  *
- * Two elements rather than a shape carrying `body`: the text has to be able to
- * move, resize and be restyled independently of the box (and the box recoloured
- * without touching the type), which is exactly what a group of two primitives
- * gives you and a single shape with text does not. Both are still plain model
- * primitives, so the card exports like anything else.
+ * Separate elements rather than a shape carrying `body`: the text has to be able
+ * to move, resize and be restyled independently of the box (and the box
+ * recoloured without touching the type), which is exactly what a group of
+ * primitives gives you and a single shape with text does not. And a box per slot
+ * rather than one box of stacked paragraphs, because the number, title and
+ * supporting line get nudged, resized and recoloured one at a time — paragraphs
+ * inside one frame can only be dragged as a block. All of them are still plain
+ * model primitives, so the card exports like anything else.
  *
  * Text colour is DERIVED from the fill's luminance rather than picked: a card is
  * only ever inserted legible, and a later brand change that darkens the token
  * doesn't strand black type on a black box (the tokens re-resolve together).
  */
 import { inchesToEmu, resolveColor, token } from '@/model';
-import type { DesignSystem, Paragraph, ShapeElement, SlideElement, TextElement } from '@/model';
+import type {
+  ColorRef,
+  DesignSystem,
+  Paragraph,
+  ShapeElement,
+  SlideElement,
+  TextElement,
+} from '@/model';
 import { newId } from '@/store/editorStore';
 
 /** The text slots a card can carry, in the order they stack. */
@@ -38,15 +48,15 @@ const SAMPLE: Record<CalloutPart, string> = {
 export interface CalloutOptions {
   /** Rounded corners, or square. */
   corners: 'round' | 'square';
-  /** Design-system color token id for the box fill. */
-  fillToken: string;
+  /** The box fill — a brand token, or a hex picked from the custom panel. */
+  fill: ColorRef;
   /** Which text slots the card carries, any subset of `CALLOUT_PARTS`. */
   parts: CalloutPart[];
 }
 
 export const DEFAULT_CALLOUT_OPTIONS: CalloutOptions = {
-  corners: 'round',
-  fillToken: 'brand.primary',
+  corners: 'square',
+  fill: token('ink.strong'),
   parts: ['number', 'subtitle'],
 };
 
@@ -74,6 +84,20 @@ const SLOT: Record<
   subtitle: { role: 'body', strong: false, afterPt: 0, lines: 2 },
 };
 
+/** How tall one slot's own text box is, in inches — its lines, nothing else. */
+function slotHeightIn(part: CalloutPart, ds: DesignSystem): number {
+  const slot = SLOT[part];
+  return (ds.type[slot.role].sizePt * LINE_HEIGHT * slot.lines) / PT_PER_IN;
+}
+
+/** The slot stack's own height, gaps included but padding excluded. */
+function typeHeightIn(parts: CalloutPart[], ds: DesignSystem): number {
+  return parts.reduce((sum, p, i) => {
+    const after = i === parts.length - 1 ? 0 : SLOT[p].afterPt / PT_PER_IN;
+    return sum + slotHeightIn(p, ds) + after;
+  }, 0);
+}
+
 /**
  * How tall the card has to be to hold these slots. Autofit is off — a card is a
  * fixed frame — so nothing downstream rescues type that outgrows the box, and
@@ -81,12 +105,7 @@ const SLOT: Record<
  */
 export function calloutHeightIn(parts: CalloutPart[], ds: DesignSystem): number {
   const shown = CALLOUT_PARTS.filter((p) => parts.includes(p));
-  const typePt = shown.reduce((sum, p, i) => {
-    const slot = SLOT[p];
-    const after = i === shown.length - 1 ? 0 : slot.afterPt;
-    return sum + ds.type[slot.role].sizePt * LINE_HEIGHT * slot.lines + after;
-  }, 0);
-  return Math.max(MIN_BOX_H_IN, typePt / PT_PER_IN + PAD_IN * 2);
+  return Math.max(MIN_BOX_H_IN, typeHeightIn(shown, ds) + PAD_IN * 2);
 }
 
 /**
@@ -124,13 +143,15 @@ function paragraph(part: CalloutPart, ds: DesignSystem, onLight: boolean): Parag
       },
     ],
     align: 'left',
-    spaceAfterPt: slot.afterPt,
+    // The gap between slots is geometry now — each slot is its own frame — so
+    // the paragraph carries none of it.
+    spaceAfterPt: 0,
   };
 }
 
 /**
- * The box and its text, in z-order (box first) and stamped with a shared group
- * id so a click grabs the whole card.
+ * The box and one text box per slot, in z-order (box first, then top to bottom)
+ * and stamped with a shared group id so a click grabs the whole card.
  */
 export function makeCallout(
   ds: DesignSystem,
@@ -149,8 +170,7 @@ export function makeCallout(
     w: inchesToEmu(BOX_W_IN),
     h: inchesToEmu(hIn),
   };
-  const fill = token(opts.fillToken);
-  const onLight = isLightFill(resolveColor(fill, ds));
+  const onLight = isLightFill(resolveColor(opts.fill, ds));
 
   const box: ShapeElement = {
     id: newId('shape'),
@@ -158,34 +178,40 @@ export function makeCallout(
     role: 'callout.box',
     preset: opts.corners === 'round' ? 'roundRect' : 'rect',
     rect,
-    fill: { kind: 'solid', color: fill },
+    fill: { kind: 'solid', color: opts.fill },
     groupIds: [gid],
   };
 
   const pad = inchesToEmu(PAD_IN);
-  const text: TextElement = {
-    id: newId('text'),
-    type: 'text',
-    role: 'callout.text',
-    // Inset from the box rather than sharing its rect: the padding lives in the
-    // geometry, so dragging the text off the card keeps the layout you saw.
-    rect: {
-      x: rect.x + pad,
-      y: rect.y + pad,
-      w: rect.w - pad * 2,
-      h: rect.h - pad * 2,
-    },
-    body: {
-      anchor: 'middle',
-      // 'none' — a card is a fixed frame; the type sits inside it and the box
-      // must not be resized out from under the fill by a measure pass.
-      autofit: 'none',
-      paragraphs: parts.length
-        ? parts.map((p) => paragraph(p, ds, onLight))
-        : [paragraph('title', ds, onLight)],
-    },
-    groupIds: [gid],
-  };
+  // An empty card still gets one slot — a card with no text box at all can't be
+  // typed into, and there'd be nothing to select but the fill.
+  const shown = parts.length ? parts : (['title'] as CalloutPart[]);
+  // The stack is centred in the box rather than pinned to the top pad, so a card
+  // that came out at MIN_BOX_H_IN doesn't sit its type high.
+  let y = rect.y + Math.round((rect.h - inchesToEmu(typeHeightIn(shown, ds))) / 2);
 
-  return [box, text];
+  const texts: TextElement[] = shown.map((p) => {
+    const h = inchesToEmu(slotHeightIn(p, ds));
+    const el: TextElement = {
+      id: newId('text'),
+      type: 'text',
+      role: 'callout.text',
+      name: CALLOUT_PART_LABEL[p],
+      // Inset from the box rather than sharing its rect: the padding lives in
+      // the geometry, so dragging a slot off the card keeps the layout you saw.
+      rect: { x: rect.x + pad, y, w: rect.w - pad * 2, h },
+      body: {
+        anchor: 'middle',
+        // 'none' — a card is a fixed frame; the type sits inside it and the box
+        // must not be resized out from under the fill by a measure pass.
+        autofit: 'none',
+        paragraphs: [paragraph(p, ds, onLight)],
+      },
+      groupIds: [gid],
+    };
+    y += h + Math.round(inchesToEmu(SLOT[p].afterPt / PT_PER_IN));
+    return el;
+  });
+
+  return [box, ...texts];
 }
