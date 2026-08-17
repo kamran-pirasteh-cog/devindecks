@@ -14,7 +14,7 @@ import { DEFAULT_PAGE_NUMBERS, type PageNumberStyle } from './pageNumbers';
 import { DEFAULT_CHART_STYLE, type ChartStyle } from './chart/style';
 
 export interface ColorToken {
-  /** Stable id referenced by elements, e.g. 'brand.primary'. */
+  /** Stable id referenced by elements, e.g. 'brand.accent'. */
   id: string;
   name: string;
   hex: string; // #RRGGBB
@@ -70,11 +70,22 @@ export type ColorRef =
 export const token = (id: string): ColorRef => ({ kind: 'token', token: id });
 export const hex = (h: string): ColorRef => ({ kind: 'hex', hex: h });
 
+/**
+ * Tokens that no longer exist, and what they became. Decks saved before the
+ * palette collapsed its two blacks still reference `brand.primary`, and
+ * resolving those to a hardcoded `#000000` would quietly opt them out of every
+ * future brand change — so they follow the token that replaced them.
+ */
+export const LEGACY_COLOR_ALIASES: Record<string, string> = {
+  'brand.primary': 'ink.strong',
+};
+
 /** Resolve a ColorRef to a concrete hex against a design system. */
 export function resolveColor(ref: ColorRef | undefined, ds: DesignSystem): string {
   if (!ref) return '#000000';
   if (ref.kind === 'hex') return ref.hex;
-  const t = ds.colors.find((c) => c.id === ref.token);
+  const id = LEGACY_COLOR_ALIASES[ref.token] ?? ref.token;
+  const t = ds.colors.find((c) => c.id === ref.token) ?? ds.colors.find((c) => c.id === id);
   return t?.hex ?? '#000000';
 }
 
@@ -85,9 +96,12 @@ export const DEFAULT_DESIGN_SYSTEM: DesignSystem = {
   name: 'Placeholder (awaiting Cognition brand)',
   updatedAt: '2026-08-11T00:00:00.000Z',
   colors: [
-    { id: 'brand.primary', name: 'Primary', hex: '#111111' },
-    { id: 'brand.accent', name: 'Accent', hex: '#4F46E5' },
-    { id: 'ink.strong', name: 'Ink', hex: '#0A0A0A' },
+    // ONE black. The palette used to carry two near-identical darks
+    // (`brand.primary` #111111 and `ink.strong` #0A0A0A) that nobody could
+    // tell apart on a slide, so they collapsed into this single token; see
+    // LEGACY_COLOR_ALIASES for what happens to the old id.
+    { id: 'ink.strong', name: 'Black', hex: '#191919' },
+    { id: 'brand.accent', name: 'Accent', hex: '#2600FF' },
     { id: 'ink.muted', name: 'Muted', hex: '#6B7280' },
     { id: 'surface.base', name: 'Surface', hex: '#FFFFFF' },
     { id: 'surface.subtle', name: 'Subtle Surface', hex: '#F5F5F5' },
@@ -95,7 +109,7 @@ export const DEFAULT_DESIGN_SYSTEM: DesignSystem = {
   ],
   fonts: { heading: 'Geist', body: 'Geist', mono: 'Geist Mono' },
   type: {
-    title: { font: 'Geist', sizePt: 40, bold: true, colorToken: 'ink.strong' },
+    title: { font: 'Geist', sizePt: 26, colorToken: 'ink.strong' },
     subtitle: { font: 'Geist', sizePt: 20, colorToken: 'ink.muted' },
     heading: { font: 'Geist', sizePt: 24, bold: true, colorToken: 'ink.strong' },
     body: { font: 'Geist', sizePt: 14, colorToken: 'ink.strong' },

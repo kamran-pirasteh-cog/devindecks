@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ALLOWED_FONTS,
   emuToPoints,
+  hex as hexRef,
   isCropped,
   isRoundedPreset,
   isStacked,
@@ -35,6 +36,7 @@ import {
   type VerticalAnchor,
 } from '@/model';
 import { useEditor } from '@/store/editorStore';
+import { CustomColorSwatch, customHexOf } from './color';
 
 const DASHES: { value: DashStyle; label: string; pattern: string }[] = [
   { value: 'solid', label: 'Solid', pattern: '' },
@@ -45,7 +47,7 @@ const DASHES: { value: DashStyle; label: string; pattern: string }[] = [
 /** Border weights, in points. Mirrors PowerPoint's weight menu. */
 const WEIGHTS_PT = [0.5, 0.75, 1, 1.5, 2.25, 3, 4.5, 6];
 
-const FONT_SIZES_PT = [8, 10, 11, 12, 14, 18, 20, 24, 28, 32, 40, 48, 54, 60, 72, 96];
+const FONT_SIZES_PT = [8, 10, 11, 12, 14, 18, 20, 24, 26, 28, 32, 40, 48, 54, 60, 72, 96];
 
 /** Fill transparency, as percentages — PowerPoint's own 10% ladder. */
 const TRANSPARENCY_PCT = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
@@ -88,7 +90,8 @@ function ColorPicker({
   value: ColorRef | undefined;
   colors: ColorToken[];
   ds: DesignSystem;
-  onPick: (id: string) => void;
+  /** Takes a ref, not a token id — the palette hands over tokens, custom hands over hex. */
+  onPick: (color: ColorRef) => void;
   /** Omitted when the property can't be cleared (a line must keep its color). */
   onNone?: () => void;
 }) {
@@ -157,7 +160,7 @@ function ColorPicker({
                 key={c.id}
                 type="button"
                 onClick={() => {
-                  onPick(c.id);
+                  onPick(token(c.id));
                   setOpen(false);
                 }}
                 title={c.name}
@@ -171,6 +174,15 @@ function ColorPicker({
                 style={{ background: c.hex }}
               />
             ))}
+            {/* Last, after the brand: leaving the palette is the exception, and
+                a picked hex stops following brand changes. */}
+            <CustomColorSwatch
+              value={customHexOf(value)}
+              active={value?.kind === 'hex'}
+              onPick={(h) => onPick(hexRef(h))}
+              onDone={() => setOpen(false)}
+              align="right"
+            />
           </div>
         </div>
       ) : null}
@@ -258,84 +270,26 @@ function CornerIcon({ rounded }: { rounded: boolean }) {
   );
 }
 
-/**
- * Paragraph-alignment glyphs. The ragged edge is the whole tell, so the rules
- * are drawn at mixed lengths and pushed to the edge the text would sit on;
- * justify squares both ends off instead.
- */
-const RAGGED = [10.4, 7.2, 10.4, 6];
-
-function ParaAlignIcon({ align }: { align: ParaAlign }) {
-  return (
-    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden fill="none">
-      {RAGGED.map((len, i) => {
-        const w = align === 'justify' ? RAGGED[0] : len;
-        const x = align === 'right' ? 12 - w : align === 'center' ? 7 - w / 2 : 2;
-        const y = 3.2 + i * 2.6;
-        return (
-          <line
-            key={i}
-            x1={x}
-            y1={y}
-            x2={x + w}
-            y2={y}
-            stroke="currentColor"
-            strokeWidth={1.3}
-            strokeLinecap="round"
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
-/**
- * Vertical-anchor glyphs: a block of text moved within its frame. The frame is
- * drawn — faintly — because three short rules shifted by 3px read as identical
- * without an edge to be near.
- */
-function AnchorIcon({ anchor }: { anchor: VerticalAnchor }) {
-  const top = anchor === 'top' ? 3.4 : anchor === 'middle' ? 5.1 : 6.8;
-  return (
-    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden fill="none">
-      <rect
-        x={1.2}
-        y={1.2}
-        width={11.6}
-        height={11.6}
-        rx={1}
-        stroke="currentColor"
-        strokeWidth={1}
-        opacity={0.3}
-      />
-      {[0, 1, 2].map((i) => (
-        <line
-          key={i}
-          x1={3.4}
-          y1={top + i * 1.9}
-          x2={10.6}
-          y2={top + i * 1.9}
-          stroke="currentColor"
-          strokeWidth={1.3}
-          strokeLinecap="round"
-        />
-      ))}
-    </svg>
-  );
-}
-
 const PARA_ALIGNS: { value: ParaAlign; label: string }[] = [
-  { value: 'left', label: 'Align text left' },
-  { value: 'center', label: 'Center text' },
-  { value: 'right', label: 'Align text right' },
-  { value: 'justify', label: 'Justify text' },
+  { value: 'left', label: 'Left' },
+  { value: 'center', label: 'Center' },
+  { value: 'right', label: 'Right' },
+  { value: 'justify', label: 'Justify' },
 ];
 
 const ANCHORS: { value: VerticalAnchor; label: string }[] = [
-  { value: 'top', label: 'Align text top' },
-  { value: 'middle', label: 'Center text vertically' },
-  { value: 'bottom', label: 'Align text bottom' },
+  { value: 'top', label: 'Top' },
+  { value: 'middle', label: 'Middle' },
+  { value: 'bottom', label: 'Bottom' },
 ];
+
+/**
+ * The one value a set of boxes shares, or '' when they disagree — the empty
+ * string is what a `<select>` needs to land on its "Mixed" placeholder.
+ */
+function agreedOn<T extends string>(values: T[]): T | '' {
+  return values.length && values.every((v) => v === values[0]) ? values[0] : '';
+}
 
 function outlineOf(el: SlideElement | undefined): Outline | undefined {
   if (!el || el.type === 'picture') return undefined;
@@ -378,7 +332,10 @@ export function SelectionFormatBar({
   if (pictures.length === selected.length) {
     return <PictureFormatCluster pictures={pictures} />;
   }
-  const hasBorder = selected.some((e) => e.type !== 'picture');
+  // Shapes and lines only. A plain text box can take an outline, but it's a
+  // rare want and the color/weight/dash trio costs the bar a whole second row —
+  // the Inspector still has it.
+  const hasBorder = selected.some((e) => e.type !== 'picture' && e.type !== 'text');
   if (!hasText && !hasFillable && !hasBorder) return null;
 
   const fillPrimary = selected.find((e) => e.type === 'text' || e.type === 'shape');
@@ -411,19 +368,17 @@ export function SelectionFormatBar({
 
   // Both alignment readouts span the WHOLE selection, unlike the font and size
   // fields above, which show the primary element's value. A select-all over a
-  // mix of left-, center- and right-aligned boxes would otherwise light "Right"
-  // just because the primary box happened to be right-aligned — for a pressed
-  // toggle that's a claim about every box, so nothing lights unless they agree.
+  // mix of left-, center- and right-aligned boxes would otherwise read "Right"
+  // just because the primary box happened to be right-aligned — the dropdown
+  // shows a value only when every box agrees, and "Mixed" when they don't.
   const textBodies = selected.flatMap((e) =>
     (e.type === 'text' || e.type === 'shape') && e.body ? [e.body] : [],
   );
   // Unset reads as its rendered value ('left' / 'top', per `SlideView`), so a
-  // fresh box shows Left and Top lit rather than no alignment at all.
+  // fresh box shows Left and Top rather than no alignment at all.
   const allParagraphs = textBodies.flatMap((b) => b.paragraphs);
-  const paraAlignIs = (a: ParaAlign) =>
-    allParagraphs.length > 0 && allParagraphs.every((p) => (p.align ?? 'left') === a);
-  const anchorIs = (v: VerticalAnchor) =>
-    textBodies.length > 0 && textBodies.every((b) => (b.anchor ?? 'top') === v);
+  const paraAlign = agreedOn(allParagraphs.map((p) => p.align ?? 'left'));
+  const anchor = agreedOn(textBodies.map((b) => b.anchor ?? 'top'));
 
   /** Border edits patch whatever outline exists, falling back to a real one. */
   const patchOutline = (patch: Partial<Outline>) =>
@@ -519,46 +474,40 @@ export function SelectionFormatBar({
           {/* Both axes, in one cluster: horizontal alignment is a paragraph
               property, the vertical anchor belongs to the body, but from the
               outside they're the same question — which edge does the text sit
-              on — so splitting them across two groups only made it harder to
-              find. Mirrors the ⌘⌥Ctrl+arrow chords. */}
+              on. Two dropdowns rather than seven pressed toggles: the bar has
+              to fit on one line, and the chords (⌘⌥Ctrl+arrow) are still the
+              fast path for anyone reaching often. */}
           <Group label="Align">
-            <div className="flex gap-0.5">
+            <select
+              value={paraAlign}
+              onChange={(e) =>
+                store().patchParagraphs(selectedIds, { align: e.target.value as ParaAlign })
+              }
+              aria-label="Text alignment"
+              title="Text alignment"
+              className={FIELD_CLASS}
+            >
+              {paraAlign === '' ? <option value="">Mixed</option> : null}
               {PARA_ALIGNS.map(({ value, label }) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => store().patchParagraphs(selectedIds, { align: value })}
-                  title={label}
-                  aria-label={label}
-                  aria-pressed={paraAlignIs(value)}
-                  className={`flex h-7 w-7 items-center justify-center rounded border ${
-                    paraAlignIs(value)
-                      ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
-                      : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
-                  }`}
-                >
-                  <ParaAlignIcon align={value} />
-                </button>
+                <option key={value} value={value}>
+                  {label}
+                </option>
               ))}
-              <Divider />
+            </select>
+            <select
+              value={anchor}
+              onChange={(e) => store().setAnchor(selectedIds, e.target.value as VerticalAnchor)}
+              aria-label="Vertical alignment"
+              title="Vertical alignment"
+              className={FIELD_CLASS}
+            >
+              {anchor === '' ? <option value="">Mixed</option> : null}
               {ANCHORS.map(({ value, label }) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => store().setAnchor(selectedIds, value)}
-                  title={label}
-                  aria-label={label}
-                  aria-pressed={anchorIs(value)}
-                  className={`flex h-7 w-7 items-center justify-center rounded border ${
-                    anchorIs(value)
-                      ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
-                      : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
-                  }`}
-                >
-                  <AnchorIcon anchor={value} />
-                </button>
+                <option key={value} value={value}>
+                  {label}
+                </option>
               ))}
-            </div>
+            </select>
           </Group>
           <Group label="Text">
             <ColorPicker
@@ -566,7 +515,7 @@ export function SelectionFormatBar({
               value={run?.color ?? token(ds.type.body.colorToken)}
               colors={ds.colors}
               ds={ds}
-              onPick={(id) => store().patchRuns(selectedIds, { color: token(id) })}
+              onPick={(color) => store().patchRuns(selectedIds, { color })}
             />
           </Group>
         </>
@@ -584,10 +533,10 @@ export function SelectionFormatBar({
               ds={ds}
               // Recoloring keeps whatever transparency is already set — the two
               // are independent controls, so one shouldn't reset the other.
-              onPick={(id) =>
+              onPick={(color) =>
                 store().setFill(selectedIds, {
                   kind: 'solid',
-                  color: token(id),
+                  color,
                   alpha: fill?.kind === 'solid' ? fill.alpha : undefined,
                 })
               }
@@ -656,7 +605,7 @@ export function SelectionFormatBar({
               value={outline?.color}
               colors={ds.colors}
               ds={ds}
-              onPick={(id) => patchOutline({ color: token(id) })}
+              onPick={(color) => patchOutline({ color })}
               onNone={borderRequired ? undefined : () => store().setOutline(selectedIds, undefined)}
             />
           </Group>
@@ -908,11 +857,11 @@ function ChartFormatCluster({
       <Divider />
 
       <button
-        onClick={() => store().detachChart(chartId)}
-        title="Break apart into plain shapes. This can't be undone into a chart again."
+        onClick={() => store().resetChartFormatting(chartId)}
+        title="Drop hand-applied colour and type, back to the brand's. Data and layout stay."
         className="rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
       >
-        Break apart
+        Reset formatting
       </button>
     </div>
   );

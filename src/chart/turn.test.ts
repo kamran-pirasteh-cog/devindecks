@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SlideElement, TextElement } from '@/model';
-import {
-  layoutFrame,
-  previewTurn,
-  readableAngle,
-  snapQuarterTurn,
-  turnElements,
-  turnRect,
-} from './turn';
+import { layoutFrame, snapQuarterTurn, turnElements, turnRect } from './turn';
 
 const FRAME = { x: 0, y: 0, w: 400, h: 200 };
 
@@ -56,22 +49,6 @@ describe('turnRect', () => {
     let r = box;
     for (let i = 0; i < 4; i++) r = turnRect(r, FRAME, 90).rect;
     expect(r).toEqual(box);
-  });
-});
-
-describe('readableAngle', () => {
-  it('leaves shapes alone', () => {
-    expect(readableAngle(180, false)).toBe(180);
-  });
-
-  it('brings upside-down text back the right way up', () => {
-    expect(readableAngle(180, true)).toBe(0);
-    expect(readableAngle(135, true)).toBe(315);
-  });
-
-  it('keeps the two orientations a chart already uses', () => {
-    expect(readableAngle(90, true)).toBe(90);
-    expect(readableAngle(270, true)).toBe(270);
   });
 });
 
@@ -134,24 +111,5 @@ describe('layoutFrame', () => {
     // Same box, drawn on its side: the sides swap, the centre doesn't move.
     expect(rect.x + rect.w / 2).toBe(FRAME.x + FRAME.w / 2);
     expect(rect.y + rect.h / 2).toBe(FRAME.y + FRAME.h / 2);
-  });
-});
-
-describe('previewTurn', () => {
-  it('keeps a live turn inside the frame instead of swinging it off the slide', () => {
-    const box = { x: 0, y: 90, w: 80, h: 20 };
-    const raw = turnRect(box, FRAME, 90).rect;
-    const preview = previewTurn(box, FRAME, 90).rect;
-    // The raw orbit lands 70px above a frame that starts at y = 0.
-    expect(raw.y).toBeLessThan(FRAME.y);
-    expect(preview.y).toBeGreaterThanOrEqual(FRAME.y);
-    expect(preview).toMatchObject({ w: 80, h: 20 });
-  });
-
-  it('is the plain orbit at 0° and 180°', () => {
-    const box = { x: 12, y: 34, w: 56, h: 78 };
-    for (const d of [0, 180]) {
-      expect(previewTurn(box, FRAME, d)).toEqual(turnRect(box, FRAME, d));
-    }
   });
 });

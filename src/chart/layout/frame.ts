@@ -7,8 +7,8 @@
  * solving for. Two passes converge in practice (the caller re-derives the
  * domain between them); a third is capped off as insurance, not as a plan.
  */
-import type { EMU, Insets, Rect } from '@/model';
-import { pointsToEmu } from '@/model';
+import type { EMU, Insets, LegendPosition, Rect } from '@/model';
+import { isInsideLegend, pointsToEmu } from '@/model';
 import type { TextMeasurer, TextStyleMetrics } from '@/render/measureText';
 import { lineHeightEmu } from '@/render/measureText';
 import type { ChartTheme } from '../theme';
@@ -35,7 +35,7 @@ export interface FrameInput {
   valueAxisTitle?: string;
   categoryAxisTitle?: string;
   unitNote?: string;
-  legend?: { items: string[]; position: 'top' | 'right' | 'bottom' | 'left' };
+  legend?: { items: string[]; position: LegendPosition };
   padding?: Insets;
   /**
    * Data labels (or totals) sit just PAST the tip of the tallest mark, so the
@@ -104,6 +104,57 @@ export const TEXT_SLACK: EMU = pointsToEmu(1);
 
 /** A measured extent, plus the slack a real font engine needs. */
 export const fitted = (measured: EMU): EMU => (measured > 0 ? measured + TEXT_SLACK : 0);
+
+/**
+ * One legend entry's width: swatch, gap, and the name.
+ *
+ * `fitted`, matching `placeLegend`: the box a legend reserves and the box its
+ * entries are drawn in are the same measurement, or the last name wraps.
+ */
+const legendItemWidth = (
+  text: string,
+  theme: ChartTheme,
+  m: TextMeasurer,
+  style: TextStyleMetrics,
+): EMU =>
+  theme.sizes.legendSwatchEmu + theme.sizes.labelGapEmu + fitted(m.measure(text, style).wEmu);
+
+/**
+ * The box an inside legend occupies, measured against the finished plot.
+ *
+ * Solved after the plot rather than before it, which is the whole point of an
+ * inside legend: it costs the data no gutter, so the plot can't depend on it.
+ * The box's TOP is the plot's top — level with the top of the value axis, the
+ * one line a reader's eye already follows across the chart — and it hugs
+ * whichever side was asked for, inset by a gap so the entries don't sit on the
+ * axis line or on the last gridline's end.
+ *
+ * Never wider or taller than the plot: a legend that outgrew the chart body
+ * would defeat the point of putting it inside one.
+ */
+export function insideLegendSlot(
+  plot: Rect,
+  items: string[],
+  position: LegendPosition,
+  theme: ChartTheme,
+  measurer: TextMeasurer,
+): Rect {
+  const style = styleOf(theme.text.legend);
+  const inset = theme.sizes.labelGapEmu;
+  const w = Math.min(
+    items.reduce((m, t) => Math.max(m, legendItemWidth(t, theme, measurer, style)), 0),
+    Math.max(0, plot.w - inset * 2),
+  );
+  const h = Math.min(items.length * lineHeightEmu(style), plot.h);
+  return {
+    x: Math.round(
+      position === 'insideTopRight' ? plot.x + plot.w - inset - w : plot.x + inset,
+    ),
+    y: Math.round(plot.y),
+    w: Math.round(w),
+    h: Math.round(h),
+  };
+}
 
 const widestOf = (
   labels: string[],
@@ -187,13 +238,11 @@ export function solveFrame(input: FrameInput): FrameLayout {
   }
 
   // --- legend, on its side ---
-  if (legend?.items.length) {
-    // `fitted`, matching `placeLegend`: the gutter a side legend reserves and
-    // the width its entries are drawn at are the same measurement.
-    const itemW = (t: string) =>
-      theme.sizes.legendSwatchEmu +
-      theme.sizes.labelGapEmu +
-      fitted(measurer.measure(t, legendStyle).wEmu);
+  // An INSIDE legend is skipped here on purpose: it floats over the plot, so it
+  // reserves nothing and can't be solved yet anyway — its box is measured from
+  // the finished plot by `insideLegendSlot`.
+  if (legend?.items.length && !isInsideLegend(legend.position)) {
+    const itemW = (t: string) => legendItemWidth(t, theme, measurer, legendStyle);
     if (legend.position === 'top' || legend.position === 'bottom') {
       const h = lineHeightEmu(legendStyle);
       if (legend.position === 'top') {

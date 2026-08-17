@@ -11,6 +11,9 @@
 import { nanoid } from 'nanoid';
 import {
   isGridSpec,
+  isInsideLegend,
+  isPointRef,
+  isSankeySpec,
   isWaterfallSpec,
   type ChartInstance,
   type ChartRef,
@@ -19,6 +22,7 @@ import {
   type EMU,
   type Fill,
   type LabelFont,
+  type LabelSpec,
   type Outline,
   type PointOverride,
   type Rect,
@@ -29,6 +33,7 @@ import {
 import { compileChart } from '@/chart/compile';
 import {
   detachChartElements,
+  liftChartParts,
   reconcileChartElements,
   stripChartElements,
 } from '@/chart/reconcile';
@@ -78,6 +83,39 @@ export function recompileInto(slide: Slide, chartId: string, ds: DesignSystem): 
   const snapshot: ChartInstance = JSON.parse(JSON.stringify(chart));
   const { elements } = compileChart(snapshot, ds, measurer());
   slide.elements = reconcileChartElements(slide.elements, chartId, elements);
+  // A legend that has just moved inside the plot has to come up with it: it
+  // kept the z-slot it held out in a gutter, and down there it paints under the
+  // bars it names. See `liftChartParts`.
+  if (snapshot.spec.legend.show && isInsideLegend(snapshot.spec.legend.position)) {
+    slide.elements = liftChartParts(
+      slide.elements,
+      chartId,
+      elements.filter((e) => e.role === 'chart.legend').map((e) => e.id),
+    );
+  }
+}
+
+/**
+ * The box the legend would occupy at a given position, without moving it.
+ *
+ * The drop indicator has to promise something true: a legend snapped inside the
+ * plot lands in a box the size of its own entries, tucked into a corner of the
+ * chart BODY — nowhere near the corner of the chart's frame, which is what a
+ * zone drawn from the frame would suggest. Rather than reimplement that
+ * arithmetic in the canvas and watch the two drift, this asks the compiler.
+ *
+ * One compile per position, once, when the drag starts — the same cost as any
+ * other recompile, and it buys an indicator that cannot lie.
+ */
+export function legendBoxAt(
+  chart: ChartInstance,
+  ds: DesignSystem,
+  position: ChartSpec['legend']['position'],
+): Rect | undefined {
+  const snapshot: ChartInstance = JSON.parse(JSON.stringify(chart));
+  snapshot.spec.legend = { ...snapshot.spec.legend, show: true, position };
+  const { elements } = compileChart(snapshot, ds, measurer());
+  return elements.find((e) => e.chartRef?.part === 'legend.box')?.rect;
 }
 
 /** Every element id a chart currently owns, in z-order. */
@@ -164,6 +202,251 @@ export function removeChartFrom(slide: Slide, chartId: string): void {
 export function detachChartFrom(slide: Slide, chartId: string): void {
   slide.elements = detachChartElements(slide.elements, chartId);
   slide.charts = (slide.charts ?? []).filter((c) => c.id !== chartId);
+}
+
+/* ------------------------------------------------------------------ */
+/* Deleting a part                                                    */
+/* ------------------------------------------------------------------ */
+
+export interface ChartPartDeletion {
+  /**
+   * Element ids this took ownership of. The caller must NOT delete them —
+   * either their chart is already gone, or the part was hidden in the spec and
+   * the recompile has removed whatever elements it used to emit.
+   */
+  handled: Set<string>;
+  /** Charts removed outright. */
+  removed: string[];
+}
+
+/**
+ * Delete, addressed at a chart PART.
+ *
+ * Delete used to mean "remove the whole chart" no matter which of its thirty
+ * primitives was selected, on the reasoning that a chart missing its axis is a
+ * chart that grows the axis back on the next recompile. That reasoning is right
+ * about the ELEMENT and wrong about the gesture: pressing Delete on a legend
+ * means "I don't want a legend", which the spec can say (`legend.show = false`)
+ * and a recompile therefore honours. So the part is hidden in the spec, exactly
+ * as the popover's own Visible/Show toggles do it, and only a whole-chart
+ * selection — or the plot backdrop, which IS the chart — deletes the chart.
+ *
+ * A part with nothing to hide (a bar on a waterfall, which keeps no override
+ * map) is left alone rather than escalating to deleting the chart: a Delete
+ * that does nothing is recoverable, and one that eats the chart isn't.
+ */
+export function deleteChartParts(
+  slide: Slide,
+  ids: string[],
+  ds: DesignSystem,
+): ChartPartDeletion {
+  const wanted = new Set(ids);
+  const handled = new Set<string>();
+  const removed: string[] = [];
+
+  for (const chart of chartsForElements(slide, ids)) {
+    const owned = chartElementIds(slide, chart.id);
+    const mine = owned.filter((id) => wanted.has(id));
+    const refs = slide.elements
+      .filter((el) => wanted.has(el.id) && el.chartRef?.chartId === chart.id)
+      .map((el) => el.chartRef!);
+
+    const whole = mine.length === owned.length || refs.some((r) => r.part === 'plot');
+    if (whole) {
+      removeChartFrom(slide, chart.id);
+      removed.push(chart.id);
+      for (const id of mine) handled.add(id);
+      continue;
+    }
+
+    if (!hideChartParts(chart.spec, refs)) continue;
+    for (const id of mine) handled.add(id);
+    recompileInto(slide, chart.id, ds);
+  }
+
+  return { handled, removed };
+}
+
+/** Write "don't draw this" for each selected part. Returns true if anything changed. */
+function hideChartParts(spec: ChartSpec, refs: ChartRef[]): boolean {
+  let wrote = false;
+
+  for (const ref of refs) {
+    switch (ref.part) {
+      case 'title':
+        if (spec.title !== undefined) {
+          spec.title = undefined;
+          wrote = true;
+        }
+        break;
+
+      // Either half of a legend entry, or the box itself, means the legend.
+      // There is no spec for "this series but not that one in the key", and a
+      // legend with a hole in it isn't what anyone is asking for anyway.
+      case 'legend.box':
+      case 'legend.item':
+        if (spec.legend.show) {
+          spec.legend.show = false;
+          wrote = true;
+        }
+        break;
+
+      case 'total':
+        if (spec.decorations.totals?.show) {
+          // show:false rather than undefined, so the font and format survive
+          // being switched back on.
+          spec.decorations.totals = { ...spec.decorations.totals, show: false };
+          wrote = true;
+        }
+        break;
+
+      case 'axis':
+        if (hideAxisPart(spec, ref)) wrote = true;
+        break;
+
+      case 'decoration':
+        if (removeDecoration(spec, ref.decoId)) wrote = true;
+        break;
+
+      // 'plot' never reaches here — the caller reads it as the whole chart.
+      // 'mark' and 'label' are grouped by series below.
+      default:
+        break;
+    }
+  }
+
+  return hidePointParts(spec, refs) || wrote;
+}
+
+/** The axis furniture: its rule and ticks, its title, its unit note, its grid. */
+function hideAxisPart(spec: ChartSpec, ref: Extract<ChartRef, { part: 'axis' }>): boolean {
+  if (ref.sub === 'grid') {
+    const major = spec.decorations.gridlines.major;
+    if (!major?.show) return false;
+    spec.decorations.gridlines.major = { ...major, show: false };
+    return true;
+  }
+
+  const axis = spec.axes[ref.axis];
+  if (!axis) return false;
+
+  if (ref.sub === 'title') {
+    if (axis.title === undefined) return false;
+    axis.title = undefined;
+    return true;
+  }
+  if (ref.sub === 'unitNote') {
+    if (axis.unitNote === undefined) return false;
+    axis.unitNote = undefined;
+    return true;
+  }
+  // The rule and its ticks are one thing to the spec: an axis you can't read
+  // the numbers off isn't an axis.
+  if (!axis.show) return false;
+  axis.show = false;
+  return true;
+}
+
+/** A decoration is deleted, not hidden — it exists only because someone added it. */
+function removeDecoration(spec: ChartSpec, decoId: string): boolean {
+  const d = spec.decorations;
+  const before =
+    d.cagr.length +
+    d.differences.length +
+    d.trendLines.length +
+    d.referenceLines.length +
+    d.annotations.length;
+
+  d.cagr = d.cagr.filter((x) => x.id !== decoId);
+  d.differences = d.differences.filter((x) => x.id !== decoId);
+  d.trendLines = d.trendLines.filter((x) => x.id !== decoId);
+  d.referenceLines = d.referenceLines.filter((x) => x.id !== decoId);
+  d.annotations = d.annotations.filter((x) => x.id !== decoId);
+
+  return (
+    before !==
+    d.cagr.length +
+      d.differences.length +
+      d.trendLines.length +
+      d.referenceLines.length +
+      d.annotations.length
+  );
+}
+
+/**
+ * Marks and data labels, scoped the way `applyChartFormat` scopes colour: a
+ * selection covering every point of a series is about the SERIES, so the label
+ * is switched off there and a category added later stays off too. Anything
+ * narrower is a per-point override.
+ *
+ * A mark is always per-point (`hidden`) — there is no series-level "don't draw
+ * this", and inventing one would mean teaching every placer about it.
+ */
+function hidePointParts(spec: ChartSpec, refs: ChartRef[]): boolean {
+  const points = refs.filter(isPointRef);
+  if (!points.length) return false;
+
+  const series = seriesOf(spec);
+  if (!series.length) {
+    // A waterfall or a sankey has no series to hang an override on; the only
+    // node narrower than the chart is nothing, so a label falls back to the
+    // chart-wide one and a bar can't be hidden at all.
+    if (!points.some((r) => r.part === 'label')) return false;
+    if (!spec.decorations.labels.show) return false;
+    spec.decorations.labels.show = false;
+    return true;
+  }
+
+  const bySeries = new Map<string, { marks: Set<string>; labels: Set<string> }>();
+  for (const ref of points) {
+    const sel = bySeries.get(ref.series) ?? { marks: new Set(), labels: new Set() };
+    (ref.part === 'mark' ? sel.marks : sel.labels).add(ref.point);
+    bySeries.set(ref.series, sel);
+  }
+
+  let wrote = false;
+  for (const [key, sel] of bySeries) {
+    const s = series.find((x) => x.key === key);
+    if (!s) continue;
+    const all = pointKeysOf(spec, key);
+
+    if (sel.labels.size) {
+      const whole = all.length > 0 && all.every((k) => sel.labels.has(k));
+      if (whole) {
+        const base = s.labels ?? spec.decorations.labels;
+        s.labels = { ...base, show: false };
+        // A per-point label would now shadow the series switch just thrown.
+        for (const k of Object.keys(s.pointOverrides ?? {})) {
+          delete s.pointOverrides![k]!.label;
+        }
+      } else {
+        s.pointOverrides ??= {};
+        for (const k of sel.labels) {
+          const prior = s.pointOverrides[k] ?? {};
+          const base = prior.label ?? s.labels ?? spec.decorations.labels;
+          s.pointOverrides[k] = { ...prior, label: { ...base, show: false } };
+        }
+      }
+      wrote = true;
+    }
+
+    if (sel.marks.size) {
+      // A line and an area are ONE mark for the whole series, so their refs
+      // carry a synthetic point ('line', 'area') that no override map has a
+      // slot for. Clicking one means the series, so it expands to every point
+      // — which is also what makes the line vanish: an all-gap series draws no
+      // run, no marker and no end label.
+      const real = [...sel.marks].filter((k) => all.includes(k));
+      const keys = real.length ? real : all;
+      s.pointOverrides ??= {};
+      for (const k of keys) {
+        s.pointOverrides[k] = { ...(s.pointOverrides[k] ?? {}), hidden: true };
+      }
+      wrote = keys.length > 0 || wrote;
+    }
+  }
+
+  return wrote;
 }
 
 /* ------------------------------------------------------------------ */
@@ -297,6 +580,7 @@ export function resizeChartFrames(
 interface SeriesLike {
   key: string;
   format?: { fill?: Fill; outline?: Outline };
+  labels?: LabelSpec;
   pointOverrides?: Record<string, PointOverride>;
 }
 
@@ -400,6 +684,87 @@ export function applyChartFormat(
     }
   }
   return wrote;
+}
+
+/**
+ * Recolour everything one legend key stands for.
+ *
+ * A legend key is the only place in a chart where "the whole series" is a single
+ * click, so the swatch is where recolouring a series belongs — and it has to
+ * write to the SERIES, not to the entry's own rect: the entry takes its colour
+ * from the series on every recompile, so a fill on the swatch would be gone the
+ * moment anything else moved.
+ *
+ * Which node that is depends on what the legend is listing. A pie's legend lists
+ * SLICES (see `compileChart`), so the key is a point of the only series and the
+ * colour belongs to that point's override; a waterfall's is an item. Everywhere
+ * else the key is a series key.
+ *
+ * An undefined `fill` is "back to the palette's colour", which is a deletion —
+ * the compiler falls back to `theme.seriesColor` for anything with no fill of its
+ * own, so there is nothing to write.
+ *
+ * Returns true when something was written, so a legend that lists something with
+ * no spec home doesn't cost an undo step.
+ */
+export function recolorLegendEntry(
+  spec: ChartSpec,
+  entryKey: string,
+  fill: Fill | undefined,
+): boolean {
+  const series = seriesOf(spec).find((s) => s.key === entryKey);
+  if (series) {
+    series.format = { ...series.format, fill };
+    // A line takes its colour from the outline when it has one; leaving the old
+    // colour there would repaint the dots and leave the line as it was.
+    if (series.format.outline && fill?.kind === 'solid') {
+      series.format.outline = { ...series.format.outline, color: fill.color };
+    }
+    // Per-point fills would now shadow the series colour just set — the same
+    // rule `applyChartFormat` follows when a whole series is selected.
+    for (const key of Object.keys(series.pointOverrides ?? {})) {
+      const p = series.pointOverrides![key]!;
+      if (p.format?.fill) delete p.format.fill;
+    }
+    return true;
+  }
+
+  if (isWaterfallSpec(spec)) {
+    const item = spec.data.items.find((i) => i.key === entryKey);
+    if (!item) return false;
+    item.format = { ...item.format, fill };
+    return true;
+  }
+
+  const owner = seriesOf(spec).find((s) => pointKeysOf(spec, s.key).includes(entryKey));
+  if (!owner) return false;
+  owner.pointOverrides ??= {};
+  const existing = owner.pointOverrides[entryKey] ?? {};
+  owner.pointOverrides[entryKey] = {
+    ...existing,
+    format: { ...existing.format, fill },
+  };
+  return true;
+}
+
+/**
+ * Whether a legend key has a spec node to recolour, and the colour it holds now.
+ *
+ * Two answers from one lookup, because the panel needs both: `null` means the
+ * key addresses nothing writable, so no swatch row is offered at all rather than
+ * one whose clicks cost an undo step and change nothing. A `fill` of undefined
+ * means the entry is on the palette's colour — nothing is selected in the row,
+ * rather than a ring around a colour nobody chose.
+ */
+export function legendEntryColor(spec: ChartSpec, entryKey: string): { fill?: Fill } | null {
+  const series = seriesOf(spec).find((s) => s.key === entryKey);
+  if (series) return { fill: series.format?.fill };
+  if (isWaterfallSpec(spec)) {
+    const item = spec.data.items.find((i) => i.key === entryKey);
+    return item ? { fill: item.format?.fill } : null;
+  }
+  const owner = seriesOf(spec).find((s) => pointKeysOf(spec, s.key).includes(entryKey));
+  return owner ? { fill: owner.pointOverrides?.[entryKey]?.format?.fill } : null;
 }
 
 /**
@@ -565,6 +930,66 @@ function writeLabelFonts(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): bool
     }
     wrote = true;
   }
+  return wrote;
+}
+
+/**
+ * Strip every hand-applied look off a chart, leaving the data and the reader's
+ * choices — which decorations show, what a label says — alone.
+ *
+ * This is the way back from `applyChartFormat`/`applyChartTextFormat`: those
+ * write colour and type INTO the spec so an edit survives a recompile, which
+ * also means a recoloured chart never finds its way back to the brand on its
+ * own. Deleting the override rather than writing the brand's current value in
+ * its place is what lets a later template change reach the chart again.
+ *
+ * Kept: data, kind, stacking, axis domains, number formats, show/hide toggles,
+ * label content and placement, annotations. Dropped: fills, outlines, markers,
+ * dashes, fonts, the palette override, decoration line styles and the manual
+ * label nudges.
+ *
+ * Returns true when something was actually dropped, so a caller can skip an
+ * undo step for a chart that was already clean.
+ */
+export function clearChartFormatting(spec: ChartSpec): boolean {
+  let wrote = false;
+  const drop = (obj: object | undefined, key: string): void => {
+    const rec = obj as Record<string, unknown> | undefined;
+    if (!rec || rec[key] === undefined) return;
+    delete rec[key];
+    wrote = true;
+  };
+
+  drop(spec, 'titleFont');
+  drop(spec, 'palette');
+  drop(spec.legend, 'font');
+  for (const axis of [spec.axes.x, spec.axes.y, spec.axes.y2]) drop(axis, 'font');
+  drop(spec.decorations.labels, 'font');
+  drop(spec.decorations.totals, 'font');
+  for (const line of spec.decorations.trendLines) drop(line, 'style');
+  for (const line of spec.decorations.referenceLines) drop(line, 'style');
+
+  for (const series of seriesOf(spec)) {
+    drop(series, 'format');
+    drop(series.labels, 'font');
+    for (const [key, point] of Object.entries(series.pointOverrides ?? {})) {
+      drop(point, 'format');
+      drop(point, 'labelOffset');
+      drop(point.label, 'font');
+      // An override that only ever carried a colour is noise once the colour is
+      // gone; `hidden` is a content decision, so an entry holding one survives.
+      if (!Object.keys(point).length) delete series.pointOverrides![key];
+    }
+    if (series.pointOverrides && !Object.keys(series.pointOverrides).length) {
+      delete series.pointOverrides;
+    }
+  }
+
+  // A waterfall's bars and a sankey's nodes keep their format on the item, not
+  // on a series — `seriesOf` has nothing to hand back for either.
+  if (isWaterfallSpec(spec)) for (const item of spec.data.items) drop(item, 'format');
+  if (isSankeySpec(spec)) for (const node of spec.data.nodes) drop(node, 'format');
+
   return wrote;
 }
 

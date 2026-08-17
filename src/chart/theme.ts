@@ -84,6 +84,12 @@ export interface ChartTheme {
     labelGapEmu: EMU;
     /** Space between the plot and the tick labels beside it. */
     axisGapEmu: EMU;
+    /**
+     * How far a tick mark reaches out of the plot. Deliberately shorter than
+     * `axisGapEmu`, so ticks live INSIDE the gap the frame already reserved and
+     * turning them on never reflows the chart.
+     */
+    tickMarkEmu: EMU;
   };
   /** The colour series `i` draws in, honouring the brand's overflow rule. */
   seriesColor(i: number): ColorRef;
@@ -139,7 +145,7 @@ export function resolvePalette(spec: ChartSpec, ds: DesignSystem): ColorRef[] {
 
 /** The brand colour a generated ramp is built around. */
 function seedColor(ds: DesignSystem): string | null {
-  for (const id of ['brand.accent', 'brand.primary', 'ink.strong']) {
+  for (const id of ['brand.accent', 'ink.strong']) {
     const found = ds.colors.find((c) => c.id === id);
     if (found && legible(found.hex)) return found.hex;
   }
@@ -164,8 +170,9 @@ export const paletteColor = (palette: ColorRef[], i: number): ColorRef =>
  * legible at 9pt and to disappear. Charts take their SIZE from the design system
  * and pin the family.
  *
- * Titles and legends get the sans; everything that annotates the data — ticks,
- * category names, data labels, totals — gets MONO, UPPERCASE and MUTED. Mono
+ * The legend gets the sans; the title and everything that annotates the data —
+ * ticks, category names, data labels, totals — gets MONO and UPPERCASE, and all
+ * of it but the title is MUTED too. Mono
  * because a column of figures that doesn't align digit-to-digit is harder to
  * compare than one that does, and because it reads as instrumentation rather
  * than as prose. Muted and uppercase because these are annotations on the data,
@@ -207,7 +214,12 @@ function textRole(ds: DesignSystem, ref: TypeRoleRef, over: Partial<ChartTextRol
 
 export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme {
   const style: ChartStyle = withChartStyleDefaults(ds.chart);
-  const ink = ds.colors.some((c) => c.id === 'ink.strong') ? token('ink.strong') : token('brand.primary');
+  // Falls back to whatever the first palette entry is rather than a second
+  // hardcoded token, so a design system that names its black something else
+  // still gets ink instead of #000000.
+  const ink = ds.colors.some((c) => c.id === 'ink.strong')
+    ? token('ink.strong')
+    : token(ds.colors[0]?.id ?? 'ink.strong');
   // Grey for every annotation. Falls back to the strong ink rather than
   // inventing a hex, so a design system without a muted token still reads.
   const muted = ds.colors.some((c) => c.id === 'ink.muted') ? token('ink.muted') : ink;
@@ -266,7 +278,17 @@ export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme
         color: muted,
       }),
       legend: textRole(ds, style.fonts.legend, fontOver(spec.legend?.font)),
-      title: textRole(ds, style.fonts.title, { color: ink, ...fontOver(spec.titleFont) }),
+      // The title is mono and UPPERCASE like the rest of the chart's furniture,
+      // but in the strong ink and a size above it: it labels the chart, so it
+      // reads as the instrument's heading rather than as a sentence. Not bold —
+      // caps at this size already outranks everything else in the frame, and
+      // bold on top of caps reads as shouting.
+      title: textRole(ds, style.fonts.title, {
+        ...ANNOTATION,
+        bold: false,
+        color: ink,
+        ...fontOver(spec.titleFont),
+      }),
     },
     sizes: {
       axisWidthEmu: pointsToEmu(0.75),
@@ -274,6 +296,7 @@ export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme
       legendSwatchEmu: pointsToEmu(7),
       labelGapEmu: pointsToEmu(3),
       axisGapEmu: pointsToEmu(5),
+      tickMarkEmu: pointsToEmu(3),
     },
     seriesColor(i: number): ColorRef {
       const n = palette.length;

@@ -29,12 +29,13 @@ import {
   unionRect,
   type Rect,
   isGridSpec,
+  elementIdFor,
   legendSeriesKey,
-  partKind,
   supportsTurn,
   type ChartInstance,
 } from '@/model';
 import { useEditor } from '@/store/editorStore';
+import { legendBoxAt } from '@/store/chartActions';
 import { SelectionFormatBar } from './SelectionFormatBar';
 import { ArrangeBar } from './ArrangeBar';
 import { TextEditor } from './TextEditor';
@@ -42,7 +43,8 @@ import { CropOverlay } from './CropOverlay';
 import { CanvasContextMenu, contextMenuItems, type MenuItem } from './CanvasContextMenu';
 import { ChartDatasheetPanel } from './chart/ChartDatasheetPanel';
 import { ChartPartPopover } from './chart/ChartPartPopover';
-import { shiftClickParts } from './chart/partSelect';
+import { shiftClickParts, toggleClickParts } from './chart/partSelect';
+import { hitTestChart } from './chart/previewHitTest';
 import {
   ChartPartHighlights,
   LegendDropZones,
@@ -50,12 +52,21 @@ import {
   type LegendSide,
 } from './chart/ChartPartOverlay';
 import { CommentPins } from './CommentPins';
-import { OVERLAY_Z } from './layers';
+import { makeTitle } from './factories';
+import { inRect, titleBandPx, titleElement, titleSlotAction } from './titleSlot';
+import { MOVEABLE_Z, OVERLAY_Z } from './layers';
 import { measureTextFitPx } from './fitToText';
 import { resizeFactor } from './groupResize';
-import { layoutFrame, previewTurn, turnRect, readableAngle, snapQuarterTurn } from '@/chart/turn';
+import { layoutFrame, turnRect, snapQuarterTurn } from '@/chart/turn';
 
 const CANVAS_PAD = 48;
+
+/**
+ * How far off a chart part still counts as on it — see `refineChartHit`. Matches
+ * the slop the preview clicks with, and the minimum box the hover ring is drawn
+ * at (`ChartPartHighlights`), so what lights up is what a click would take.
+ */
+const CHART_HIT_SLOP_PX = 6;
 
 /**
  * Editor chrome that floats over the slide — the format/arrange bars, the
@@ -64,7 +75,7 @@ const CANVAS_PAD = 48;
  * a marquee.
  */
 const CHROME_SELECTOR =
-  '.dd-format-bar, .dd-comment-pin, .dd-crop-overlay, .dd-context-menu';
+  '.dd-format-bar, .dd-comment-pin, .dd-crop-overlay, .dd-context-menu, .dd-add-title';
 
 /** Rotations are stored 0–359, so 1° and 361° are the same stored value. */
 const normalizeDeg = (d: number) => ((Math.round(d) % 360) + 360) % 360;
@@ -157,7 +168,14 @@ export function EditorCanvas() {
   // PowerPoint-style drag modifiers: Shift constrains movement to the
   // horizontal/vertical axis; ⌘/Ctrl drops a copy instead of moving the
   // original, and the two combine (⌘⇧-drag = duplicate along one axis).
-  const dragAxisLockRef = useRef(false);
+  //
+  // The axis lock is state, not a ref, because Moveable has to apply it ITSELF
+  // (see `throttleDragRotate`). Zeroing the cross axis in `onDrag` after the
+  // fact would paint the right thing but leave Moveable measuring the pointer's
+  // undropped drift — and a rect it believes has wandered off the row no longer
+  // overlaps that row, so the equal-spacing guides stop matching and a
+  // shift-drag silently loses the snapping a plain drag has.
+  const [dragAxisLock, setDragAxisLock] = useState(false);
   const dragDuplicateRef = useRef(false);
   const dragModifierCleanupRef = useRef<(() => void) | null>(null);
   // Live previews of the copies a ⌘-drag is about to drop: DOM clones of the
@@ -169,6 +187,14 @@ export function EditorCanvas() {
   // A selection change that mousedown on an already-selected element implies,
   // held until mouseup so it can be dropped if the gesture turns into a drag.
   const pendingSelectRef = useRef<{ id: string; mode: DeferredSelect } | null>(null);
+  /**
+   * The chart part a shift-click measures its range from: the last one clicked
+   * without a modifier. Held here rather than in the store because it is a
+   * property of this gesture stream, not of the document — nothing outside the
+   * canvas has an opinion about where a range started, and `shiftClickParts`
+   * ignores it once it leaves the selection anyway.
+   */
+  const partAnchorRef = useRef<string | null>(null);
   /**
    * The chart whose datasheet is open. Held by id rather than by object so the
    * panel always reads the live instance out of the store — a stale copy would
@@ -229,8 +255,22 @@ export function EditorCanvas() {
    * for why a chart needs the affordance at all.
    */
   const [hoverPartId, setHoverPartId] = useState<string | null>(null);
+  /**
+   * Whether the pointer is in the title band of a slide that has no title yet —
+   * the hover that offers to add one. See `titleSlot`.
+   */
+  const [titleSlotHover, setTitleSlotHover] = useState(false);
   /** A legend mid-drag, and the side it would snap to if dropped now. */
-  const [legendDrag, setLegendDrag] = useState<{ chartId: string; side: LegendSide } | null>(null);
+  /**
+   * A legend mid-drag: which side it would land on, and — for the two positions
+   * inside the plot — the box it would actually occupy, asked of the compiler
+   * once when the drag starts. See `legendBoxAt`.
+   */
+  const [legendDrag, setLegendDrag] = useState<{
+    chartId: string;
+    side: LegendSide;
+    inside: Partial<Record<LegendSide, Rect>>;
+  } | null>(null);
   // Ctrl/⌘ + wheel zoom, as a multiple of the fit-to-window width.
   const [zoom, setZoom] = useState(1);
   const zoomAnchorRef = useRef<{ fx: number; fy: number; clientX: number; clientY: number } | null>(
@@ -393,6 +433,9 @@ export function EditorCanvas() {
   const margins = marginGuides(deck.slideSize);
   const marginX = margins.vertical.map((x) => x * scale);
   const marginY = margins.horizontal.map((y) => y * scale);
+  // The title band in canvas px — the hover region that offers to add a title,
+  // and where that button is drawn.
+  const titleBand = titleBandPx(deck.slideSize, scale);
 
   // Every shape's text area, as snap lines — so a text box dragged onto a shape
   // clicks into the same thin inset the shape's own text would use, and text
@@ -517,16 +560,19 @@ export function EditorCanvas() {
   };
 
   /**
-   * Live quarter turn being dragged on the chart, relative to where it sits now.
+   * True while the chart's own rotate handle is being dragged.
    *
-   * The rotate handle is on the backdrop, but a chart turns as one object, so
-   * every one of its primitives is repainted from this delta with the same
-   * maths `turnElements` will commit — no jump on mouseup.
+   * A quarter turn re-solves the whole layout in the transposed frame, so a
+   * part-by-part preview shows a picture the drop will never produce — the same
+   * reason a chart resize isn't previewed either.
+   *
+   * So the gesture shows the BOX turning and nothing else: the backdrop is the
+   * chart's own frame and Moveable's target, so it takes the live angle and
+   * carries the control box and its handles round with it, which is what makes
+   * it clear how far the drag has gone. Every other part holds its last good
+   * rendering, and the new layout appears in one step on release.
    */
-  const liveChartTurn =
-    soleChart && liveRotate && liveRotate.id === chartBackdropId
-      ? snapQuarterTurn(liveRotate.deg - (soleChart.rotation ?? 0))
-      : null;
+  const chartTurning = !!(soleChart && liveRotate && liveRotate.id === chartBackdropId);
 
   /** The picture in crop mode, if it's still on this slide. */
   const croppingPicture = (() => {
@@ -644,12 +690,26 @@ export function EditorCanvas() {
     const startY = e.clientY;
     let dragging = false;
 
+    // Solved once, on the first move rather than on every one: the two boxes
+    // depend on the chart, not on the pointer.
+    let inside: Partial<Record<LegendSide, Rect>> = {};
+
     const move = (ev: MouseEvent) => {
       // A few px of travel before this becomes a drag: a legend entry is a
       // small target and a click on one always jitters slightly.
       if (!dragging && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+      if (!dragging) {
+        inside = {
+          insideTopLeft: legendBoxAt(chart, ds, 'insideTopLeft'),
+          insideTopRight: legendBoxAt(chart, ds, 'insideTopRight'),
+        };
+      }
       dragging = true;
-      setLegendDrag({ chartId: chart.id, side: legendSideAt(chart, ev.clientX, ev.clientY) });
+      setLegendDrag({
+        chartId: chart.id,
+        side: legendSideAt(chart, ev.clientX, ev.clientY),
+        inside,
+      });
     };
 
     const up = (ev: MouseEvent) => {
@@ -691,7 +751,7 @@ export function EditorCanvas() {
     // ⌘ (Ctrl off Apple platforms) rather than Ctrl everywhere: Ctrl-drag on a
     // Mac is a right-click, so it can't be held through a drag.
     const apply = (shift: boolean, mod: boolean) => {
-      dragAxisLockRef.current = shift;
+      setDragAxisLock(shift);
       dragDuplicateRef.current = mod;
       // PowerPoint's copy cursor. Set on <body> so it wins over the element's
       // own `cursor: move` for the whole gesture, wherever the pointer goes.
@@ -709,7 +769,7 @@ export function EditorCanvas() {
   const detachDragModifiers = () => {
     dragModifierCleanupRef.current?.();
     dragModifierCleanupRef.current = null;
-    dragAxisLockRef.current = false;
+    setDragAxisLock(false);
     dragDuplicateRef.current = false;
     document.body.style.cursor = '';
   };
@@ -832,7 +892,6 @@ export function EditorCanvas() {
    * still and only the box tracks the handle; the relayout lands on release.
    */
   const chartResizeStartRef = useRef<{
-    frame: { x: number; y: number; w: number; h: number };
     /** The chart's orientation, so a turned chart previews turned. */
     rotation: number;
     /**
@@ -855,10 +914,18 @@ export function EditorCanvas() {
     const start = chartResizeStartRef.current;
     if (!start) return;
     const [dx, dy] = ev.drag.dist as [number, number];
-    const x = start.frame.x + dx;
-    const y = start.frame.y + dy;
-    const frame = { x, y, w: ev.width, h: ev.height };
-    const layout = layoutFrame(frame, start.rotation);
+    // Moveable reports the size of the TARGET — the backdrop's own box, before
+    // its rotation — and a translate in the parent's space. The backdrop of a
+    // turned chart IS the layout box (`layoutFrame`), so what arrives here is
+    // already layout space and must not be transposed a second time. Reading
+    // it as the frame swapped the two axes on every quarter-turned chart: the
+    // handle went down, the chart came back wider.
+    const layout = {
+      x: start.layout.x + dx,
+      y: start.layout.y + dy,
+      w: ev.width,
+      h: ev.height,
+    };
     const sx = start.layout.w > 0 ? layout.w / start.layout.w : 1;
     const sy = start.layout.h > 0 ? layout.h / start.layout.h : 1;
 
@@ -930,9 +997,6 @@ export function EditorCanvas() {
       },
     };
   };
-
-  const lockAxis = (dx: number, dy: number): [number, number] =>
-    Math.abs(dx) >= Math.abs(dy) ? [dx, 0] : [0, dy];
 
   /**
    * Repaint a node at its committed position.
@@ -1019,6 +1083,41 @@ export function EditorCanvas() {
   };
 
   /**
+   * The part a pointer inside a chart is really aimed at.
+   *
+   * The DOM can only answer with a box it painted, and the chart's backdrop is
+   * one box covering the whole frame — so everywhere that isn't a bar or a
+   * number comes back as "the plot", including the axis gutters. A value axis is
+   * usually drawn as nothing but its tick labels, a tenth of an inch tall with
+   * an inch of blank between them, so aiming at the axis and hitting the axis
+   * were two different things: the click landed on the backdrop and selected the
+   * whole chart instead of opening the axis panel.
+   *
+   * Only the backdrop gives way. A press on a mark, a label or a legend key is
+   * already exact, and the geometry test is the same one the preview clicks
+   * through — `hitTestChart`, which knows an axis is a band and gives the small
+   * parts slop — so the canvas and the preview now answer a click the same way.
+   */
+  const refineChartHit = (
+    id: string | undefined,
+    clientX: number,
+    clientY: number,
+  ): string | undefined => {
+    if (!id || !slide || !selectionChart) return id;
+    const ref = slide.elements.find((x) => x.id === id)?.chartRef;
+    if (ref?.chartId !== selectionChart.id || ref.part !== 'plot') return id;
+    const box = canvasRef.current?.getBoundingClientRect();
+    if (!box) return id;
+    const hit = hitTestChart(
+      slide.elements.filter((x) => x.chartRef?.chartId === selectionChart.id),
+      pxToEmu(clientX - box.left, scale),
+      pxToEmu(clientY - box.top, scale),
+      pxToEmu(CHART_HIT_SLOP_PX, scale),
+    );
+    return hit ? elementIdFor(hit) : id;
+  };
+
+  /**
    * Single source of truth for what a mousedown selects. It runs in the CAPTURE
    * phase on the whole canvas area because Moveable's overlay (the group drag
    * area in particular) swallows mousedown before it can reach the element or
@@ -1050,7 +1149,11 @@ export function EditorCanvas() {
       wrapRef.current?.focus({ preventScroll: true });
     }
 
-    const id = elementAtPoint(e.clientX, e.clientY)?.dataset.id;
+    const id = refineChartHit(
+      elementAtPoint(e.clientX, e.clientY)?.dataset.id,
+      e.clientX,
+      e.clientY,
+    );
 
     // Right-click opens the context menu on whatever is under the pointer; it
     // must never shrink an existing multi-selection the menu is about to act on.
@@ -1070,11 +1173,15 @@ export function EditorCanvas() {
     // is claimed before the ordinary selection rules see it — see
     // `armLegendDrag`, which decides between the drag and the click on move.
     const pressedRef = (slide?.elements ?? []).find((x) => x.id === id)?.chartRef;
+    // An unmodified click is where the next range will be measured from.
+    if (!e.shiftKey && !e.metaKey && !e.ctrlKey) partAnchorRef.current = id;
     if (
       selectionChart &&
       pressedRef?.chartId === selectionChart.id &&
       (pressedRef.part === 'legend.item' || pressedRef.part === 'legend.box') &&
-      !e.shiftKey
+      !e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey
     ) {
       armLegendDrag(e, selectionChart, id);
       return;
@@ -1102,18 +1209,22 @@ export function EditorCanvas() {
       return;
     }
 
-    // Already inside a chart: shift-click gathers PARTS, not the chart. The
+    // Already inside a chart: the modifiers gather PARTS, not the chart. The
     // ordinary shift branch below grows any id into its whole group, and a
     // chart's group is all thirty-odd of its parts — which is how shift-click
     // on a second bar used to jump straight back out to the whole chart, with
-    // no way to format three of anything at once.
-    if (chartPart && e.shiftKey && pressedRef?.chartId === chartPart.id) {
+    // no way to format three of anything at once. Shift takes the range from
+    // the anchor, ⌘/Ctrl takes one part at a time — see `partSelect`.
+    if (chartPart && (e.shiftKey || e.metaKey || e.ctrlKey) && pressedRef?.chartId === chartPart.id) {
+      const parts = els.filter((x) => x.chartRef?.chartId === chartPart.id);
       store().selectExact(
-        shiftClickParts(id, selectedIds, (elId) => {
-          const ref = els.find((x) => x.id === elId)?.chartRef;
-          return ref ? partKind(ref) : null;
-        }),
+        e.shiftKey
+          ? shiftClickParts(id, selectedIds, partAnchorRef.current, parts)
+          : toggleClickParts(id, selectedIds, parts),
       );
+      // ⌘-click moves the anchor to what it picked; shift-click leaves it, so
+      // the next shift-click re-measures the same range rather than ratcheting.
+      if (!e.shiftKey) partAnchorRef.current = id;
       return;
     }
 
@@ -1144,6 +1255,25 @@ export function EditorCanvas() {
     } else {
       store().select([id]);
     }
+  };
+
+  /**
+   * Fill the slide's empty title slot and leave the caret in it, so the click
+   * that asks for a title is followed by typing the title — not by hunting for
+   * the box and double-clicking it. A title box that exists but is still
+   * wordless is re-opened rather than duplicated (see `titleSlotAction`).
+   */
+  const addTitle = () => {
+    setTitleSlotHover(false);
+    const s = store();
+    const els = s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.elements ?? [];
+    const action = titleSlotAction(els);
+    if (action === 'none') return;
+    const el = action === 'edit' ? titleElement(els) : makeTitle(s.designSystem, s.deck.slideSize);
+    if (!el) return;
+    if (action === 'edit') s.select([el.id]);
+    else s.addElement(el);
+    store().setEditing(el.id);
   };
 
   if (!slide) return null;
@@ -1220,19 +1350,49 @@ export function EditorCanvas() {
           // an ordinary slide would be work nobody asked for, and a chart the
           // user hasn't touched has no parts to offer yet.
           onMouseMove={(e) => {
+            // An untitled slide's empty title band offers to fill itself.
+            // Mid-gesture or mid-edit the offer would be noise, so it is only
+            // ever made to a pointer resting quietly in the band.
+            const box = canvasRef.current?.getBoundingClientRect();
+            let overBand = false;
+            if (
+              box &&
+              !editingId &&
+              !croppingId &&
+              !legendDrag &&
+              !liveRotate &&
+              !liveResize &&
+              inRect(titleBand, e.clientX - box.left, e.clientY - box.top)
+            ) {
+              const els = slide?.elements ?? [];
+              const action = titleSlotAction(els);
+              // Bare band only: a pointer over an object in the band is aimed
+              // at that object. The wordless title box is the exception — it
+              // covers the band it sits in, and re-opening it is the whole
+              // point of the offer.
+              const hit = elementAtPoint(e.clientX, e.clientY)?.dataset.id;
+              overBand =
+                action !== 'none' &&
+                (!hit || (action === 'edit' && hit === titleElement(els)?.id));
+            }
+            if (overBand !== titleSlotHover) setTitleSlotHover(overBand);
+
             if (!selectionChart || legendDrag || liveRotate || liveResize) {
               if (hoverPartId) setHoverPartId(null);
               return;
             }
             const el = elementAtPoint(e.clientX, e.clientY);
-            const hitId = el?.dataset.id ?? null;
+            const hitId = refineChartHit(el?.dataset.id, e.clientX, e.clientY) ?? null;
             const ref = hitId
               ? slide?.elements.find((x) => x.id === hitId)?.chartRef
               : undefined;
             const next = ref?.chartId === selectionChart.id ? hitId : null;
             if (next !== hoverPartId) setHoverPartId(next);
           }}
-          onMouseLeave={() => setHoverPartId(null)}
+          onMouseLeave={() => {
+            setHoverPartId(null);
+            setTitleSlotHover(false);
+          }}
           // The browser's menu is suppressed everywhere on the slide, and ours
           // takes over for the selection that has commands worth reaching at the
           // pointer (see `contextMenuItems`). Text being edited is the
@@ -1303,25 +1463,18 @@ export function EditorCanvas() {
           // pre-crop box at full strength through the dimmed part.
           const isCropping = croppingId === el.id;
           const live = liveResize?.[el.id] ?? null;
-          // A chart mid-turn: this primitive orbits the frame's centre and
-          // spins by the same quarter turn, kept inside the frame so the chart
-          // turns in its box — the commit re-solves the layout, see `turn.ts`.
-          const turning =
-            liveChartTurn !== null && soleChart && el.chartRef?.chartId === soleChart.id
-              ? previewTurn(el.rect, soleChart.frame, liveChartTurn)
-              : null;
-          const rect = turning ? turning.rect : el.rect;
-          const boxX = live ? live.x : rect.x * scale;
-          const boxY = live ? live.y : rect.y * scale;
-          const boxW = live ? live.w : rect.w * scale;
-          const boxH = live ? live.h : rect.h * scale;
+          // A part of the chart being turned: held at its committed transform
+          // for the whole gesture, so the chart snaps to its re-solved layout in
+          // one step on release. See `chartTurning`.
+          const turning = chartTurning && soleChart && el.chartRef?.chartId === soleChart.id;
+          const boxX = live ? live.x : el.rect.x * scale;
+          const boxY = live ? live.y : el.rect.y * scale;
+          const boxW = live ? live.w : el.rect.w * scale;
+          const boxH = live ? live.h : el.rect.h * scale;
           // Mid-rotation the live angle wins, so the object turns with the
           // handle instead of snapping into place on mouseup.
-          const spinDeg = turning
-            ? readableAngle((el.rotation ?? 0) + turning.spin, el.type === 'text')
-            : liveRotate?.id === el.id
-              ? liveRotate.deg
-              : (el.rotation ?? 0);
+          const spinDeg =
+            !turning && liveRotate?.id === el.id ? liveRotate.deg : (el.rotation ?? 0);
           return (
             <div
               key={el.id}
@@ -1393,6 +1546,27 @@ export function EditorCanvas() {
           />
         ) : null}
 
+        {/* An untitled slide's empty title band, offered rather than explained:
+            hover the band and the one thing that belongs there is one click
+            away, parked where the brand puts a title. Chrome, not an element —
+            `dd-add-title` is in CHROME_SELECTOR, so pressing it neither clears
+            the selection nor starts a marquee. */}
+        {titleSlotHover ? (
+          <div
+            className="dd-add-title absolute"
+            style={{ left: titleBand.x, top: titleBand.y, zIndex: OVERLAY_Z }}
+          >
+            <button
+              onClick={addTitle}
+              title="Give this slide a title"
+              className="flex items-center gap-1.5 rounded-md border border-dashed border-zinc-400 bg-white/90 px-2 py-1 text-xs font-medium text-zinc-600 shadow-sm backdrop-blur hover:border-solid hover:border-sky-500 hover:text-sky-600 dark:border-zinc-500 dark:bg-zinc-900/90 dark:text-zinc-300 dark:hover:text-sky-400"
+            >
+              <span className="text-sm leading-none">+</span>
+              Add title
+            </button>
+          </div>
+        ) : null}
+
         {/* Comment markers for this slide, above the elements they annotate. */}
         <CommentPins slide={slide} scale={scale} />
 
@@ -1414,7 +1588,12 @@ export function EditorCanvas() {
 
         {/* The four sides a dragged legend can land on. */}
         {legendDrag && selectionChart?.id === legendDrag.chartId ? (
-          <LegendDropZones chart={selectionChart} active={legendDrag.side} scale={scale} />
+          <LegendDropZones
+            chart={selectionChart}
+            active={legendDrag.side}
+            inside={legendDrag.inside}
+            scale={scale}
+          />
         ) : null}
 
         {/* Formatting for whatever part of a chart the user drilled into. Sits
@@ -1454,6 +1633,34 @@ export function EditorCanvas() {
           );
         })()}
 
+        {/* The box a chart is being turned in.
+
+            The chart itself holds still for the whole gesture (see
+            `chartTurning`), and Moveable's own box can't help: it is drawn from
+            the target's matrix, which nothing rotates until the drop, and it
+            ignores `updateRect` mid-gesture. So the frame is drawn here at the
+            live angle, handle and all, and Moveable's box is hidden underneath
+            it — this is the one thing on screen that says how far round the drag
+            has got. */}
+        {chartTurning && soleChart && liveRotate ? (
+          <div
+            className="pointer-events-none absolute border border-sky-400"
+            style={{
+              left: soleChart.frame.x * scale,
+              top: soleChart.frame.y * scale,
+              width: soleChart.frame.w * scale,
+              height: soleChart.frame.h * scale,
+              transform: `rotate(${liveRotate.deg}deg)`,
+              transformOrigin: 'center center',
+              zIndex: MOVEABLE_Z,
+            }}
+          >
+            {/* The rotate handle, turning with the box it belongs to. */}
+            <div className="absolute -top-10 left-1/2 h-10 w-px -translate-x-1/2 bg-sky-400" />
+            <div className="absolute -top-[46px] left-1/2 size-3 -translate-x-1/2 rounded-full border border-sky-400 bg-white" />
+          </div>
+        ) : null}
+
         {/* Crop handles for the picture being cropped. Replaces the transform
             box below — a crop trims the box, so the two would fight over the
             same corners. */}
@@ -1464,6 +1671,10 @@ export function EditorCanvas() {
           <Moveable
             ref={moveableRef}
             target={selectedNodes}
+            // Mid-turn the drawn box above replaces this one, which is stuck at
+            // the angle the gesture started from. Hidden, not unmounted: it is
+            // the thing tracking the pointer.
+            className={chartTurning ? 'opacity-0' : undefined}
             // See `chartPartLabelsOnly`: a drilled-into part is selectable and
             // formattable, but its box belongs to the compiler.
             draggable={!chartPart || chartPartLabelsOnly}
@@ -1476,6 +1687,11 @@ export function EditorCanvas() {
             origin={false}
             throttleDrag={0}
             throttleResize={0}
+            // Shift-drag: quantize the drag DIRECTION to the four axes, which is
+            // the axis lock — and Moveable applies it before it snaps, so the
+            // rect it measures is the rect the user sees and the alignment and
+            // equal-spacing guides keep working exactly as on a plain drag.
+            throttleDragRotate={dragAxisLock ? 90 : 0}
             // Charts snap to the four orientations — a chart at 37° is a
             // mistake, not a design. Everything else rotates freely.
             throttleRotate={soleChart ? 90 : 0}
@@ -1505,9 +1721,7 @@ export function EditorCanvas() {
               const id = (e.target as HTMLElement).dataset.id!;
               const el = findEl(id);
               if (!el) return;
-              const [dx, dy] = dragAxisLockRef.current
-                ? lockAxis(e.dist[0], e.dist[1])
-                : (e.dist as [number, number]);
+              const [dx, dy] = e.dist as [number, number];
               // ⌘ held: pin a stand-in at the origin, then move the node itself
               // as usual, so the selection box and snap guides come along.
               if (dragDuplicateRef.current) paintGhost(e.target as HTMLElement);
@@ -1532,16 +1746,13 @@ export function EditorCanvas() {
             }}
             onDragEnd={(e) => {
               const wasDuplicate = dragDuplicateRef.current;
-              const wasAxisLocked = dragAxisLockRef.current;
               detachDragModifiers();
               clearGhosts();
               demoteAfterGesture([e.target as HTMLElement]);
               const last = e.lastEvent;
               if (!last) return;
               const id = (e.target as HTMLElement).dataset.id!;
-              const [dx, dy] = wasAxisLocked
-                ? lockAxis(last.dist[0], last.dist[1])
-                : (last.dist as [number, number]);
+              const [dx, dy] = last.dist as [number, number];
               if (wasDuplicate) {
                 if (!dx && !dy) {
                   restoreCommittedTransform(e.target as HTMLElement);
@@ -1566,9 +1777,7 @@ export function EditorCanvas() {
               pendingSelectRef.current = null;
               const first = e.events[0];
               if (!first) return;
-              const [dx, dy] = dragAxisLockRef.current
-                ? lockAxis(first.dist[0], first.dist[1])
-                : (first.dist as [number, number]);
+              const [dx, dy] = first.dist as [number, number];
               if (dragDuplicateRef.current)
                 e.events.forEach((ev) => paintGhost(ev.target as HTMLElement));
               else clearGhosts();
@@ -1583,15 +1792,12 @@ export function EditorCanvas() {
             }}
             onDragGroupEnd={(e) => {
               const wasDuplicate = dragDuplicateRef.current;
-              const wasAxisLocked = dragAxisLockRef.current;
               detachDragModifiers();
               clearGhosts();
               demoteAfterGesture(e.events.map((ev) => ev.target as HTMLElement));
               const last = e.events[0]?.lastEvent;
               if (!last) return;
-              const [dx, dy] = wasAxisLocked
-                ? lockAxis(last.dist[0], last.dist[1])
-                : (last.dist as [number, number]);
+              const [dx, dy] = last.dist as [number, number];
               if (wasDuplicate) {
                 if (dx || dy)
                   store().duplicateBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
@@ -1615,7 +1821,6 @@ export function EditorCanvas() {
               };
               const layoutPx = layoutFrame(framePx, rotation);
               chartResizeStartRef.current = {
-                frame: framePx,
                 rotation,
                 layout: layoutPx,
                 // The backdrop alone. A resize is not an affine transform of a
@@ -1681,7 +1886,17 @@ export function EditorCanvas() {
               if (soleChart) {
                 // The backdrop IS the frame, so resizing it resizes the chart —
                 // which relayouts rather than stretching 9pt type to 14.
-                store().setChartFrame(soleChart.id, rect);
+                //
+                // At a quarter turn the backdrop is the frame TRANSPOSED (see
+                // `layoutFrame`), and both the rect above and Moveable's
+                // width/height are in that turned box's own space. `layoutFrame`
+                // is its own inverse — transpose about the same centre — so one
+                // more application maps the dragged box back onto the frame.
+                // Without it a drag down the page committed a wider chart.
+                store().setChartFrame(
+                  soleChart.id,
+                  layoutFrame(rect, snapQuarterTurn(soleChart.rotation ?? 0)),
+                );
                 settleChartResizePaint();
               } else {
                 store().setRect(id, rect);

@@ -30,7 +30,7 @@ describe('resolvePalette', () => {
   });
 
   it('leads with the accent', () => {
-    expect(hexes(DEFAULT_DESIGN_SYSTEM)[0]).toBe('#4F46E5');
+    expect(hexes(DEFAULT_DESIGN_SYSTEM)[0]).toBe('#2600FF');
   });
 
   it('builds a ramp from the accent rather than scavenging other tokens', () => {
@@ -58,9 +58,9 @@ describe('resolvePalette', () => {
   it('prefers the brand palette when Admin has set one', () => {
     const branded: DesignSystem = {
       ...DEFAULT_DESIGN_SYSTEM,
-      chart: { ...DEFAULT_DESIGN_SYSTEM.chart, paletteTokenIds: ['brand.primary', 'brand.accent'] },
+      chart: { ...DEFAULT_DESIGN_SYSTEM.chart, paletteTokenIds: ['ink.strong', 'brand.accent'] },
     };
-    expect(hexes(branded)).toEqual(['#111111', '#4F46E5']);
+    expect(hexes(branded)).toEqual(['#191919', '#2600FF']);
   });
 
   it('drops an unusable colour even when Admin picked it', () => {
@@ -69,23 +69,23 @@ describe('resolvePalette', () => {
       ...DEFAULT_DESIGN_SYSTEM,
       chart: {
         ...DEFAULT_DESIGN_SYSTEM.chart,
-        paletteTokenIds: ['brand.accent', 'surface.base', 'brand.primary'],
+        paletteTokenIds: ['brand.accent', 'surface.base', 'ink.strong'],
       },
     };
-    expect(hexes(branded)).toEqual(['#4F46E5', '#111111']);
+    expect(hexes(branded)).toEqual(['#2600FF', '#191919']);
   });
 
   it('drops a brand colour that duplicates one already in the palette', () => {
     const branded: DesignSystem = {
-      ...DEFAULT_DESIGN_SYSTEM,
-      // #111111 and #0A0A0A are different tokens with the same appearance; a
+      ...dsWith([...DEFAULT_DESIGN_SYSTEM.colors, { id: 'ink.alt', name: 'Ink alt', hex: '#1C1C1C' }]),
+      // #191919 and #1C1C1C are different tokens with the same appearance; a
       // chart using both renders two series the reader cannot tell apart.
       chart: {
         ...DEFAULT_DESIGN_SYSTEM.chart,
-        paletteTokenIds: ['brand.primary', 'ink.strong', 'brand.accent'],
+        paletteTokenIds: ['ink.strong', 'ink.alt', 'brand.accent'],
       },
     };
-    expect(hexes(branded)).toEqual(['#111111', '#4F46E5']);
+    expect(hexes(branded)).toEqual(['#191919', '#2600FF']);
   });
 
   it('yields visually distinct colors throughout', () => {
@@ -169,7 +169,7 @@ describe('brand gridline rule', () => {
     };
     expect(resolvePalette(spec(), ds).map((r) => resolveColor(r, ds))).toEqual([
       '#6B7280',
-      '#4F46E5',
+      '#2600FF',
     ]);
   });
 });
@@ -187,8 +187,8 @@ describe('chart typography', () => {
 
   it('keeps the serif out of a chart, whatever the type roles say', () => {
     // A serif body role is a good call for prose and a bad one for a column of
-    // 9pt axis numbers. Charts use the sans for titles and legends and the mono
-    // for everything annotating the data.
+    // 9pt axis numbers. Charts use the sans for the legend and the mono for the
+    // title and everything annotating the data.
     const els = compileChart(
       { id: 'c1', groupId: 'g1', frame: FRAME, spec: spec() },
       serifEverywhere,
@@ -224,6 +224,27 @@ describe('chart typography', () => {
     // is the one thing worse than an off-palette one.
     for (const r of runs.filter((x) => x.part === 'axis')) {
       expect(r.color).toEqual({ kind: 'token', token: 'ink.muted' });
+    }
+  });
+
+  it('sets the title in mono and uppercase, and never bold', () => {
+    const els = compileChart(
+      { id: 'c1', groupId: 'g1', frame: FRAME, spec: { ...spec(), title: 'Revenue by region' } },
+      serifEverywhere,
+      metricMeasurer(),
+    ).elements;
+    const runs = els.flatMap((e) =>
+      e.type === 'text' && e.chartRef?.part === 'title'
+        ? e.body.paragraphs.flatMap((p) => p.runs)
+        : [],
+    );
+    expect(runs.length).toBeGreaterThan(0);
+    for (const r of runs) {
+      expect(r.font).toBe('Geist Mono');
+      expect(r.text).toBe(r.text.toUpperCase());
+      expect(r.bold).not.toBe(true);
+      // Strong ink, unlike the muted annotation set — the title is the heading.
+      expect(r.color).toEqual({ kind: 'token', token: 'ink.strong' });
     }
   });
 

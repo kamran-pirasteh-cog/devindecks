@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ShapeElement, SlideElement } from '@/model';
-import { detachChartElements, reconcileChartElements, stripChartElements } from './reconcile';
+import {
+  detachChartElements,
+  liftChartParts,
+  reconcileChartElements,
+  stripChartElements,
+} from './reconcile';
 
 const shape = (id: string, x = 0, extra: Partial<ShapeElement> = {}): ShapeElement => ({
   id,
@@ -64,6 +69,26 @@ describe('reconcileChartElements', () => {
     const before = [shape('c1::a', 0, { locked: true })];
     const after = reconcileChartElements(before, 'c1', [shape('c1::a', 42)]);
     expect(after[0]).toMatchObject({ rect: { x: 42 }, locked: true });
+  });
+
+  it('lifts named parts to the top of the chart run, and no further', () => {
+    // A legend dragged inside the plot has to paint over the bars; it keeps the
+    // slot it held while it sat in a gutter under them.
+    const before = [
+      shape('c1::legend.box'),
+      shape('c1::mark.s0.c0'),
+      shape('sticker'),
+    ];
+    expect(ids(liftChartParts(before, 'c1', ['c1::legend.box']))).toEqual([
+      'c1::mark.s0.c0',
+      'c1::legend.box',
+      'sticker',
+    ]);
+  });
+
+  it('leaves the list alone when nothing named is there', () => {
+    const before = [shape('c1::a'), shape('other')];
+    expect(liftChartParts(before, 'c1', ['c1::legend.box'])).toBe(before);
   });
 
   it('handles a chart appearing on a slide that had none', () => {

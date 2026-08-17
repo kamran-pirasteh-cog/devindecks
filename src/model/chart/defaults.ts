@@ -61,7 +61,7 @@ export const DEFAULT_DECORATIONS: Decorations = {
  */
 export const FALLBACK_PALETTE: ColorRef[] = [
   token('brand.accent'),
-  token('brand.primary'),
+  token('ink.strong'),
   token('ink.muted'),
 ];
 
@@ -323,7 +323,7 @@ export function defaultChartSpec(
         colors: {
           increase: token('brand.accent'),
           decrease: token('ink.muted'),
-          total: token('brand.primary'),
+          total: token('ink.strong'),
         },
         gapWidthPct,
         decorations: { ...b.decorations, labels: { ...b.decorations.labels, show: true } },

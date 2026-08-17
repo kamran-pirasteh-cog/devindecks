@@ -3,11 +3,13 @@
 /**
  * Line inserter — orientation, dash, weight and color chosen up front, then a
  * single click drops the line on the slide. Colors come from the live design
- * system, so a line can only ever be an on-brand token (never a raw hex).
+ * system, so a line is on-brand unless it's deliberately taken off it through
+ * the custom swatch at the end of the row.
  */
 import { useEffect, useRef, useState } from 'react';
-import { resolveColor, token, type DashStyle } from '@/model';
+import { hex as hexRef, resolveColor, token, type DashStyle } from '@/model';
 import { useEditor } from '@/store/editorStore';
+import { CustomColorSwatch, customHexOf } from './color';
 import { DEFAULT_LINE_OPTIONS, makeLine, type LineOptions } from './factories';
 import { OVERLAY_Z } from './layers';
 
@@ -104,7 +106,7 @@ export function LinePopover({
     onClose();
   };
 
-  const previewColor = resolveColor(token(opts.colorToken), ds);
+  const previewColor = resolveColor(opts.color, ds);
   const previewDash = DASHES.find((d) => d.value === opts.dash)?.pattern;
 
   return (
@@ -165,7 +167,7 @@ export function LinePopover({
 
         <Row label="Color">
           {ds.colors.map((c) => {
-            const active = opts.colorToken === c.id;
+            const active = opts.color.kind === 'token' && opts.color.token === c.id;
             return (
               <button
                 key={c.id}
@@ -173,7 +175,7 @@ export function LinePopover({
                 title={c.name}
                 aria-label={c.name}
                 aria-pressed={active}
-                onClick={() => setOpts((s) => ({ ...s, colorToken: c.id }))}
+                onClick={() => setOpts((s) => ({ ...s, color: token(c.id) }))}
                 className={`h-6 w-6 rounded-full border ${
                   active
                     ? 'border-zinc-900 ring-2 ring-zinc-900 ring-offset-1 dark:border-white dark:ring-white dark:ring-offset-zinc-900'
@@ -183,6 +185,12 @@ export function LinePopover({
               />
             );
           })}
+          <CustomColorSwatch
+            value={customHexOf(opts.color)}
+            active={opts.color.kind === 'hex'}
+            onPick={(h) => setOpts((s) => ({ ...s, color: hexRef(h) }))}
+            shape="rounded-full"
+          />
         </Row>
 
         <div className="flex h-8 items-center justify-center rounded-md bg-zinc-50 dark:bg-zinc-800">

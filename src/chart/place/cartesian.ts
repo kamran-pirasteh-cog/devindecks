@@ -5,8 +5,8 @@
  * Column, bar, line, area and combo all draw the same frame around different
  * marks, so this lives once and each placer only supplies its own geometry.
  */
-import type { ColorRef, EMU, LegendSpec, Rect } from '@/model';
-import { pointsToEmu } from '@/model';
+import type { AxisSpec, ColorRef, EMU, LegendSpec, Rect } from '@/model';
+import { isInsideLegend, pointsToEmu, token } from '@/model';
 import type { LinearScale } from '../scale/linear';
 import type { ChartTheme } from '../theme';
 import type { Mark, MarkTextStyle } from '../mark';
@@ -101,6 +101,9 @@ export interface CartesianInput {
   showValueAxisLine: boolean;
   showCategoryAxisLine: boolean;
   gridlines: boolean;
+  /** Short rules at each tick, per axis. Unset means none — see `AxisSpec`. */
+  valueTickMarks?: AxisSpec['tickMarks'];
+  categoryTickMarks?: AxisSpec['tickMarks'];
   title?: string;
   valueAxisTitle?: string;
   categoryAxisTitle?: string;
@@ -135,6 +138,8 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     showCategoryAxisLabels,
     showValueAxisLine,
     showCategoryAxisLine,
+    valueTickMarks,
+    categoryTickMarks,
     continuousCategoryAxis,
     bounds,
     gridlines,
@@ -218,6 +223,52 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     });
   }
 
+  /* --- tick marks --- */
+  // Drawn from the plot's edge, outwards into the gap the frame already left
+  // for the labels or inwards over the plot, so switching them on never moves
+  // anything else. See `sizes.tickMarkEmu`.
+  const tickMark = (axis: 'x' | 'y', at: EMU, dir: 'out' | 'in') => {
+    const len = theme.sizes.tickMarkEmu;
+    // Which edge a tick hangs off is the axis's own: the value axis runs up the
+    // left (or along the bottom, turned), the category axis the other way.
+    const alongValue = axis === valueAxisId;
+    const vertical = alongValue !== horizontal;
+    if (vertical) {
+      // A rule reaching sideways from the plot's left edge.
+      const x0 = plot.x;
+      const x1 = dir === 'out' ? plot.x - len : plot.x + len;
+      return rectFromEdges(Math.min(x0, x1), at, Math.max(x0, x1), at);
+    }
+    const y0 = plot.y + plot.h;
+    const y1 = dir === 'out' ? y0 + len : y0 - len;
+    return rectFromEdges(at, Math.min(y0, y1), at, Math.max(y0, y1));
+  };
+
+  const pushTicks = (
+    axis: 'x' | 'y',
+    mode: AxisSpec['tickMarks'],
+    positions: EMU[],
+  ) => {
+    if (!mode || mode === 'none') return;
+    positions.forEach((at, i) => {
+      marks.push({
+        kind: 'line',
+        ref: { chartId, part: 'axis', axis, sub: 'tickMark', i },
+        rect: tickMark(axis, at, mode),
+        color: theme.axisLine,
+        widthEmu: theme.sizes.axisWidthEmu,
+        dash: 'solid',
+      });
+    });
+  };
+
+  pushTicks(valueAxisId, valueTickMarks, scale.ticks.map((t) => proj.value(t)));
+  pushTicks(
+    categoryAxisId,
+    categoryTickMarks,
+    categoryCenters.map((t) => proj.category(t)),
+  );
+
   /* --- value axis tick labels --- */
   if (showValueAxisLabels) {
     const style = textStyle(theme.text.tick, horizontal ? 'center' : 'right', 'middle');
@@ -297,7 +348,16 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
           // The banded case is the one label on a chart that genuinely wants to
           // wrap: its box is the band, not the text, and a long category name
           // reads better on two lines than overlapping its neighbour.
-          style: continuousCategoryAxis ? style : { ...style, wrap: true },
+          //
+          // That box is one line tall, so a wrapped label grows out of it; a
+          // middle anchor spends half that growth UPWARDS, over the category
+          // axis it sits under. Anchoring to the top spends all of it
+          // downwards, away from the chart. (Upright labels wrap across the
+          // band instead — their overflow runs sideways within their own slot,
+          // and their anchor becomes an alignment once stood up.)
+          style: continuousCategoryAxis
+            ? style
+            : { ...style, wrap: true, ...(uprightText ? {} : { anchor: 'top' as const }) },
           rect: boxAt(cx, plot.y + plot.h + gap + fh / 2, box.w, box.h),
         });
       }
@@ -388,7 +448,7 @@ function rotatedAxisTitle(
   };
 }
 
-function placeLegend(
+export function placeLegend(
   chartId: string,
   legend: NonNullable<CartesianInput['legend']>,
   slot: Rect,
@@ -399,7 +459,30 @@ function placeLegend(
   const sw = theme.sizes.legendSwatchEmu;
   const gap = theme.sizes.labelGapEmu;
   const h = lineHeightEmu(style);
+  const inside = isInsideLegend(legend.position);
   const marks: Mark[] = [];
+
+  // The legend's own box, behind its entries and invisible, exactly as the
+  // chart backdrop is: without it the legend is only ever hit through a 6pt
+  // swatch or a word, and a swatch MEANS the series — it drills to the bars.
+  // So "select the legend" — to move it, restyle it, or delete it — had no
+  // target at all. Pressing on the space around the entries is that target.
+  //
+  // Inside the plot the same box stops being invisible and starts earning its
+  // keep: it's the only thing between a series name and the gridlines running
+  // under it. Not opaque, though — a legend that blanks out the data behind it
+  // reads as a hole punched in the chart.
+  marks.push({
+    kind: 'rect',
+    ref: { chartId, part: 'legend.box' },
+    name: 'Legend',
+    rect: slot,
+    fill: {
+      kind: 'solid',
+      color: theme.plotBackground ?? token('surface.base'),
+      alpha: inside ? 0.85 : 0,
+    },
+  });
 
   const horizontal = legend.position === 'top' || legend.position === 'bottom';
   // `fitted`, like every other box measured to its own string: a series name
@@ -420,7 +503,10 @@ function placeLegend(
       x += widths[i] + spacing;
     });
   } else {
-    let y = slot.y + Math.max(0, (slot.h - legend.items.length * h) / 2);
+    // Centred in its gutter on a side, but flush with the top of the box when
+    // it's inside one: the box's top IS the top of the value axis, and an
+    // inside legend that drifted down from it would just look dropped.
+    let y = inside ? slot.y : slot.y + Math.max(0, (slot.h - legend.items.length * h) / 2);
     legend.items.forEach((it, i) => {
       marks.push(...legendItem(chartId, it, slot.x, y, sw, gap, h, widths[i], style));
       y += h;

@@ -6,7 +6,7 @@
  * looking at it rather than by reading three lists of options.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { resolveColor } from '@/model';
+import { hex as hexRef, resolveColor, token } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import {
   CALLOUT_PARTS,
@@ -17,6 +17,7 @@ import {
   type CalloutOptions,
   type CalloutPart,
 } from './callout';
+import { CustomColorSwatch, customHexOf } from './color';
 import { OVERLAY_Z } from './layers';
 
 export function CalloutPopover({
@@ -50,10 +51,7 @@ export function CalloutPopover({
     };
   }, [onClose, anchorRef]);
 
-  const fillHex = useMemo(
-    () => resolveColor({ kind: 'token', token: opts.fillToken }, ds),
-    [opts.fillToken, ds],
-  );
+  const fillHex = useMemo(() => resolveColor(opts.fill, ds), [opts.fill, ds]);
   const onLight = isLightFill(fillHex);
   const strong = onLight ? '#0A0A0A' : '#FFFFFF';
   const muted = onLight ? resolveColor({ kind: 'token', token: 'ink.muted' }, ds) : '#FFFFFF';
@@ -118,7 +116,7 @@ export function CalloutPopover({
             Corners
           </span>
           <div className="flex items-center gap-1">
-            {(['round', 'square'] as const).map((c) => {
+            {(['square', 'round'] as const).map((c) => {
               const active = opts.corners === c;
               return (
                 <button
@@ -145,12 +143,12 @@ export function CalloutPopover({
           </span>
           <div className="flex flex-wrap items-center gap-1.5">
             {ds.colors.map((c) => {
-              const active = opts.fillToken === c.id;
+              const active = opts.fill.kind === 'token' && opts.fill.token === c.id;
               return (
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => setOpts((o) => ({ ...o, fillToken: c.id }))}
+                  onClick={() => setOpts((o) => ({ ...o, fill: token(c.id) }))}
                   aria-pressed={active}
                   title={c.name}
                   aria-label={c.name}
@@ -163,6 +161,12 @@ export function CalloutPopover({
                 />
               );
             })}
+            <CustomColorSwatch
+              value={customHexOf(opts.fill)}
+              active={opts.fill.kind === 'hex'}
+              onPick={(h) => setOpts((o) => ({ ...o, fill: hexRef(h) }))}
+              shape="rounded-full"
+            />
           </div>
         </div>
 

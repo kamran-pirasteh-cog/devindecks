@@ -12,6 +12,7 @@
  */
 import type { DashStyle } from '../types';
 import type { NumberFormat } from './format';
+import type { LegendPosition } from './spec';
 
 /** A reference into `DesignSystem.type`, with local tweaks. */
 export interface TypeRoleRef {
@@ -66,7 +67,7 @@ export interface ChartStyle {
   gridlines: ChartGridlineStyle;
   labels: ChartLabelStyle;
   gaps: { categoryGapPct: number; seriesOverlapPct: number };
-  legend: { show: boolean; position: 'top' | 'right' | 'bottom' | 'left' };
+  legend: { show: boolean; position: LegendPosition };
   numberFormats: { value: NumberFormat; axis: NumberFormat; percent: NumberFormat };
 }
 
@@ -89,7 +90,7 @@ export const DEFAULT_CHART_STYLE: ChartStyle = {
     axis: { role: 'caption', sizePt: 8.5 },
     dataLabel: { role: 'caption', sizePt: 10.5, weight: 500 },
     legend: { role: 'caption', sizePt: 9 },
-    title: { role: 'body', sizePt: 13, weight: 600 },
+    title: { role: 'body', sizePt: 13, weight: 400 },
   },
   axis: {
     showX: true,

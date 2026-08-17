@@ -160,6 +160,8 @@ export interface XYSeries {
   points: XYPoint[];
   format?: SeriesFormat;
   labels?: LabelSpec;
+  /** Sparse per-point formatting, keyed by `XYPoint.key` — as `GridSeries`. */
+  pointOverrides?: Record<string, PointOverride>;
 }
 
 export interface XYData {
@@ -234,6 +236,13 @@ export interface AxisSpec {
   /** e.g. "in $M" — rendered near the axis so the numbers aren't ambiguous. */
   unitNote?: string;
   numberFormat?: NumberFormat;
+  /**
+   * Short rules at each tick, the way a printed axis is drawn. Off by default:
+   * a business chart's gridlines already say where the values are, and adding
+   * ticks on top is ink for nothing. Worth having when the gridlines are off and
+   * the axis has to carry the scale on its own.
+   */
+  tickMarks?: 'none' | 'out' | 'in';
   /**
    * Per-chart type override for this axis's labels. The brand sets the size for
    * every chart; one chart on a crowded slide sometimes needs its own, and
@@ -332,9 +341,31 @@ export interface Decorations {
   annotations: Annotation[];
 }
 
+/**
+ * Where a legend sits.
+ *
+ * The four sides take a gutter out of the chart and push the plot in. The two
+ * `inside*` positions don't: the legend floats over the plot, top-aligned with
+ * the top of the value axis and tucked into the left or right of the chart
+ * body. That's the placement a chart with a wide, empty top corner wants —
+ * think-cell's and Excel's "inside" legends both do it — because it costs the
+ * data no space at all.
+ */
+export type LegendPosition =
+  | 'top'
+  | 'right'
+  | 'bottom'
+  | 'left'
+  | 'insideTopLeft'
+  | 'insideTopRight';
+
+/** Floats over the plot instead of reserving a gutter beside it. */
+export const isInsideLegend = (p: LegendPosition): boolean =>
+  p === 'insideTopLeft' || p === 'insideTopRight';
+
 export interface LegendSpec {
   show: boolean;
-  position: 'top' | 'right' | 'bottom' | 'left';
+  position: LegendPosition;
   /**
    * Per-chart type override for the legend's entries, the same escape hatch
    * `AxisSpec.font` is. Unset falls through to the brand's `fonts.legend`.

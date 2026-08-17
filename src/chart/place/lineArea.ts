@@ -69,16 +69,21 @@ const pointsOf = (
   proj: Projector,
   centers: number[],
   useTop: boolean,
-): (Point | null)[] =>
-  derived.data
+): (Point | null)[] => {
+  const overrides = derived.series.find((s) => s.key === seriesKey)?.pointOverrides;
+  return derived.data
     .filter((d) => d.seriesKey === seriesKey)
     .sort((a, b) => a.pointIndex - b.pointIndex)
     .map((d) => {
-      if (d.value === null) return null;
+      // A hidden point is a GAP, the same as a null: the line has nothing to
+      // say there. Hiding every point is how "delete this line" is written, and
+      // it takes the run, the markers and the end label with it.
+      if (d.value === null || overrides?.[d.pointKey]?.hidden) return null;
       const along = proj.category(centers[d.pointIndex] ?? 0);
       const across = proj.value(useTop ? d.top : d.base);
       return proj.horizontal ? { x: across, y: along } : { x: along, y: across };
     });
+};
 
 /**
  * Split on gaps. A `null` is a break in the line, not a dip to zero — joining

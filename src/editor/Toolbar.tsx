@@ -5,10 +5,10 @@
  * store action; it holds no logic of its own. The same actions back the future
  * Devin chat.
  */
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useEditor } from '@/store/editorStore';
 import { useComments } from '@/store/commentStore';
-import { makeShape } from './factories';
+import { makeArrow, makeShape } from './factories';
 import { LinePopover } from './LinePopover';
 import { TextPopover } from './TextPopover';
 import { CalloutPopover } from './CalloutPopover';
@@ -19,10 +19,7 @@ import { OVERLAY_Z } from './layers';
 import { FIT_TO_MARGINS_BUTTON } from '@/flags';
 import type { ShapePreset } from '@/model';
 
-const SHAPES: { preset: ShapePreset; label: string }[] = [
-  { preset: 'rect', label: '▭' },
-  { preset: 'rightArrow', label: '→' },
-];
+const SHAPES: { preset: ShapePreset; label: string }[] = [{ preset: 'rect', label: '▭' }];
 
 function Btn({
   onClick,
@@ -82,6 +79,27 @@ export function Toolbar() {
   const [showCharts, setShowCharts] = useState(false);
   const insertChart = useEditor((s) => s.insertChart);
   const ds = useEditor((s) => s.designSystem);
+  const deck = useEditor((s) => s.deck);
+  const currentSlideId = useEditor((s) => s.currentSlideId);
+  // What the deck already knows about its subject. A chart described as
+  // "quarterly ARR by segment" is about SOMEBODY, and the tag is where client
+  // names live — so the picker can name the client without asking for it again.
+  // Derived here rather than in the selector: a selector that builds an object
+  // returns a new reference every read, which React's snapshot check rejects.
+  const chartContext = useMemo(() => {
+    const slide = deck.slides.find((sl) => sl.id === currentSlideId);
+    const title = slide?.elements.find(
+      (e) => e.type === 'text' && (e.role === 'title' || e.role === 'heading'),
+    );
+    return {
+      deckTitle: deck.title,
+      deckTags: deck.tags,
+      slideTitle:
+        title?.type === 'text'
+          ? title.body.paragraphs.flatMap((p) => p.runs.map((r) => r.text)).join(' ')
+          : undefined,
+    };
+  }, [deck, currentSlideId]);
   const [showLine, setShowLine] = useState(false);
   const [showText, setShowText] = useState(false);
   const lineAnchorRef = useRef<HTMLDivElement>(null);
@@ -133,6 +151,9 @@ export function Toolbar() {
           {s.label}
         </Btn>
       ))}
+      <Btn onClick={() => addElement(makeArrow())} title="Add arrow">
+        →
+      </Btn>
       <Divider />
       <Btn
         onClick={toggleGuides}
@@ -174,6 +195,7 @@ export function Toolbar() {
         {showCharts ? (
           <ChartPopover
             ds={ds}
+            context={chartContext}
             onPick={(spec) => insertChart(spec)}
             onClose={() => setShowCharts(false)}
           />

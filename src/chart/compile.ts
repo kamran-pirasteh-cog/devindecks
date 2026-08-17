@@ -16,6 +16,7 @@
 import {
   isGridSpec,
   isHorizontal,
+  isInsideLegend,
   supportsTurn,
   token,
   type AreaSpec,
@@ -24,6 +25,8 @@ import {
   type ColumnBarSpec,
   type ComboSpec,
   type DesignSystem,
+  type GridSeries,
+  type LegendPosition,
   type LineSpec,
   type MekkoSpec,
   type PieSpec,
@@ -37,10 +40,15 @@ import { defaultMeasurer } from '@/render/measureText';
 import { formatSet } from './format/number';
 import { deriveGrid, type GridDerived } from './derive/grid';
 import { deriveWaterfall } from './derive/waterfall';
-import { maxTicksFor, solveFrame, type FrameLayout } from './layout/frame';
+import { insideLegendSlot, maxTicksFor, solveFrame, type FrameLayout } from './layout/frame';
 import { makeScale, niceDomain, type LinearScale } from './scale/linear';
 import { categoryCenters, placeColumnBar } from './place/columnBar';
-import { placeCartesianFurniture, projector, type LegendItem } from './place/cartesian';
+import {
+  placeCartesianFurniture,
+  placeLegend,
+  projector,
+  type LegendItem,
+} from './place/cartesian';
 import {
   comboColumnBand,
   comboUnstackedKeys,
@@ -57,7 +65,7 @@ import { placeXY } from './place/xy';
 import { placeAnnotations } from './decorate/annotations';
 import { resolveChartTheme, type ChartTheme } from './theme';
 import { emitMarks } from './emit';
-import { layoutFrame, snapQuarterTurn, turnElements, type QuarterTurn } from './turn';
+import { layoutFrame, snapQuarterTurn, turnBox, turnElements, type QuarterTurn } from './turn';
 import type { Mark } from './mark';
 
 export interface CompileDiagnostic {
@@ -98,10 +106,12 @@ export const isSupported = (spec: ChartSpec): boolean => SUPPORTED_KINDS.include
  * the side, where horizontal type only fits by eating inches of the chart's
  * width — and costs the one place a reader looks first.
  */
+const isLegend = (mark: Mark): boolean =>
+  mark.ref.part === 'legend.item' || mark.ref.part === 'legend.box';
+
 const isChrome = (mark: Mark): boolean =>
   mark.ref.part === 'title' ||
-  mark.ref.part === 'legend.item' ||
-  mark.ref.part === 'legend.box' ||
+  isLegend(mark) ||
   (mark.ref.part === 'axis' && mark.ref.sub === 'unitNote');
 
 /** What a `compile*` pass hands back: its marks, and the box they turn about. */
@@ -166,7 +176,14 @@ export function compileChart(
   // BOX rather than to the picture inside it — a title reading up the side of a
   // turned chart is nobody's idea of a title — so they were solved against the
   // real frame and are left where they are. See `isChrome`.
-  const chrome = marks.filter(isChrome);
+  //
+  // An inside legend is chrome too — upright, in real coordinates, out of the
+  // turn — but it can't be painted with the rest of it. Chrome goes down FIRST,
+  // under the data, which is exactly right for furniture in its own gutter and
+  // exactly wrong for a legend sitting on top of the bars: it would be buried
+  // by the series it names. So it comes out into its own pass, drawn last.
+  const overlay = spec.legend.show && isInsideLegend(spec.legend.position);
+  const chrome = marks.filter((m) => isChrome(m) && !(overlay && isLegend(m)));
   const inner = marks.filter((m) => !isChrome(m));
 
   const elements = [
@@ -174,6 +191,7 @@ export function compileChart(
     // Laid out upright in `innerFrame`, then turned onto the real one — see
     // `turn.ts`. At 0° this is identity.
     ...turnElements(emitMarks(inner, chart.groupId), innerFrame, rotation),
+    ...(overlay ? emitMarks(marks.filter(isLegend), chart.groupId) : []),
   ];
 
   return { elements, diagnostics };
@@ -195,7 +213,7 @@ function solveChrome(input: {
   horizontal: boolean;
   title?: string;
   unitNote?: string;
-  legend?: { items: string[]; position: 'top' | 'right' | 'bottom' | 'left' };
+  legend?: { items: string[]; position: LegendPosition };
 }): FrameLayout {
   return solveFrame({
     ...input,
@@ -386,9 +404,21 @@ function compileCartesian(
     return { scale, ticks: formatSet(display.ticks, numberFormat).map((f) => f.text) };
   };
 
+  /**
+   * A hidden mark takes its legend key with it.
+   *
+   * Deleting a series on the canvas hides every one of its points, and a key
+   * still sitting in the legend for a series with nothing left in the plot
+   * reads as a bug — an entry pointing at empty space.
+   */
+  const allPointsHidden = (s: GridSeries): boolean => {
+    const keys = derived.data.filter((d) => d.seriesKey === s.key).map((d) => d.pointKey);
+    return keys.length > 0 && keys.every((k) => s.pointOverrides?.[k]?.hidden);
+  };
+
   const legendItems: LegendItem[] = isPie
     ? derived.data
-        .filter((d) => d.seriesIndex === 0)
+        .filter((d) => d.seriesIndex === 0 && !derived.series[0]?.pointOverrides?.[d.pointKey]?.hidden)
         .map((d) => {
           // A pie's legend lists SLICES, not series, so each entry takes its
           // colour from the slice's own override when there is one.
@@ -400,12 +430,46 @@ function compileCartesian(
               fill?.kind === 'solid' ? fill.color : theme.seriesColor(d.pointIndex),
           };
         })
-    : derived.series.map((s, i) => ({
-        name: s.name,
-        seriesKey: s.key,
-        color:
-          s.format?.fill?.kind === 'solid' ? s.format.fill.color : theme.seriesColor(i),
-      }));
+    : derived.series
+        // Colour comes from the series' own index, so the drop happens inside
+        // the map — filtering first would recolour everything below the gap.
+        .map((s, i): LegendItem | null =>
+          allPointsHidden(s)
+            ? null
+            : {
+                name: s.name,
+                seriesKey: s.key,
+                color:
+                  s.format?.fill?.kind === 'solid' ? s.format.fill.color : theme.seriesColor(i),
+              },
+        )
+        .filter((item): item is LegendItem => item !== null);
+
+  /**
+   * The legend, when it floats over the plot instead of beside it.
+   *
+   * Deferred to a callback because it needs the FINISHED plot: `solveFrame`
+   * reserves nothing for it (that's the point), so there's nothing to place
+   * until the axes have taken their gutters. Handed the plot in the chart's
+   * real coordinates, never the turned box's — the legend sits out the turn
+   * with the rest of the chrome, so it has to be solved where it will be drawn.
+   */
+  const insideLegend = (plot: Rect): Mark[] =>
+    spec.legend.show && isInsideLegend(spec.legend.position) && legendItems.length
+      ? placeLegend(
+          chart.id,
+          { ...spec.legend, items: legendItems },
+          insideLegendSlot(
+            plot,
+            legendItems.map((i) => i.name),
+            spec.legend.position,
+            theme,
+            measurer,
+          ),
+          theme,
+          measurer,
+        )
+      : [];
 
   const showAxes = !isPie;
   // Line and area place their categories ON the plot edges rather than in the
@@ -504,7 +568,8 @@ function compileCartesian(
       title: spec.title,
       legend: spec.legend.show ? { ...spec.legend, items: legendItems } : undefined,
     });
-    return { marks: [...furniture, ...body], innerFrame };
+    // A pie has no axes, so its plot IS the box the chrome left over.
+    return { marks: [...furniture, ...body, ...insideLegend(chrome.plot)], innerFrame };
   }
 
   // The chrome, drawn against the real frame …
@@ -549,6 +614,8 @@ function compileCartesian(
     continuousCategoryAxis: edgeCategories,
     showValueAxisLine: false,
     showCategoryAxisLine: categoryAxis.show,
+    valueTickMarks: valueAxis.tickMarks,
+    categoryTickMarks: categoryAxis.tickMarks,
     gridlines: spec.decorations.gridlines.major?.show ?? theme.gridlines.major,
     valueAxisTitle: valueAxis.title,
     categoryAxisTitle: categoryAxis.title,
@@ -567,7 +634,19 @@ function compileCartesian(
 
   // Furniture first so marks paint over the gridlines; annotations last so
   // they're never buried by the data they're describing.
-  return { marks: [...outer, ...furniture, ...body, ...annotations], innerFrame };
+  return {
+    marks: [
+      ...outer,
+      ...furniture,
+      ...body,
+      ...annotations,
+      // The plot as it lands on the slide: `layout.plot` is solved in the
+      // transposed box, and an upright legend hung off those coordinates would
+      // sit wherever the chart isn't. See `turnBox`.
+      ...insideLegend(turnBox(layout.plot, innerFrame, rotation)),
+    ],
+    innerFrame,
+  };
 }
 
 /** 0..1 category positions, which differ by chart family. */
@@ -789,6 +868,8 @@ function compileXY(
     continuousCategoryAxis: true,
     showValueAxisLine: true,
     showCategoryAxisLine: true,
+    valueTickMarks: spec.axes.y.tickMarks,
+    categoryTickMarks: spec.axes.x.tickMarks,
     gridlines: spec.decorations.gridlines.major?.show ?? theme.gridlines.major,
     title: spec.title,
     valueAxisTitle: spec.axes.y.title,
@@ -807,7 +888,27 @@ function compileXY(
     measurer,
   });
 
-  return { marks: [...furniture, ...body], innerFrame };
+  // An inside legend reserved no gutter, so it's solved from the finished plot
+  // and drawn over the cloud — see `insideLegendSlot`. A scatter never turns,
+  // so the plot is already in the chart's real coordinates.
+  const inside =
+    spec.legend.show && isInsideLegend(spec.legend.position) && legendItems.length
+      ? placeLegend(
+          chart.id,
+          { ...spec.legend, items: legendItems },
+          insideLegendSlot(
+            layout.plot,
+            legendItems.map((i) => i.name),
+            spec.legend.position,
+            theme,
+            measurer,
+          ),
+          theme,
+          measurer,
+        )
+      : [];
+
+  return { marks: [...furniture, ...body, ...inside], innerFrame };
 }
 
 export type { Rect };

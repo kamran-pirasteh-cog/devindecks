@@ -11,11 +11,18 @@
 import {
   DEFAULT_DESIGN_SYSTEM,
   DEFAULT_PAGE_NUMBERS,
+  LEGACY_COLOR_ALIASES,
   withChartStyleDefaults,
   type DesignSystem,
 } from '@/model';
 
 const KEY = 'devindesign.ds.v1';
+
+function mapValues<T extends object, V>(obj: T, fn: (v: T[keyof T]) => V): { [K in keyof T]: V } {
+  const out = {} as { [K in keyof T]: V };
+  for (const k of Object.keys(obj) as (keyof T)[]) out[k] = fn(obj[k]);
+  return out;
+}
 
 /**
  * A stored system was serialized against an older shape of the type, so any
@@ -23,8 +30,22 @@ const KEY = 'devindesign.ds.v1';
  * than letting `ds.pageNumbers.font` explode at render time.
  */
 function withDefaults(ds: DesignSystem): DesignSystem {
+  const retired = (id: string) =>
+    id in LEGACY_COLOR_ALIASES && ds.colors.some((k) => k.id === LEGACY_COLOR_ALIASES[id]);
   return {
     ...ds,
+    // The palette once carried two indistinguishable blacks; a system stored
+    // before they collapsed still lists the retired one. Drop it here rather
+    // than show Kamran a duplicate he can't meaningfully edit — elements still
+    // pointing at it resolve through LEGACY_COLOR_ALIASES.
+    colors: ds.colors.filter((c) => !retired(c.id)),
+    // A role pointing at the dropped token has to be repointed, not just
+    // aliased at render time: its `<select>` has no option for a token that
+    // isn't in the palette, so it would silently display — and next save,
+    // become — whichever colour happened to be first.
+    type: mapValues(ds.type, (r) =>
+      retired(r.colorToken) ? { ...r, colorToken: LEGACY_COLOR_ALIASES[r.colorToken] } : r,
+    ),
     pageNumbers: { ...DEFAULT_PAGE_NUMBERS, ...ds.pageNumbers },
     // Deep, not shallow: a stored system predating the `chart` section would
     // otherwise survive this line and then crash on `ds.chart.axis.showX`.

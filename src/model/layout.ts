@@ -95,6 +95,36 @@ export function marginBox(
   };
 }
 
+/**
+ * The title band — the strip a slide's title hangs in, from the top-left corner
+ * of the safe area down to the `contentTop` guide and across to the right
+ * margin.
+ *
+ * Shared geometry: it's where `fitToMargins` parks a title, where a title the
+ * editor inserts lands, and the region the canvas watches for the hover that
+ * offers to add one.
+ */
+export function titleBand(
+  slideSize: { w: EMU; h: EMU },
+  m: SlideMargins = DEFAULT_MARGINS,
+): Rect {
+  return {
+    x: m.left,
+    y: m.top,
+    w: Math.max(0, slideSize.w - m.left - m.right),
+    h: Math.max(0, m.contentTop - m.top),
+  };
+}
+
+/**
+ * Roles that behave as the slide's title for layout purposes — the one line
+ * that hangs off the top-left corner of the safe area. 'heading' counts: on a
+ * content slide it IS the title, just a smaller type role.
+ */
+export function isTitleRole(role: string | undefined): boolean {
+  return role === 'title' || role === 'heading';
+}
+
 /** The margin lines for a slide, as absolute EMU coordinates. */
 export function marginGuides(
   slideSize: { w: EMU; h: EMU },

@@ -121,7 +121,12 @@ const runsFromNodes = (
     // come back as run text.
     if (node.dataset.marker !== undefined) return;
     if (node.tagName === 'BR') {
-      paras.push([]);
+      // A TRAILING <br> is a placeholder, not a line break — an empty block
+      // collapses to nothing without one, so `paint` emits it and browsers add
+      // their own. Splitting on it would turn every empty paragraph into two,
+      // which is how a title typed into a freshly inserted (still wordless) box
+      // ended up on the second line.
+      if (node.nextSibling) paras.push([]);
       return;
     }
     const own = node.dataset.run;
@@ -365,10 +370,17 @@ export function TextEditor({
     if (!node) return;
     paint(body.paragraphs);
     node.focus();
-    // Place caret at end.
+    // Place caret at the end of the last PARAGRAPH, not of the editable: text
+    // typed after the last block is a sibling of it, which reads back as an
+    // extra paragraph. An empty block holds only its placeholder <br>, so the
+    // caret goes before that rather than after it.
     const range = document.createRange();
-    range.selectNodeContents(node);
-    range.collapse(false);
+    const last = node.lastElementChild;
+    const target = last && (last.tagName === 'DIV' || last.tagName === 'P') ? last : node;
+    const only = target.childNodes.length === 1 ? target.firstChild : null;
+    if (only instanceof HTMLBRElement) range.setStartBefore(only);
+    else range.selectNodeContents(target);
+    range.collapse(only instanceof HTMLBRElement ? true : false);
     const sel = window.getSelection();
     sel?.removeAllRanges();
     sel?.addRange(range);
@@ -641,7 +653,7 @@ export function TextEditor({
         display: 'flex',
         flexDirection: 'column',
         justifyContent: justify,
-        outline: '2px solid #4F46E5',
+        outline: '2px solid #2600FF',
         fontFamily: font.cssStack,
         fontSize: (firstRun.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale,
         fontWeight: runWeight(firstRun),

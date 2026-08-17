@@ -3,9 +3,12 @@
  * safe primitive with token-based styling — so nothing a user adds can break on
  * export or drift off-brand.
  */
-import { inchesToEmu, pointsToEmu, token } from '@/model';
+import { inchesToEmu, pointsToEmu, titleBand, token } from '@/model';
 import type {
+  ColorRef,
   DashStyle,
+  DesignSystem,
+  EMU,
   FontFamily,
   LineElement,
   ShapeElement,
@@ -102,6 +105,90 @@ export function makeText(style?: TextStyle, sizePt: number = DEFAULT_TEXT_SIZE_P
   };
 }
 
+/**
+ * An arrow as a glyph rather than a shape. A typeset "→" sits at the same
+ * optical weight as the deck's body copy, so an arrow between two thoughts
+ * reads as punctuation instead of as a filled block competing with them.
+ */
+export function makeArrow(sizePt: number = 32): TextElement {
+  return {
+    id: newId('text'),
+    type: 'text',
+    role: 'body',
+    rect: { x: inchesToEmu(5.2), y: inchesToEmu(3.2), w: inchesToEmu(0.6), h: inchesToEmu(0.6) },
+    body: {
+      anchor: 'middle',
+      // 'resize' so the box shrinks to the glyph — a single arrow shouldn't
+      // carry an inch of empty box around with it when it's dragged.
+      autofit: 'resize',
+      paragraphs: [
+        {
+          align: 'center',
+          runs: [
+            {
+              text: '→',
+              font: 'Source Serif 4',
+              sizePt,
+              weight: 500,
+              color: token('ink.strong'),
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/** Leading the renderer gives an unspaced paragraph. */
+const LINE_HEIGHT = 1.25;
+
+/**
+ * The slide's title, hung in the title band and typed from the brand's title
+ * role — the one object whose position is a rule rather than a layout choice
+ * (see `fitToMargins`), so it needs no drag to be right.
+ *
+ * The run carries the styling but no text: the box is inserted straight into
+ * edit mode, and typing into an empty paragraph inherits the first run's font,
+ * size and colour (see `TextEditor.readParagraphs`) — so the author types the
+ * title itself instead of clearing a placeholder word first.
+ */
+export function makeTitle(ds: DesignSystem, slideSize: { w: EMU; h: EMU }): TextElement {
+  const role = ds.type.title;
+  const band = titleBand(slideSize);
+  return {
+    id: newId('text'),
+    type: 'text',
+    role: 'title',
+    rect: {
+      x: band.x,
+      y: band.y,
+      w: band.w,
+      // One line of title type, capped by the band: a title that runs to two
+      // lines grows down into the band rather than starting oversized.
+      h: Math.min(band.h, pointsToEmu(role.sizePt * LINE_HEIGHT)),
+    },
+    body: {
+      anchor: 'top',
+      // 'none', not 'resize': the box spans the safe area's full width by
+      // design, and a fit pass would shrink-wrap it onto the typed words.
+      autofit: 'none',
+      paragraphs: [
+        {
+          runs: [
+            {
+              text: '',
+              font: role.font,
+              sizePt: role.sizePt,
+              bold: role.bold,
+              color: token(role.colorToken),
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 export function makeShape(preset: ShapePreset): ShapeElement {
   return {
     id: newId('shape'),
@@ -117,15 +204,15 @@ export interface LineOptions {
   dash: DashStyle;
   /** Stroke weight in points — PowerPoint's own unit for line weight. */
   weightPt: number;
-  /** Design-system color token id. */
-  colorToken: string;
+  /** The stroke — a brand token, or a hex picked from the custom panel. */
+  color: ColorRef;
 }
 
 export const DEFAULT_LINE_OPTIONS: LineOptions = {
   orientation: 'horizontal',
   dash: 'solid',
   weightPt: 1,
-  colorToken: 'ink.strong',
+  color: token('ink.strong'),
 };
 
 export function makeLine(opts: LineOptions = DEFAULT_LINE_OPTIONS): LineElement {
@@ -141,7 +228,7 @@ export function makeLine(opts: LineOptions = DEFAULT_LINE_OPTIONS): LineElement 
     type: 'line',
     rect,
     outline: {
-      color: token(opts.colorToken),
+      color: opts.color,
       widthEmu: pointsToEmu(opts.weightPt),
       dash: opts.dash,
     },

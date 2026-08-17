@@ -86,6 +86,11 @@ export function Admin() {
   const [layouts, setLayouts] = useState<StoredLayout[]>([]);
   // null = album shelf; otherwise we're inside one slide-type album.
   const [album, setAlbum] = useState<SlideLayoutCategory | null>(null);
+  // Palette drag-to-reorder. `armed` gates `draggable` on the row so the name
+  // and hex inputs keep normal text selection until the grip is pressed.
+  const [colorDragArmed, setColorDragArmed] = useState<number | null>(null);
+  const [colorDragFrom, setColorDragFrom] = useState<number | null>(null);
+  const [colorDragOver, setColorDragOver] = useState<{ index: number; after: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -126,6 +131,19 @@ export function Admin() {
     });
 
   const removeColor = (i: number) => patch({ colors: ds.colors.filter((_, idx) => idx !== i) });
+
+  /**
+   * Palette order is meaningful: every swatch row in the editor renders
+   * `ds.colors` in array order (and some, like the chart part menu, only show
+   * the first few), so dragging a colour up here promotes it everywhere.
+   */
+  const moveColor = (from: number, to: number) => {
+    if (from === to) return;
+    const next = ds.colors.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    patch({ colors: next });
+  };
 
   const setRole = (role: keyof DesignSystem['type'], next: Partial<TypeRole>) =>
     patch({ type: { ...ds.type, [role]: { ...ds.type[role], ...next } } });
@@ -204,41 +222,117 @@ export function Admin() {
           <div>
             <div className="space-y-6">
               {/* Colors */}
-              <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">Brand palette</h3>
+              <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold">Brand palette</h3>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-500">
+                      Elements reference these by token id, so editing a hex here
+                      recolours every deck at once. Drag a row to reorder — this
+                      order is the order swatches appear in the editor.
+                    </p>
+                  </div>
                   <button
                     onClick={addColor}
-                    className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                   >
                     + Add color
                   </button>
                 </div>
-                <div className="space-y-2">
+                <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
                   {ds.colors.map((c, i) => (
-                    <div key={i} className="flex items-center gap-2">
+                    <div
+                      key={i}
+                      className={`relative flex items-center gap-3 py-2 first:pt-0 last:pb-0 ${
+                        colorDragFrom === i ? 'opacity-40' : ''
+                      }`}
+                      draggable={colorDragArmed === i}
+                      onDragStart={(e) => {
+                        setColorDragFrom(i);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', c.id);
+                      }}
+                      onDragEnd={() => {
+                        setColorDragArmed(null);
+                        setColorDragFrom(null);
+                        setColorDragOver(null);
+                      }}
+                      onDragOver={(e) => {
+                        if (colorDragFrom === null || colorDragFrom === i) return;
+                        e.preventDefault();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setColorDragOver({
+                          index: i,
+                          after: e.clientY - rect.top > rect.height / 2,
+                        });
+                      }}
+                      onDragLeave={() => {
+                        setColorDragOver((cur) => (cur?.index === i ? null : cur));
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (colorDragFrom !== null && colorDragOver) {
+                          // Splice-out shifts everything after `from` down one,
+                          // so an insert point past it loses an index.
+                          const raw = colorDragOver.index + (colorDragOver.after ? 1 : 0);
+                          moveColor(colorDragFrom, raw > colorDragFrom ? raw - 1 : raw);
+                        }
+                        setColorDragArmed(null);
+                        setColorDragFrom(null);
+                        setColorDragOver(null);
+                      }}
+                    >
+                      {colorDragOver?.index === i ? (
+                        <div
+                          className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-indigo-500 ${
+                            colorDragOver.after ? 'bottom-0' : 'top-0'
+                          }`}
+                        />
+                      ) : null}
+                      {/* Grip, not a whole-row drag target: the row is mostly
+                          inputs, and making those draggable kills click-to-place
+                          the caret and drag-to-select inside them. */}
+                      <button
+                        onPointerDown={() => setColorDragArmed(i)}
+                        onPointerUp={() => setColorDragArmed(null)}
+                        aria-label={`Reorder ${c.name}`}
+                        title="Drag to reorder"
+                        className="grid size-5 shrink-0 cursor-grab place-items-center text-zinc-300 hover:text-zinc-500 active:cursor-grabbing dark:text-zinc-600 dark:hover:text-zinc-400"
+                      >
+                        <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true">
+                          <g fill="currentColor">
+                            {[2, 7, 12].map((y) =>
+                              [2, 8].map((x) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1" />),
+                            )}
+                          </g>
+                        </svg>
+                      </button>
+                      {/* Square, not a pill: a swatch reads as the flat fill it
+                          will become on a slide, and rounded corners next to a
+                          rounded input made both look like buttons. */}
                       <input
                         type="color"
                         value={c.hex}
                         onChange={(e) => setColor(i, { hex: e.target.value })}
-                        className="h-8 w-8 shrink-0 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700"
+                        aria-label={`${c.name} hex`}
+                        className="size-9 shrink-0 cursor-pointer rounded-none border border-zinc-200 p-0 dark:border-zinc-700"
                       />
                       <input
                         value={c.name}
                         onChange={(e) => setColor(i, { name: e.target.value })}
-                        className="w-40 rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+                        aria-label="Color name"
+                        className="w-40 shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
                       />
-                      <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800">
-                        {c.id}
-                      </code>
                       <input
                         value={c.hex}
                         onChange={(e) => setColor(i, { hex: e.target.value })}
-                        className="w-24 rounded border border-zinc-200 bg-white px-2 py-1 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-800"
+                        aria-label="Hex"
+                        className="w-24 shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1.5 font-mono text-xs uppercase dark:border-zinc-700 dark:bg-zinc-800"
                       />
+                      <code className="truncate font-mono text-[11px] text-zinc-400">{c.id}</code>
                       <button
                         onClick={() => removeColor(i)}
-                        className="ml-auto h-6 w-6 rounded text-zinc-400 hover:bg-zinc-100 hover:text-red-500 dark:hover:bg-zinc-800"
+                        className="ml-auto grid size-7 shrink-0 place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-red-500 dark:hover:bg-zinc-800"
                         title="Remove"
                       >
                         ×
@@ -249,75 +343,27 @@ export function Admin() {
               </section>
 
               {/* Type roles */}
-              <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <h3 className="mb-3 text-sm font-semibold">Type roles</h3>
-                <div className="space-y-2">
-                  {TYPE_ROLES.map((role) => {
-                    const r = ds.type[role];
-                    return (
-                      <div key={role} className="flex items-center gap-2">
-                        <span className="w-20 shrink-0 text-xs capitalize text-zinc-500">{role}</span>
-                        <select
-                          value={r.font}
-                          onChange={(e) => setRole(role, { font: e.target.value as FontFamily })}
-                          className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-                        >
-                          {ALLOWED_FONTS.map((f) => (
-                            <option key={f} value={f}>
-                              {f}
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="number"
-                          value={r.sizePt}
-                          onChange={(e) => setRole(role, { sizePt: parseFloat(e.target.value) })}
-                          className="w-16 rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-                          title="Size (pt)"
-                        />
-                        <label className="flex items-center gap-1 text-xs text-zinc-500">
-                          <input
-                            type="checkbox"
-                            checked={!!r.bold}
-                            onChange={(e) => setRole(role, { bold: e.target.checked })}
-                          />
-                          Bold
-                        </label>
-                        <select
-                          value={r.colorToken}
-                          onChange={(e) => setRole(role, { colorToken: e.target.value })}
-                          className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-                          title="Color token"
-                        >
-                          {ds.colors.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
+              <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+                <h3 className="text-sm font-semibold">Type roles</h3>
+                <p className="mt-0.5 mb-4 text-[11px] leading-relaxed text-zinc-500">
+                  What every template and default resolves through. Each row is
+                  set in its own role, so the sample is the actual output.
+                </p>
+                <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                  {TYPE_ROLES.map((role) => (
+                    <TypeRoleRow
+                      key={role}
+                      role={role}
+                      style={ds.type[role]}
+                      colors={ds.colors}
+                      onChange={(next) => setRole(role, next)}
+                    />
+                  ))}
                 </div>
               </section>
 
               {/* Page numbers */}
               <PageNumbersSection style={ds.pageNumbers} onChange={setPageNumbers} />
-
-              {/* Fonts (locked) */}
-              <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                <h3 className="mb-3 text-sm font-semibold">Fonts</h3>
-                <div className="flex gap-2">
-                  {ALLOWED_FONTS.map((f) => (
-                    <span
-                      key={f}
-                      className="rounded-full border border-zinc-200 px-3 py-1 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"
-                    >
-                      {f}
-                    </span>
-                  ))}
-                </div>
-              </section>
             </div>
           </div>
         ) : tab === 'charts' ? (
@@ -408,6 +454,127 @@ export function Admin() {
           <Artifacts />
         )}
       </main>
+    </div>
+  );
+}
+
+/**
+ * The line each role is shown with. Real sentences, not "Aa" or the role name:
+ * a title's job is to hold a real headline at a real length, and a 26pt vs 30pt
+ * decision is only visible in copy that behaves like the copy authors type.
+ */
+const ROLE_SAMPLES: Record<keyof DesignSystem['type'], string> = {
+  title: 'Quarterly Business Review',
+  subtitle: 'FY26 Q2 · Prepared for the board',
+  heading: 'Where things stand',
+  body: 'Enterprise renewals carried the quarter, with net revenue retention at 118%.',
+  caption: 'Source: internal finance data, as of Aug 2026',
+  kpiValue: '118%',
+};
+
+const ROLE_LABELS: Record<keyof DesignSystem['type'], string> = {
+  title: 'Title',
+  subtitle: 'Subtitle',
+  heading: 'Heading',
+  body: 'Body',
+  caption: 'Caption',
+  kpiValue: 'KPI value',
+};
+
+/**
+ * Slide points shown as CSS pixels at slightly under 1:1. Not the real
+ * renderer's scale — a 48pt KPI at true size would blow the row apart — but a
+ * single shared factor, so the roles stay in the same proportion to each other
+ * as they will be on the slide.
+ */
+const SAMPLE_PX_PER_PT = 0.82;
+
+/** One type role: the sample it produces, then the knobs that shape it. */
+function TypeRoleRow({
+  role,
+  style,
+  colors,
+  onChange,
+}: {
+  role: keyof DesignSystem['type'];
+  style: TypeRole;
+  colors: ColorToken[];
+  onChange: (next: Partial<TypeRole>) => void;
+}) {
+  const font = FONTS[style.font];
+  const hex = colors.find((c) => c.id === style.colorToken)?.hex ?? '#000000';
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3 first:pt-0 last:pb-0">
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+          {ROLE_LABELS[role]}
+        </div>
+        {/* Set in the role itself, on a white ground: these colours are picked
+            against slides, so previewing them on the app's dark chrome would
+            lie about contrast. */}
+        <div className="mt-1 overflow-hidden rounded-md bg-white px-3 py-2 ring-1 ring-zinc-100 dark:ring-zinc-800">
+          <div
+            className="truncate"
+            style={{
+              fontFamily: font.cssStack,
+              fontSize: style.sizePt * SAMPLE_PX_PER_PT,
+              lineHeight: font.singleLineFactor,
+              fontWeight: style.bold ? 700 : 400,
+              color: hex,
+            }}
+          >
+            {ROLE_SAMPLES[role]}
+          </div>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <select
+          value={style.font}
+          onChange={(e) => onChange({ font: e.target.value as FontFamily })}
+          aria-label="Font"
+          className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          {ALLOWED_FONTS.map((f) => (
+            <option key={f} value={f}>
+              {f}
+            </option>
+          ))}
+        </select>
+        <label className="flex items-center gap-1 text-[11px] text-zinc-500">
+          <input
+            type="number"
+            value={style.sizePt}
+            onChange={(e) => onChange({ sizePt: parseFloat(e.target.value) })}
+            className="w-16 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          pt
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+          <input
+            type="checkbox"
+            checked={!!style.bold}
+            onChange={(e) => onChange({ bold: e.target.checked })}
+          />
+          Bold
+        </label>
+        <select
+          value={style.colorToken}
+          onChange={(e) => onChange({ colorToken: e.target.value })}
+          aria-label="Color token"
+          className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          {colors.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <span
+          className="size-5 shrink-0 border border-zinc-200 dark:border-zinc-700"
+          style={{ background: hex }}
+          title={hex}
+        />
+      </div>
     </div>
   );
 }

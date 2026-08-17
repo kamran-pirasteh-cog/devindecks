@@ -42,8 +42,8 @@ function orbit(x: number, y: number, c: { x: number; y: number }, rot: QuarterTu
  * The transform a single primitive gets when its chart is turned: same size,
  * orbited centre, own angle advanced by the turn.
  *
- * Exported because the canvas paints the live rotate gesture with the same
- * maths it will be committed with — otherwise the chart would jump on mouseup.
+ * Exported because the canvas needs the same maths to map a turned chart's
+ * parts back into layout space before it resizes them.
  */
 export function turnRect(
   rect: Rect,
@@ -87,34 +87,26 @@ export function layoutFrame(frame: Rect, rotation: number): Rect {
 }
 
 /**
- * Where a part sits DURING a rotate gesture, before the chart re-solves.
+ * The FOOTPRINT a laid-out box ends up covering on the slide.
  *
- * The commit re-lays the chart out in the transposed frame, which no gesture
- * can predict without running the whole layout on every mouse move. What it
- * can do is show the right picture in the right box: the parts orbit as they
- * will, and their centres are squeezed back onto the frame's aspect so the
- * chart turns inside its own box instead of swinging off the slide. Sizes are
- * left alone — type doesn't change point size when a chart turns — so this
- * settles slightly on drop rather than landing exactly.
+ * `turnRect` keeps a primitive's width and height and hands back a spin,
+ * because the primitive itself is drawn rotated — a tick label turned on its
+ * side is still the same box, tipped over. A box that will NOT be rotated needs
+ * the other answer: at a quarter turn the sides swap, so the plot solved 4.5in
+ * wide and 8in tall in the transposed frame covers 8in by 4.5in once the chart
+ * is turned. Anything hung off the plot but drawn upright — an inside legend —
+ * has to be positioned against that, or it lands where the chart isn't.
  */
-export function previewTurn(
-  rect: Rect,
-  frame: Rect,
-  delta: number,
-): { rect: Rect; spin: QuarterTurn } {
-  const { rect: turned, spin } = turnRect(rect, frame, delta);
-  if ((spin !== 90 && spin !== 270) || !frame.w || !frame.h) return { rect: turned, spin };
-  const c = centreOf(frame);
+export function turnBox(rect: Rect, frame: Rect, rotation: number): Rect {
+  const { rect: turned, spin } = turnRect(rect, frame, rotation);
+  if (spin !== 90 && spin !== 270) return turned;
   const cx = turned.x + turned.w / 2;
   const cy = turned.y + turned.h / 2;
   return {
-    rect: {
-      x: Math.round(c.x + (cx - c.x) * (frame.w / frame.h) - turned.w / 2),
-      y: Math.round(c.y + (cy - c.y) * (frame.h / frame.w) - turned.h / 2),
-      w: turned.w,
-      h: turned.h,
-    },
-    spin,
+    x: Math.round(cx - turned.h / 2),
+    y: Math.round(cy - turned.w / 2),
+    w: turned.h,
+    h: turned.w,
   };
 }
 
@@ -130,13 +122,6 @@ const norm360 = (d: number) => ((Math.round(d) % 360) + 360) % 360;
  * upright.
  */
 const isUpsideDown = (deg: number) => norm360(deg) > 90 && norm360(deg) < 270;
-
-/**
- * The angle a primitive is finally drawn at — the canvas paints a live turn
- * with this so the preview matches what lands.
- */
-export const readableAngle = (deg: number, isText: boolean) =>
-  isText && isUpsideDown(deg) ? norm360(deg + 180) : norm360(deg);
 
 const FLIP_ALIGN = { left: 'right', right: 'left', center: 'center', justify: 'justify' } as const;
 const FLIP_ANCHOR = { top: 'bottom', bottom: 'top', middle: 'middle' } as const;

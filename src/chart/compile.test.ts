@@ -84,9 +84,151 @@ describe('compileChart — structure', () => {
   it('renders a legend entry per series', () => {
     const { elements } = compile(chart());
     const legend = byRole(elements, 'chart.legend');
-    // A swatch and a label for each of three series.
-    expect(legend).toHaveLength(6);
+    // A swatch and a label for each of three series, plus the box behind them.
+    expect(legend).toHaveLength(7);
+    expect(legend.filter((e) => e.chartRef?.part === 'legend.box')).toHaveLength(1);
     expect(texts(legend)).toEqual(['Enterprise', 'Mid-Market', 'SMB']);
+  });
+});
+
+describe('compileChart — inside legend', () => {
+  const inside = (position: 'insideTopLeft' | 'insideTopRight') =>
+    compile(chart((s) => (s.legend = { show: true, position }))).elements;
+  const box = (els: SlideElement[]) =>
+    els.find((e) => e.chartRef?.part === 'legend.box')!.rect;
+  const bars = (els: SlideElement[]) => els.filter((e) => e.chartRef?.part === 'mark');
+
+  it('costs the plot nothing — the bars land where they would with no legend', () => {
+    // The whole point of an inside legend: it floats over the plot instead of
+    // taking a gutter out of it, so the picture is the one you'd get with the
+    // legend switched off entirely.
+    const none = compile(chart((s) => (s.legend.show = false))).elements;
+    expect(bars(inside('insideTopLeft'))).toEqual(bars(none));
+    expect(bars(inside('insideTopRight'))).toEqual(bars(none));
+  });
+
+  it('sits level with the top of the value axis', () => {
+    const els = compile(
+      chart((s) => {
+        s.legend = { show: true, position: 'insideTopLeft' };
+        s.decorations.gridlines.major = { show: true };
+      }),
+    ).elements;
+    // The topmost gridline IS the top of the plot, which is where the legend's
+    // box starts. Within a rounding: the two are rounded to whole EMU apart.
+    const topGrid = Math.min(...els.filter((e) => e.role === 'chart.gridline').map((e) => e.rect.y));
+    expect(topGrid).toBeLessThan(Infinity);
+    expect(box(els).y).toBeCloseTo(topGrid, -1);
+  });
+
+  it('hugs the side it was asked for', () => {
+    const left = box(inside('insideTopLeft'));
+    const right = box(inside('insideTopRight'));
+    // Same content, so the two boxes are the same size — one is just parked at
+    // the other end of the same plot.
+    expect(right.w).toBe(left.w);
+    expect(right.x).toBeGreaterThan(left.x);
+    // Each is on its own half of the chart, and neither leaves it.
+    expect(left.x + left.w).toBeLessThan(FRAME.x + FRAME.w / 2);
+    expect(right.x).toBeGreaterThan(FRAME.x + FRAME.w / 2);
+    expect(right.x + right.w).toBeLessThanOrEqual(FRAME.x + FRAME.w);
+  });
+
+  it('never outgrows the chart body, however long the names are', () => {
+    // A legend that spilled past the plot would be worse inside than out: it's
+    // over the data, so there's no gutter for it to overhang into.
+    const els = compile(
+      chart((s) => {
+        s.legend = { show: true, position: 'insideTopRight' };
+        s.data.series = s.data.series.map((ser, i) => ({
+          ...ser,
+          name: `Series ${i} with a deliberately overlong name`,
+        }));
+      }),
+    ).elements;
+    for (const el of els.filter((e) => e.role === 'chart.legend')) {
+      expect(el.rect.w).toBeGreaterThanOrEqual(0);
+      expect(el.rect.x).toBeGreaterThanOrEqual(FRAME.x);
+      expect(el.rect.x + el.rect.w).toBeLessThanOrEqual(FRAME.x + FRAME.w + 1);
+    }
+  });
+
+  it('is painted over the bars, not under them', () => {
+    // Chrome normally goes down first, under the data. A legend that did that
+    // on top of the plot would be buried by the series it names.
+    const els = inside('insideTopLeft');
+    const lastBar = els.findLastIndex((e) => e.chartRef?.part === 'mark');
+    const firstLegend = els.findIndex((e) => e.role === 'chart.legend');
+    expect(firstLegend).toBeGreaterThan(lastBar);
+  });
+
+  it('stays inside the frame on a turned chart', () => {
+    const turned = compile({
+      ...chart((s) => (s.legend = { show: true, position: 'insideTopRight' })),
+      rotation: 90,
+    }).elements;
+    const r = box(turned);
+    expect(r.x).toBeGreaterThanOrEqual(FRAME.x - 1);
+    expect(r.y).toBeGreaterThanOrEqual(FRAME.y - 1);
+    expect(r.x + r.w).toBeLessThanOrEqual(FRAME.x + FRAME.w + 1);
+    expect(r.y + r.h).toBeLessThanOrEqual(FRAME.y + FRAME.h + 1);
+  });
+});
+
+describe('compileChart — axis scale and ticks', () => {
+  const ticks = (els: SlideElement[]) =>
+    texts(els.filter((e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick' && e.chartRef.axis === 'y'));
+
+  it('runs the axis to the bound it was given, not to the data', () => {
+    const { elements } = compile(
+      chart((s) => {
+        s.axes.y.min = 0;
+        s.axes.y.max = 2000;
+        s.axes.y.tickStep = 500;
+      }),
+    );
+    expect(ticks(elements)).toEqual(['0', '500', '1,000', '1,500', '2,000']);
+  });
+
+  it('honours a step on its own, without a stated max', () => {
+    const { elements } = compile(chart((s) => (s.axes.y.tickStep = 250)));
+    const values = ticks(elements).map((t) => Number(t.replace(/[$,]/g, '')));
+    // Every gap is the step asked for.
+    for (let i = 1; i < values.length; i++) expect(values[i] - values[i - 1]).toBe(250);
+  });
+
+  it('draws no tick marks unless asked — gridlines already carry the scale', () => {
+    const { elements } = compile(chart());
+    expect(elements.filter((e) => e.chartRef?.sub === 'tickMark')).toHaveLength(0);
+  });
+
+  it('puts a tick mark at every tick, on the side asked for', () => {
+    const out = compile(chart((s) => (s.axes.y.tickMarks = 'out'))).elements;
+    const marks = out.filter((e) => e.chartRef?.sub === 'tickMark');
+    expect(marks).toHaveLength(ticks(out).length);
+    const plotLeft = Math.min(...out.filter((e) => e.chartRef?.part === 'mark').map((e) => e.rect.x));
+    // Outside means left of the bars; inside means over them.
+    expect(Math.max(...marks.map((m) => m.rect.x))).toBeLessThanOrEqual(plotLeft);
+    const inside = compile(chart((s) => (s.axes.y.tickMarks = 'in'))).elements
+      .filter((e) => e.chartRef?.sub === 'tickMark');
+    expect(Math.min(...inside.map((m) => m.rect.x))).toBeGreaterThanOrEqual(
+      Math.max(...marks.map((m) => m.rect.x)),
+    );
+  });
+
+  it('costs the chart no space — ticks live in the gap already there', () => {
+    const bare = compile(chart()).elements.filter((e) => e.chartRef?.part === 'mark');
+    const ticked = compile(chart((s) => (s.axes.y.tickMarks = 'out'))).elements.filter(
+      (e) => e.chartRef?.part === 'mark',
+    );
+    expect(ticked).toEqual(bare);
+  });
+
+  it('ticks the category axis too, when that axis asks', () => {
+    const els = compile(chart((s) => (s.axes.x.tickMarks = 'out'))).elements;
+    const marks = els.filter((e) => e.chartRef?.sub === 'tickMark');
+    expect(marks).toHaveLength(3); // one per category
+    expect(marks.every((m) => m.chartRef?.part === 'axis' && m.chartRef.axis === 'x')).toBe(true);
   });
 });
 
@@ -235,6 +377,8 @@ describe('compileChart — labels fit on one line', () => {
       .filter((e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'x' && e.chartRef.sub === 'tick');
     expect(cats).toHaveLength(3);
     for (const c of cats) expect(c.body.wrap).toBe(true);
+    // A one-line box that wraps has to grow DOWN, not up over the axis.
+    for (const c of cats) expect(c.body.anchor).toBe('top');
   });
 
   it('keeps a legend entry inside the frame however long the series names are', () => {

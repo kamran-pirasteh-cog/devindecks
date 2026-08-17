@@ -23,6 +23,7 @@ import {
   EMU_PER_POINT,
   expandSelection,
   inchesToEmu,
+  isTitleRole,
   marginBox,
   marginGuides,
   outerGroupId,
@@ -60,6 +61,8 @@ import {
   chartElementRects,
   chartElementIdsBefore,
   chartsForElements,
+  clearChartFormatting,
+  deleteChartParts,
   detachChartFrom,
   insertChartInto,
   recompileInto,
@@ -315,8 +318,11 @@ interface EditorState {
    */
   setChartRotation: (chartId: string, deg: number) => void;
   recompileChart: (chartId: string) => void;
-  /** "Break apart" — keep the shapes, lose the link to the data. One-way. */
-  detachChart: (chartId: string) => void;
+  /**
+   * Drop the hand-applied colour and type off a chart and take the brand's
+   * again. Data and the reader's choices stay — see `clearChartFormatting`.
+   */
+  resetChartFormatting: (chartId: string) => void;
   deleteChart: (chartId: string) => void;
   /** The chart a given element belongs to, or null. */
   chartOf: (elementId: string) => ChartInstance | null;
@@ -446,15 +452,6 @@ function defaultChartFrame(slideSize: { w: EMU; h: EMU }): Rect {
     w,
     h,
   };
-}
-
-/**
- * Roles that behave as the slide's title for layout purposes — the one line
- * that hangs off the top-left corner of the safe area. 'heading' counts: on a
- * content slide it IS the title, just a smaller type role.
- */
-function isTitleRole(role: string | undefined): boolean {
-  return role === 'title' || role === 'heading';
 }
 
 /** Selection split into groups-as-one-box + loose elements, with their bounds. */
@@ -762,13 +759,25 @@ export const useEditor = create<EditorState>()(
       });
     },
 
-    detachChart(chartId) {
+    resetChartFormatting(chartId) {
+      const s0 = get();
+      const slide0 = slideById(s0.deck, s0.currentSlideId);
+      const chart0 = slide0 && chartById(slide0, chartId);
+      if (!chart0) return;
+      // Probe a copy first: a chart that was never restyled shouldn't cost an
+      // undo step for a button press that changes nothing.
+      if (!clearChartFormatting(JSON.parse(JSON.stringify(chart0.spec)))) return;
       get().commit();
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
-        if (!slide) return;
-        detachChartFrom(slide, chartId);
-        s.selectedIds = [];
+        const chart = slide && chartById(slide, chartId);
+        if (!slide || !chart) return;
+        clearChartFormatting(chart.spec);
+        // Type comes back at the brand's size, so the parts change shape and
+        // count — same reason a resize repairs the selection.
+        withChartSelection(s, slide, [chartId], () =>
+          recompileInto(slide, chartId, s.designSystem),
+        );
       });
     },
 
@@ -1389,13 +1398,16 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
-        // Deleting any part of a chart deletes the chart. A chart missing its
-        // axis isn't a chart with a hole in it — it's a chart that would grow
-        // the axis back on the next recompile.
-        for (const chart of chartsForElements(slide, selectedIds)) {
-          removeChartFrom(slide, chart.id);
-        }
-        slide.elements = slide.elements.filter((e) => !selectedIds.includes(e.id));
+        // A chart part is deleted in the SPEC — see `deleteChartParts`. Only a
+        // whole-chart selection removes the chart, and a part that has no spec
+        // switch is left alone; either way the primitives of a chart that still
+        // exists are never spliced out from under it, or the next recompile
+        // would put them straight back.
+        deleteChartParts(slide, selectedIds, s.designSystem);
+        const live = new Set((slide.charts ?? []).map((c) => c.id));
+        slide.elements = slide.elements.filter(
+          (e) => !selectedIds.includes(e.id) || live.has(e.chartRef?.chartId ?? ''),
+        );
         s.selectedIds = [];
         s.editingId = null;
         s.croppingId = null;

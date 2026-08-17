@@ -24,6 +24,20 @@ describe('nearestLegendSide', () => {
     expect(nearestLegendSide(WIDE, 300, 200)).toBe('bottom');
   });
 
+  it('drops into the chart body when the pointer is well inside it', () => {
+    // The band is 40px on this frame, so anything past x=140 / y=140 is inside.
+    // Left and right halves of the inside's top half are the two corners.
+    expect(nearestLegendSide(WIDE, 200, 160)).toBe('insideTopLeft');
+    expect(nearestLegendSide(WIDE, 400, 160)).toBe('insideTopRight');
+  });
+
+  it('leaves the lower half of the inside to the edges', () => {
+    // An inside legend is always top-aligned, so a target down here would light
+    // up nowhere near where the legend lands — and this is the airspace a drag
+    // heading for the bottom edge passes through.
+    expect(nearestLegendSide(WIDE, 280, 220)).toBe('bottom');
+  });
+
   it('survives a zero-sized frame', () => {
     // A chart can be mid-insert or collapsed; the drag must still resolve to
     // something rather than dividing by zero.
