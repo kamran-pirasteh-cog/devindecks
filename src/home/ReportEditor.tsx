@@ -24,6 +24,7 @@ import {
   FORMATS,
   FREQUENCIES,
   STATUSES,
+  describeAsOf,
   describeSchedule,
   nextRunAt,
   type Channel,
@@ -179,6 +180,7 @@ export function ReportEditor({
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
 
+  const asOf = describeAsOf(report.dataRefreshedAt);
   const deck = decks.find((d) => d.id === report.deckId);
   const filled = report.recipients.filter((r) => r.name.trim() || r.address.trim());
   const next = nextRunAt({ ...report, status: 'active' });
@@ -198,6 +200,9 @@ export function ReportEditor({
 
   const sendTest = () => {
     createRun(report, 'test', DEFAULT_OWNER);
+    // Patched into the draft rather than written through the repository: the
+    // report in here may be unsaved, and a test does pull the live numbers.
+    patch({ dataRefreshedAt: new Date().toISOString() });
     setTestedAt(new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }));
     onRunsChange?.();
   };
@@ -227,7 +232,19 @@ export function ReportEditor({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-          <h2 className="text-sm font-semibold">{initial.name ? 'Edit report' : 'New report'}</h2>
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="text-sm font-semibold">{initial.name ? 'Edit report' : 'New report'}</h2>
+            {/* Same clear pill as the card, same words, so "as of" reads as one
+                fact about the report rather than two unrelated timestamps. */}
+            {asOf ? (
+              <span
+                title={`Data last refreshed ${new Date(report.dataRefreshedAt!).toLocaleString()} — refreshed on every run`}
+                className="shrink-0 rounded-full bg-zinc-100/80 px-2 py-0.5 text-[10px] font-medium text-zinc-600 ring-1 ring-black/5 dark:bg-zinc-800/80 dark:text-zinc-300 dark:ring-white/10"
+              >
+                {asOf}
+              </span>
+            ) : null}
+          </div>
           <button
             onClick={onClose}
             className="flex h-7 w-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"

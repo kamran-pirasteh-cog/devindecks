@@ -146,14 +146,37 @@ export function rectOfPart(
  * `axis.y.tick`. The sub-part a click landed on doesn't matter to the options it
  * gets — clicking a tick, the axis line or its title all mean "the axis".
  */
-export function describePart(ref: ChartRef, seriesName?: string): string {
+export function describePart(
+  ref: ChartRef,
+  seriesName?: string,
+  /** How that series is DRAWN — a combo's series aren't all the same shape. */
+  render?: 'column' | 'line' | 'area' | 'point' | 'slice',
+): string {
   switch (ref.part) {
     case 'plot':
       return 'Chart';
     case 'title':
       return 'Title';
-    case 'mark':
-      return seriesName ? `${seriesName} · bar` : 'Series';
+    case 'mark': {
+      if (!seriesName) return 'Series';
+      // The line placer addresses the whole path as one point; anything else
+      // is a single datum on it.
+      const noun =
+        ref.point === 'line'
+          ? 'line'
+          : ref.point === 'area'
+            ? 'area'
+            : ref.point === 'end'
+              ? 'end dot'
+              : render === 'line'
+                ? 'point'
+                : render === 'slice'
+                  ? 'slice'
+                  : render === 'point'
+                    ? 'point'
+                    : 'bar';
+      return `${seriesName} · ${noun}`;
+    }
     case 'label':
       return seriesName ? `${seriesName} · label` : 'Data label';
     case 'total':

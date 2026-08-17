@@ -18,7 +18,14 @@ type ReportMap = Record<string, Report>;
 function read(): ReportMap {
   if (typeof window === 'undefined') return {};
   try {
-    return JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as ReportMap;
+    const map = JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as ReportMap;
+    // Reports written before `dataRefreshedAt` existed fall back to their last
+    // send, then to creation. Both are real moments the data was pulled, so the
+    // "as of" pill stays honest on old records instead of going blank.
+    for (const r of Object.values(map)) {
+      if (!r.dataRefreshedAt) r.dataRefreshedAt = r.lastSentAt ?? r.createdAt;
+    }
+    return map;
   } catch {
     return {};
   }
@@ -60,7 +67,21 @@ export function draftReport(deckId?: string): Report {
     owner: DEFAULT_OWNER,
     createdAt: ts,
     updatedAt: ts,
+    dataRefreshedAt: ts,
   };
+}
+
+/**
+ * Stamp a fresh data pull. Called wherever a run is raised — a run is the only
+ * thing that re-reads the numbers, so "as of" and "what went out" can't drift.
+ */
+export function markDataRefreshed(id: string, at = now()): void {
+  const map = read();
+  if (!map[id]) return;
+  // `updatedAt` is left alone on purpose: a scheduled refresh isn't an edit, and
+  // bumping it would shuffle the grid's default order every time one fires.
+  map[id] = { ...map[id], dataRefreshedAt: at };
+  write(map);
 }
 
 export function saveReport(report: Report): Report {
@@ -175,6 +196,9 @@ export function seedIfFirstRun(): void {
       { id: `rcp-${nanoid(6)}`, name: 'Board list', address: 'board@acme.com', channel: 'email' },
     ],
     requiresApproval: false,
+    // Paused since before the last cycle, so its numbers are visibly stale —
+    // which is the case the "as of" pill exists to make obvious.
+    dataRefreshedAt: new Date(Date.now() - 12 * 24 * 60 * 60 * 1000).toISOString(),
   });
 
   // One run already waiting on a person, so the approvals queue on the tab

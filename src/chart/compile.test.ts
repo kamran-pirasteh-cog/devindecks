@@ -17,6 +17,7 @@ import {
   type ChartKind,
   type ChartSpec,
   type ColumnBarSpec,
+  type ComboSpec,
   type ScatterSpec,
   type SankeySpec,
   type WaterfallSpec,
@@ -812,6 +813,53 @@ describe('compileChart — diagnostics', () => {
     );
     expect(r.elements).toEqual([]);
     expect(r.diagnostics[0].code).toBe('chart-empty');
+  });
+});
+
+describe('compileChart — combo', () => {
+  const combo = (render: Record<string, 'column' | 'line' | 'area'>) => {
+    const spec = defaultChartSpec('combo', 'stacked') as ComboSpec;
+    spec.render = render;
+    return compile({ id: 'c1', groupId: 'g1', frame: FRAME, spec });
+  };
+  const marksFor = (els: SlideElement[], series: string) =>
+    els.filter((e) => e.chartRef?.part === 'mark' && e.chartRef.series === series);
+  const pointOf = (el: SlideElement) =>
+    el.chartRef && 'point' in el.chartRef ? el.chartRef.point : undefined;
+  const fillOf = (el: SlideElement) => ('fill' in el ? el.fill : undefined);
+
+  it('draws its line member as a stroke, not as a filled area', () => {
+    const line = marksFor(combo({ s2: 'line' }).elements, 's2');
+    expect(line).toHaveLength(1);
+    expect(pointOf(line[0])).toBe('line');
+    expect(fillOf(line[0])).toEqual({ kind: 'none' });
+  });
+
+  it('still fills a member asked to render as an area', () => {
+    const area = marksFor(combo({ s2: 'area' }).elements, 's2');
+    expect(area.map(pointOf)).toEqual(['area']);
+    expect(fillOf(area[0])?.kind).toBe('solid');
+  });
+
+  it('keeps its line out of the column stack — stack covers the columns only', () => {
+    const spec = defaultChartSpec('combo', 'stacked') as ComboSpec;
+    const data = spec.data;
+    // The line plots its own value from zero, so its lowest point sits below
+    // the columns it annotates rather than riding on top of them.
+    const stackTop = data.series
+      .filter((s) => s.key !== 's2')
+      .reduce((sum, s) => sum + (s.values[0] ?? 0), 0);
+    const lineValue = data.series.find((s) => s.key === 's2')?.values[0] ?? 0;
+    expect(lineValue).toBeLessThan(stackTop);
+
+    const els = combo({ s2: 'line' }).elements;
+    const line = marksFor(els, 's2')[0];
+    const columns = els.filter(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.series !== 's2',
+    );
+    const columnTop = Math.min(...columns.map((e) => e.rect.y));
+    // Smaller y is higher up, so a line below the stack top has the larger y.
+    expect(line.rect.y + line.rect.h).toBeGreaterThan(columnTop);
   });
 });
 

@@ -79,10 +79,23 @@ const STATUS_STYLE: Record<ReportStatus, string> = {
   draft: 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400',
 };
 
-export function StatusChip({ status }: { status: ReportStatus }) {
+export function StatusChip({
+  status,
+  label,
+  className = '',
+}: {
+  status: ReportStatus;
+  /** Overrides the status word — an active report shows its cadence instead,
+      which is the more useful fact once the colour already says "active". */
+  label?: string;
+  /** Extra classes for the pill itself — positioning, ring, shadow. Put them
+      here rather than on a wrapper: a wrapper's line-box strut is sized to the
+      inherited font, not the chip's 10px, so any ring on it sits off the pill. */
+  className?: string;
+}) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${STATUS_STYLE[status]}`}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${STATUS_STYLE[status]} ${className}`}
     >
       <span
         aria-hidden
@@ -94,7 +107,7 @@ export function StatusChip({ status }: { status: ReportStatus }) {
               : 'bg-zinc-400'
         }`}
       />
-      {status}
+      {label ?? status}
     </span>
   );
 }

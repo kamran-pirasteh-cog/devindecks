@@ -57,6 +57,29 @@ export function partKey(ref: ChartRef): string {
 export const elementIdFor = (ref: ChartRef): string =>
   `${ref.chartId}::${partKey(ref)}`;
 
+/**
+ * What a part IS, for the purpose of formatting several at once.
+ *
+ * Coarser than `partKey`, which addresses one node: every bar in the chart is
+ * one kind, every data label is another. This is what a shift-click gathers, so
+ * "make these three labels 14pt" is one gesture and one edit — and the panel
+ * that opens is always about a single kind, rather than the intersection of a
+ * bar, a tick and a legend key, which is nothing.
+ *
+ * The axis is split by which axis and which piece of it: the y ticks and the x
+ * ticks are different populations, and so are a tick and the axis title.
+ */
+export function partKind(ref: ChartRef): string {
+  switch (ref.part) {
+    case 'axis':
+      return `axis.${ref.axis}.${ref.sub}`;
+    case 'decoration':
+      return `decoration.${ref.sub ?? ''}`;
+    default:
+      return ref.part;
+  }
+}
+
 /** The chart an element belongs to, from its id alone. */
 export function chartIdOfElementId(id: string): string | null {
   const i = id.indexOf('::');

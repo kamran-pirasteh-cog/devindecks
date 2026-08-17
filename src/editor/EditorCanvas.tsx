@@ -30,6 +30,7 @@ import {
   type Rect,
   isGridSpec,
   legendSeriesKey,
+  partKind,
   supportsTurn,
   type ChartInstance,
 } from '@/model';
@@ -41,9 +42,17 @@ import { CropOverlay } from './CropOverlay';
 import { CanvasContextMenu, contextMenuItems, type MenuItem } from './CanvasContextMenu';
 import { ChartDatasheetPanel } from './chart/ChartDatasheetPanel';
 import { ChartPartPopover } from './chart/ChartPartPopover';
+import { shiftClickParts } from './chart/partSelect';
+import {
+  ChartPartHighlights,
+  LegendDropZones,
+  nearestLegendSide,
+  type LegendSide,
+} from './chart/ChartPartOverlay';
 import { CommentPins } from './CommentPins';
 import { OVERLAY_Z } from './layers';
 import { measureTextFitPx } from './fitToText';
+import { resizeFactor } from './groupResize';
 import { layoutFrame, previewTurn, turnRect, readableAngle, snapQuarterTurn } from '@/chart/turn';
 
 const CANVAS_PAD = 48;
@@ -66,6 +75,20 @@ const normalizeDeg = (d: number) => ((Math.round(d) % 360) + 360) % 360;
  * catches near those angles — but only near them, so 37° is still reachable.
  */
 const SNAP_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315, 360];
+
+/**
+ * Client coordinates of whatever event drove a gesture.
+ *
+ * Duck-typed rather than `instanceof MouseEvent`: Moveable hands back whatever
+ * Gesto captured — a mouse event, a touch event, or its own synthetic object —
+ * and an `instanceof` check quietly answers "no pointer" for two of the three.
+ */
+const pointerPos = (ev: unknown): { x: number; y: number } | null => {
+  const e = ev as { clientX?: number; clientY?: number } | null | undefined;
+  return typeof e?.clientX === 'number' && typeof e.clientY === 'number'
+    ? { x: e.clientX, y: e.clientY }
+    : null;
+};
 
 /**
  * What a mousedown on an already-selected object means once the mouse comes
@@ -116,6 +139,15 @@ export function EditorCanvas() {
   const groupResizeStartRef = useRef<
     { id: string; x: number; y: number; w: number; h: number }[]
   >([]);
+  /**
+   * Where the pointer grabbed the handle, in client px.
+   *
+   * The fallback for an axis Moveable declines to measure: a group holding a
+   * chart comes back 0 tall and with a height delta of 0 every frame, so
+   * without this the vertical half of the gesture is simply dead. The pointer
+   * is the one thing that is always true about a drag.
+   */
+  const groupResizeGrabRef = useRef<{ x: number; y: number } | null>(null);
   // PowerPoint-style resize modifiers: Shift keeps aspect ratio (keepRatio prop,
   // must be a live value so react-moveable re-reads it every frame), Ctrl
   // resizes from the center (via onBeforeResize's per-frame setFixedDirection).
@@ -188,6 +220,17 @@ export function EditorCanvas() {
   // Live rotation angle during a rotate gesture — rendered instead of the
   // model's value so the object turns under the cursor, not on mouseup.
   const [liveRotate, setLiveRotate] = useState<{ id: string; deg: number } | null>(null);
+  /**
+   * The chart part under the pointer, for the hover tint.
+   *
+   * Held here rather than on the elements themselves because a chart part has
+   * no hover state of its own to give: the compiled rects are painted by
+   * `SlideView`, which knows nothing about the editor. See `ChartPartHighlights`
+   * for why a chart needs the affordance at all.
+   */
+  const [hoverPartId, setHoverPartId] = useState<string | null>(null);
+  /** A legend mid-drag, and the side it would snap to if dropped now. */
+  const [legendDrag, setLegendDrag] = useState<{ chartId: string; side: LegendSide } | null>(null);
   // Ctrl/⌘ + wheel zoom, as a multiple of the fit-to-window width.
   const [zoom, setZoom] = useState(1);
   const zoomAnchorRef = useRef<{ fx: number; fy: number; clientX: number; clientY: number } | null>(
@@ -572,6 +615,63 @@ export function EditorCanvas() {
     return marks.length ? marks : [id];
   };
 
+  /** The side a pointer at these client coordinates would drop the legend on. */
+  const legendSideAt = (chart: ChartInstance, clientX: number, clientY: number): LegendSide => {
+    const box = canvasRef.current?.getBoundingClientRect();
+    const f = chart.frame;
+    return nearestLegendSide(
+      { x: f.x * scale, y: f.y * scale, w: f.w * scale, h: f.h * scale },
+      clientX - (box?.left ?? 0),
+      clientY - (box?.top ?? 0),
+    );
+  };
+
+  /**
+   * Press on a legend: either a drag to another side, or a plain click.
+   *
+   * Which one it is isn't known until the pointer moves, so the selection is
+   * deferred exactly the way `deferSelect` defers it for an ordinary object —
+   * committing the click on mousedown would reselect the series under the drag
+   * and swap the highlight out from under the gesture.
+   *
+   * The legend can only land on one of four sides (`LegendSpec.position`), so
+   * the drag never moves anything: it lights the target side and writes the
+   * spec on release. A free-floating legend would be a rect the next recompile
+   * throws away — the same reason no other part is draggable.
+   */
+  const armLegendDrag = (e: React.MouseEvent, chart: ChartInstance, id: string) => {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+
+    const move = (ev: MouseEvent) => {
+      // A few px of travel before this becomes a drag: a legend entry is a
+      // small target and a click on one always jitters slightly.
+      if (!dragging && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+      dragging = true;
+      setLegendDrag({ chartId: chart.id, side: legendSideAt(chart, ev.clientX, ev.clientY) });
+    };
+
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      if (!dragging) {
+        store().selectExact(chartDrillIds(id));
+        return;
+      }
+      const side = legendSideAt(chart, ev.clientX, ev.clientY);
+      setLegendDrag(null);
+      store().patchChart(chart.id, (s) => {
+        s.legend.position = side;
+        // Dropping a legend somewhere is an unambiguous "I want the legend".
+        s.legend.show = true;
+      });
+    };
+
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+
   const deferSelect = (id: string, mode: DeferredSelect) => {
     pendingSelectRef.current = { id, mode };
     const finalize = () => {
@@ -724,10 +824,12 @@ export function EditorCanvas() {
    * The chart's geometry when a resize began, in px.
    *
    * A chart resize relayouts on drop — text has to keep its point size, and a
-   * taller plot wants a different number of gridlines — but during the gesture
-   * the honest preview is an affine one: every part moves and scales with the
-   * box. Without this only the backdrop tracked the handle while the bars and
-   * labels sat still, and the whole chart jumped at the end.
+   * taller plot wants a different number of gridlines — so there is no affine
+   * preview that tells the truth. Scaling every part with the box was tried and
+   * is worse than no preview at all: type keeps its point size while its box
+   * stretches, so labels ride out of their bars and collide, and what you watch
+   * for the length of the drag is a chart that looks broken. The chart now sits
+   * still and only the box tracks the handle; the relayout lands on release.
    */
   const chartResizeStartRef = useRef<{
     frame: { x: number; y: number; w: number; h: number };
@@ -741,9 +843,10 @@ export function EditorCanvas() {
      */
     layout: { x: number; y: number; w: number; h: number };
     /**
-     * Each part in the chart's UNROTATED frame, plus the angle it is drawn at.
-     * Scaling happens in that space — the handle's width is the frame's width
-     * whatever way round the chart is — and the turn is re-applied after.
+     * The backdrop only — the one node that IS the frame, so it can follow the
+     * handle without any part of the chart being distorted. Kept as a list, and
+     * in the chart's UNROTATED frame with the angle it is drawn at, because the
+     * turn still has to be undone and re-applied for a turned chart.
      */
     nodes: { node: HTMLElement; x: number; y: number; w: number; h: number; spin: number }[];
   } | null>(null);
@@ -760,9 +863,6 @@ export function EditorCanvas() {
     const sy = start.layout.h > 0 ? layout.h / start.layout.h : 1;
 
     for (const n of start.nodes) {
-      // Glyphs keep their size regardless — font size comes from the model,
-      // not from the box — so scaling a text box moves it without distorting
-      // the type, which is a fair picture of where it will land.
       const local = {
         x: layout.x + (n.x - start.layout.x) * sx,
         y: layout.y + (n.y - start.layout.y) * sy,
@@ -966,6 +1066,20 @@ export function EditorCanvas() {
     }
     if (id === editingId) return;
 
+    // A legend is the one chart part with somewhere to go, so a press on one
+    // is claimed before the ordinary selection rules see it — see
+    // `armLegendDrag`, which decides between the drag and the click on move.
+    const pressedRef = (slide?.elements ?? []).find((x) => x.id === id)?.chartRef;
+    if (
+      selectionChart &&
+      pressedRef?.chartId === selectionChart.id &&
+      (pressedRef.part === 'legend.item' || pressedRef.part === 'legend.box') &&
+      !e.shiftKey
+    ) {
+      armLegendDrag(e, selectionChart, id);
+      return;
+    }
+
     // Groups are one object to a click: `store().select` grows any id into its
     // whole group. The two exceptions below are PowerPoint's way INTO a group —
     // click the group, then click the member you want.
@@ -985,6 +1099,21 @@ export function EditorCanvas() {
 
     if (drilledInHere && !e.shiftKey) {
       store().selectExact(chartDrillIds(id));
+      return;
+    }
+
+    // Already inside a chart: shift-click gathers PARTS, not the chart. The
+    // ordinary shift branch below grows any id into its whole group, and a
+    // chart's group is all thirty-odd of its parts — which is how shift-click
+    // on a second bar used to jump straight back out to the whole chart, with
+    // no way to format three of anything at once.
+    if (chartPart && e.shiftKey && pressedRef?.chartId === chartPart.id) {
+      store().selectExact(
+        shiftClickParts(id, selectedIds, (elId) => {
+          const ref = els.find((x) => x.id === elId)?.chartRef;
+          return ref ? partKind(ref) : null;
+        }),
+      );
       return;
     }
 
@@ -1086,6 +1215,24 @@ export function EditorCanvas() {
                 ? resolveColor(slide.background.color, ds)
                 : '#ffffff',
           }}
+          // Which part of the selected chart the pointer is over. Only tracked
+          // while a chart is the selection — hit-testing every mousemove over
+          // an ordinary slide would be work nobody asked for, and a chart the
+          // user hasn't touched has no parts to offer yet.
+          onMouseMove={(e) => {
+            if (!selectionChart || legendDrag || liveRotate || liveResize) {
+              if (hoverPartId) setHoverPartId(null);
+              return;
+            }
+            const el = elementAtPoint(e.clientX, e.clientY);
+            const hitId = el?.dataset.id ?? null;
+            const ref = hitId
+              ? slide?.elements.find((x) => x.id === hitId)?.chartRef
+              : undefined;
+            const next = ref?.chartId === selectionChart.id ? hitId : null;
+            if (next !== hoverPartId) setHoverPartId(next);
+          }}
+          onMouseLeave={() => setHoverPartId(null)}
           // The browser's menu is suppressed everywhere on the slide, and ours
           // takes over for the selection that has commands worth reaching at the
           // pointer (see `contextMenuItems`). Text being edited is the
@@ -1248,6 +1395,27 @@ export function EditorCanvas() {
 
         {/* Comment markers for this slide, above the elements they annotate. */}
         <CommentPins slide={slide} scale={scale} />
+
+        {/* What the pointer is about to hit inside the selected chart, and what
+            it already hit. Above Moveable's control box, which for a chart part
+            is a box with every handle disabled — see `ChartPartHighlights`. */}
+        {selectionChart ? (
+          <ChartPartHighlights
+            slide={slide}
+            chartId={selectionChart.id}
+            selectedIds={selectedIds}
+            hoverId={hoverPartId}
+            // The whole chart selected is Moveable's control box to draw; ringing
+            // all forty of its parts as well would be a chart made of rings.
+            showSelection={!!chartPart}
+            scale={scale}
+          />
+        ) : null}
+
+        {/* The four sides a dragged legend can land on. */}
+        {legendDrag && selectionChart?.id === legendDrag.chartId ? (
+          <LegendDropZones chart={selectionChart} active={legendDrag.side} scale={scale} />
+        ) : null}
 
         {/* Formatting for whatever part of a chart the user drilled into. Sits
             inside the slide, anchored to the part, so the controls arrive where
@@ -1450,20 +1618,32 @@ export function EditorCanvas() {
                 frame: framePx,
                 rotation,
                 layout: layoutPx,
-                nodes: chartNodes().map(({ node, rect }) => {
-                  // Undo the chart's turn to get back to layout space; the
-                  // frame's centre is the same point either way round.
-                  const { rect: local } = turnRect(
-                    { x: rect.x * scale, y: rect.y * scale, w: rect.w * scale, h: rect.h * scale },
-                    layoutPx,
-                    (360 - rotation) % 360,
-                  );
-                  return {
-                    node,
-                    ...local,
-                    spin: findEl(node.dataset.id!)?.rotation ?? 0,
-                  };
-                }),
+                // The backdrop alone. A resize is not an affine transform of a
+                // chart — it relayouts — so previewing one part-by-part shows a
+                // picture the drop will never produce. The box follows the
+                // handle, the chart holds its last good rendering, and the new
+                // layout appears in one step on release.
+                nodes: chartNodes()
+                  .filter(({ node }) => node.dataset.id === chartBackdropId)
+                  .map(({ node, rect }) => {
+                    // Undo the chart's turn to get back to layout space; the
+                    // frame's centre is the same point either way round.
+                    const { rect: local } = turnRect(
+                      {
+                        x: rect.x * scale,
+                        y: rect.y * scale,
+                        w: rect.w * scale,
+                        h: rect.h * scale,
+                      },
+                      layoutPx,
+                      (360 - rotation) % 360,
+                    );
+                    return {
+                      node,
+                      ...local,
+                      spin: findEl(node.dataset.id!)?.rotation ?? 0,
+                    };
+                  }),
               };
             }}
             onBeforeResize={(e) => {
@@ -1519,6 +1699,7 @@ export function EditorCanvas() {
             onResizeGroupStart={(e) => {
               beginResize(e.inputEvent);
               groupResizeRef.current = [];
+              groupResizeGrabRef.current = pointerPos(e.inputEvent);
               groupResizeStartRef.current = e.targets
                 .map((t) => {
                   const id = (t as HTMLElement).dataset.id;
@@ -1541,12 +1722,8 @@ export function EditorCanvas() {
             onResizeGroup={(e) => {
               // The group box's start size, recovered from this frame rather
               // than measured up front: `dist` is the change since the gesture
-              // began, so `width - dist` is exactly where it started.
+              // began, so `start + dist` is exactly where the box is now.
               const [distW, distH] = e.dist as [number, number];
-              const startW = e.width - distW;
-              const startH = e.height - distH;
-              const sx = startW > 0 ? e.width / startW : 1;
-              const sy = startH > 0 ? e.height / startH : 1;
               // Which edges the drag holds still. A handle on an edge (dir 0 on
               // that axis) only scales that axis when Shift forces the ratio, so
               // there's no meaningful edge to pin — grow about the centre, as
@@ -1563,6 +1740,34 @@ export function EditorCanvas() {
               };
               const [gx0, gx1] = bounds((s) => [s.x, s.w]);
               const [gy0, gy1] = bounds((s) => [s.y, s.h]);
+
+              /**
+               * How far the handle has travelled on an axis Moveable isn't
+               * measuring. A `se` handle pulled down 40px makes the box 40px
+               * taller; a `n` handle pulled down makes it 40px shorter, hence
+               * the direction; ⌘ grows both edges at once, hence the doubling.
+               * An edge handle (dir 0) has no say on its cross axis at all.
+               */
+              const grab = groupResizeGrabRef.current;
+              const pointer = pointerPos(e.inputEvent);
+              const byPointer = (dir: number, from: number, to: number) =>
+                !dir || !grab || !pointer ? 0 : dir * (to - from) * (fromCenter ? 2 : 1);
+
+              // Measured against the MODEL's start bounds, not against the box
+              // Moveable measures — which comes back 0 tall for a selection
+              // holding a chart. See `resizeFactor`.
+              // The pointer only stands in where the live measurement is dead;
+              // where Moveable is measuring, its delta carries the snapping.
+              const sx = resizeFactor(
+                gx1 - gx0,
+                e.width,
+                e.width > 0 ? distW : byPointer(dirX, grab?.x ?? 0, pointer?.x ?? 0) || distW,
+              );
+              const sy = resizeFactor(
+                gy1 - gy0,
+                e.height,
+                e.height > 0 ? distH : byPointer(dirY, grab?.y ?? 0, pointer?.y ?? 0) || distH,
+              );
               // The point that stays put: the held edge, or the group's centre
               // when the drag grows about it. Positions scale about it too,
               // which is what makes the selection behave as one object.

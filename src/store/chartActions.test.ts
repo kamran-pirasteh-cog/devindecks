@@ -19,6 +19,8 @@ import {
 import { compileChart } from '@/chart/compile';
 import {
   applyChartFormat,
+  applyChartTextFormat,
+  chartFontFromRun,
   chartElementIdsBefore,
   chartsForElements,
   detachChartFrom,
@@ -544,5 +546,91 @@ describe('repairChartSelection', () => {
     const before = chartElementIdsBefore(slide, [chart.id]);
     const mark = marksOf(slide, chart.id)[0].id;
     expect(repairChartSelection(slide, before, [mark, 'title-1'])).toEqual([mark, 'title-1']);
+  });
+});
+
+describe('syncChartGeometry', () => {
+  it('refuses a degenerate frame rather than flattening the chart', () => {
+    const slide = emptySlide();
+    const chart = insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const before = chartElementRects(slide, chart.id);
+    // What a group resize used to hand it: every box flattened on one axis.
+    for (const el of slide.elements) {
+      if (el.chartRef) el.rect = { ...el.rect, h: 0 };
+    }
+    syncChartGeometry(slide, chart.id, before, DS);
+    expect(slide.charts![0].frame.h).toBeGreaterThan(0);
+    expect(slide.charts![0].frame.w).toBe(FRAME.w);
+  });
+});
+
+describe('applyChartTextFormat', () => {
+  const sizeOf = (slide: Slide, suffix: string) => {
+    const el = slide.elements.find((e) => e.id.endsWith(suffix));
+    return el && el.type === 'text' ? el.body.paragraphs[0].runs[0].sizePt : undefined;
+  };
+
+  it('writes a point override when one label is selected, and keeps it across a recompile', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const one = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0' && e.chartRef.point === 'c1',
+    )!;
+
+    expect(applyChartTextFormat(slide, [one.id], DS, () => ({ sizePt: 18 }))).toEqual([one.id]);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].pointOverrides?.c1?.label?.font?.sizePt).toBe(18);
+    expect(sizeOf(slide, '::label.s0.c1')).toBe(18);
+
+    // A resize is a recompile, which is what used to reset the size.
+    resizeChartFrames(slide, [one.id], inchesToEmu(1), inchesToEmu(1), DS, inchesToEmu(1));
+    expect(sizeOf(slide, '::label.s0.c1')).toBe(18);
+  });
+
+  it('writes to the series when every one of its labels is selected', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const ids = slide.elements
+      .filter((e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0')
+      .map((e) => e.id);
+
+    applyChartTextFormat(slide, ids, DS, () => ({ sizePt: 16 }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].labels?.font?.sizePt).toBe(16);
+    expect(spec.data.series[0].pointOverrides).toBeUndefined();
+  });
+
+  it('routes an axis label to that axis, and the title to the title', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, { ...defaultChartSpec('column', 'stacked'), title: 'Revenue' }, FRAME, DS);
+    const tick = slide.elements.find(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'y' && e.chartRef.sub === 'tick',
+    )!;
+    const heading = slide.elements.find((e) => e.chartRef?.part === 'title')!;
+
+    applyChartTextFormat(slide, [tick.id, heading.id], DS, () => ({ sizePt: 12 }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.axes.y.font?.sizePt).toBe(12);
+    expect(spec.titleFont?.sizePt).toBe(12);
+  });
+
+  it('claims chart parts even where the spec has no home for the change', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const bar = slide.elements.find((e) => e.chartRef?.part === 'mark')!;
+    // Claimed, so the caller doesn't write a run style the next recompile eats.
+    expect(applyChartTextFormat(slide, [bar.id], DS, () => ({ sizePt: 12 }))).toEqual([bar.id]);
+  });
+
+  it('leaves a plain shape to the ordinary element path', () => {
+    const slide = emptySlide();
+    expect(applyChartTextFormat(slide, ['title-1'], DS, () => ({ sizePt: 12 }))).toEqual([]);
+  });
+});
+
+describe('chartFontFromRun', () => {
+  it('keeps what a chart can store and drops what it cannot', () => {
+    expect(chartFontFromRun({ sizePt: 14, bold: true })).toEqual({ sizePt: 14, bold: true });
+    expect(chartFontFromRun({ italic: true, underline: true })).toBeNull();
   });
 });

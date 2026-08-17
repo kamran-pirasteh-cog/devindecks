@@ -18,11 +18,13 @@ import {
   type DesignSystem,
   type EMU,
   type Fill,
+  type LabelFont,
   type Outline,
   type PointOverride,
   type Rect,
   type Slide,
   type SlideElement,
+  type TextRun,
 } from '@/model';
 import { compileChart } from '@/chart/compile';
 import {
@@ -184,6 +186,19 @@ export const chartElementRects = (slide: Slide, chartId: string): Rect[] =>
 const SIZE_EPSILON = 2;
 
 /**
+ * The smallest frame a chart can be inferred into — a quarter inch.
+ *
+ * A backstop, not a design: the frame here is DERIVED from what happened to the
+ * elements, so a canvas gesture that reports a degenerate box (Moveable does
+ * exactly this on the vertical axis for a group holding a chart) would
+ * otherwise write a frame of nearly nothing, and a chart flattened to a strip
+ * has no way back — every later gesture scales the flattened frame. Clamping
+ * costs a resize its last few percent at sizes no one works at, and takes the
+ * unrecoverable failure off the table.
+ */
+const MIN_FRAME: EMU = 228600;
+
+/**
  * Follow a geometry change that was applied to a chart's elements directly.
  *
  * A drag translates the frame and needs no recompile — the elements are already
@@ -226,8 +241,8 @@ export function syncChartGeometry(
   chart.frame = {
     x: Math.round(newUnion.x + (chart.frame.x - oldUnion.x) * sx),
     y: Math.round(newUnion.y + (chart.frame.y - oldUnion.y) * sy),
-    w: Math.round(chart.frame.w * sx),
-    h: Math.round(chart.frame.h * sy),
+    w: Math.max(MIN_FRAME, Math.round(chart.frame.w * sx)),
+    h: Math.max(MIN_FRAME, Math.round(chart.frame.h * sy)),
   };
   recompileInto(slide, chartId, ds);
 }
@@ -383,6 +398,172 @@ export function applyChartFormat(
       }
       wrote = true;
     }
+  }
+  return wrote;
+}
+
+/**
+ * The chart-spec half of a text-run patch.
+ *
+ * A run carries more than a chart knows how to keep — italic, underline, a
+ * numeric weight — and there is nowhere in the spec to put those. Anything
+ * unmappable comes back as `null` so the caller does nothing at all, rather
+ * than writing a style onto the emitted element that the next recompile eats.
+ */
+export function chartFontFromRun(patch: Partial<TextRun>): LabelFont | null {
+  const font: LabelFont = {};
+  if (patch.sizePt !== undefined) font.sizePt = patch.sizePt;
+  if (patch.bold !== undefined) font.bold = patch.bold;
+  if (patch.color !== undefined) font.color = patch.color;
+  if (patch.font !== undefined) font.font = patch.font;
+  return Object.keys(font).length ? font : null;
+}
+
+/** The size a compiled part is actually drawn at, to step a font size from. */
+export function runSizeOf(el: SlideElement): number | undefined {
+  const body = el.type === 'text' ? el.body : el.type === 'shape' ? el.body : undefined;
+  return body?.paragraphs[0]?.runs[0]?.sizePt;
+}
+
+/**
+ * Apply a type change on chart PARTS by writing it to the spec.
+ *
+ * The same rule `applyChartFormat` follows for colour, and for the same reason:
+ * a size set on the emitted text box survives exactly until the next recompile,
+ * and a recompile is not a rare event — dragging the chart's handle is one, so
+ * is toggling a legend. That is what made a bumped label look like it had been
+ * "reset to a smaller font" by an unrelated edit; the edit was never anywhere
+ * the chart could keep it.
+ *
+ * `fontFor` is per element so ⌘⇧> can step each part from its own size.
+ * Returns the ids this took ownership of — every chart part in the selection,
+ * including the ones with no spec home (a bar has no type) — so the caller
+ * leaves them alone instead of writing formatting that cannot last.
+ */
+export function applyChartTextFormat(
+  slide: Slide,
+  ids: string[],
+  ds: DesignSystem,
+  fontFor: (el: SlideElement) => LabelFont | null,
+): string[] {
+  const wanted = new Set(ids);
+  const parts = slide.elements.filter((el) => wanted.has(el.id) && el.chartRef);
+  if (!parts.length) return [];
+
+  for (const chart of slide.charts ?? []) {
+    const mine = parts.filter((el) => el.chartRef!.chartId === chart.id);
+    if (!mine.length) continue;
+    const fonts = new Map<ChartRef, LabelFont>();
+    for (const el of mine) {
+      const font = fontFor(el);
+      if (font) fonts.set(el.chartRef!, font);
+    }
+    if (fonts.size && writeChartFont(chart.spec, fonts)) recompileInto(slide, chart.id, ds);
+  }
+  return parts.map((el) => el.id);
+}
+
+const mergeFont = (prev: LabelFont | undefined, next: LabelFont): LabelFont => ({
+  ...prev,
+  ...next,
+});
+
+/** Route each part's type change to the spec node that owns that part's text. */
+function writeChartFont(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): boolean {
+  let wrote = false;
+
+  for (const [ref, font] of fonts) {
+    switch (ref.part) {
+      case 'title':
+        spec.titleFont = mergeFont(spec.titleFont, font);
+        wrote = true;
+        break;
+      case 'legend.item':
+      case 'legend.box':
+        spec.legend.font = mergeFont(spec.legend.font, font);
+        wrote = true;
+        break;
+      case 'axis': {
+        // One node per axis: the ticks, the axis title and the unit note are
+        // all "this axis's labels" as far as the spec is concerned.
+        const axis = spec.axes[ref.axis];
+        if (!axis) break;
+        axis.font = mergeFont(axis.font, font);
+        wrote = true;
+        break;
+      }
+      case 'total': {
+        const totals = spec.decorations.totals;
+        if (!totals) break;
+        totals.font = mergeFont(totals.font, font);
+        wrote = true;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return writeLabelFonts(spec, fonts) || wrote;
+}
+
+/**
+ * Data labels, scoped the way `applyChartFormat` scopes colour: every point of
+ * a series selected means the SERIES changed, anything narrower is a per-point
+ * override. Without the series case, restyling a whole series would leave one
+ * override per bar and adding a category later would come back unstyled.
+ */
+function writeLabelFonts(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): boolean {
+  const labels = [...fonts].filter(
+    (entry): entry is [Extract<ChartRef, { part: 'label' }>, LabelFont] =>
+      entry[0].part === 'label',
+  );
+  if (!labels.length) return false;
+
+  // A shape with no series array (a waterfall, a pie) keeps its label type on
+  // the chart-wide node — there is nothing narrower to write to.
+  if (!isGridSpec(spec)) {
+    for (const [, font] of labels) {
+      spec.decorations.labels.font = mergeFont(spec.decorations.labels.font, font);
+    }
+    return true;
+  }
+
+  const bySeries = new Map<string, [Extract<ChartRef, { part: 'label' }>, LabelFont][]>();
+  for (const entry of labels) {
+    const group = bySeries.get(entry[0].series) ?? [];
+    group.push(entry);
+    bySeries.set(entry[0].series, group);
+  }
+
+  let wrote = false;
+  const allPoints = spec.data.categories.map((c) => c.key);
+  for (const [seriesKey, group] of bySeries) {
+    const series = spec.data.series.find((s) => s.key === seriesKey);
+    if (!series) continue;
+    const whole =
+      allPoints.length > 0 && allPoints.every((k) => group.some(([ref]) => ref.point === k));
+
+    if (whole) {
+      const base = series.labels ?? spec.decorations.labels;
+      series.labels = { ...base, font: mergeFont(base.font, group[0]![1]) };
+      // A per-point type would now shadow the series style just set.
+      for (const key of Object.keys(series.pointOverrides ?? {})) {
+        const label = series.pointOverrides![key]!.label;
+        if (label?.font) delete label.font;
+      }
+    } else {
+      series.pointOverrides ??= {};
+      for (const [ref, font] of group) {
+        const prior = series.pointOverrides[ref.point] ?? {};
+        const base = prior.label ?? series.labels ?? spec.decorations.labels;
+        series.pointOverrides[ref.point] = {
+          ...prior,
+          label: { ...base, font: mergeFont(base.font, font) },
+        };
+      }
+    }
+    wrote = true;
   }
   return wrote;
 }

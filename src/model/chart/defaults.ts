@@ -262,13 +262,16 @@ export function defaultChartSpec(
         data: sampleGridData(),
       };
     case 'combo':
+      // The stack argument reaches the columns, same as it would on a plain
+      // column chart — it used to be dropped here, so asking for a clustered
+      // combo quietly returned a stacked one.
       return {
         ...b,
         kind,
         render: { s2: 'line' },
-        stack: 'stacked',
+        stack,
         gapWidthPct,
-        overlapPct: 100,
+        overlapPct: overlapFor(stack),
         data: sampleGridData(),
       };
     case 'pie':

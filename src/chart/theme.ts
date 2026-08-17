@@ -265,8 +265,8 @@ export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme
         weight: 600,
         color: muted,
       }),
-      legend: textRole(ds, style.fonts.legend),
-      title: textRole(ds, style.fonts.title, { color: ink }),
+      legend: textRole(ds, style.fonts.legend, fontOver(spec.legend?.font)),
+      title: textRole(ds, style.fonts.title, { color: ink, ...fontOver(spec.titleFont) }),
     },
     sizes: {
       axisWidthEmu: pointsToEmu(0.75),

@@ -11,7 +11,14 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import type { Deck } from '@/model';
-import { FORMATS, describeSchedule, nextRunAt, type Report } from '@/reports/types';
+import {
+  FORMATS,
+  FREQUENCIES,
+  describeAsOf,
+  describeSchedule,
+  nextRunAt,
+  type Report,
+} from '@/reports/types';
 import { Thumb } from './Thumb';
 import { ChannelChip, StatusChip } from './ChannelBadge';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -71,6 +78,7 @@ export function ReportCard({
     return () => window.removeEventListener('mousedown', onDown);
   }, [menuOpen]);
 
+  const asOf = describeAsOf(report.dataRefreshedAt);
   const recipients = report.recipients.filter((r) => r.name.trim() || r.address.trim());
   const shown = recipients.slice(0, 2);
   const extra = recipients.length - shown.length;
@@ -84,7 +92,7 @@ export function ReportCard({
         menuOpen ? 'z-20' : ''
       }`}
     >
-      <div className="overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
+      <div className="relative overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
         {deck ? (
           <Thumb deck={deck} />
         ) : (
@@ -92,15 +100,34 @@ export function ReportCard({
             No deck attached
           </div>
         )}
+        {/* How old the numbers are, over the slide they're on. A clear pill, not
+            a coloured one: this is a fact about the data, not a state of the
+            report, and the status chip opposite already owns the colour. Inside
+            the well (a `span`, so the well's `[&>div]` sizing rule skips it) so
+            it can sit on the slide's bottom edge whatever height it renders. */}
+        {asOf ? (
+          <span
+            title={`Data last refreshed ${new Date(report.dataRefreshedAt!).toLocaleString()}`}
+            className="absolute bottom-2 left-2 rounded-full bg-white/75 px-2 py-0.5 text-[10px] font-medium text-zinc-600 shadow-sm ring-1 ring-black/5 backdrop-blur-sm dark:bg-zinc-900/70 dark:text-zinc-300 dark:ring-white/10"
+          >
+            {asOf}
+          </span>
+        ) : null}
       </div>
       {/* A sibling of the thumbnail well, not a child of it: that well forces
           `w-full` onto every div inside so the slide fills the card, and the
           chip was being stretched to the full width by the same rule. Top-RIGHT
           because the slide's own logo usually sits top-left, and the ring keeps
           it legible over whatever the deck renders. */}
-      <span className="absolute right-2 top-2 rounded-full shadow-sm ring-1 ring-black/5 dark:ring-white/10">
-        <StatusChip status={report.status} />
-      </span>
+      <StatusChip
+        status={report.status}
+        label={
+          report.status === 'active'
+            ? (FREQUENCIES.find((f) => f.value === report.frequency)?.label ?? report.frequency)
+            : undefined
+        }
+        className="absolute right-2 top-2 shadow-sm ring-1 ring-black/5 dark:ring-white/10"
+      />
 
       <div className="px-3 py-2">
         <div className="flex items-start justify-between">
