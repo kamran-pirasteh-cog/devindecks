@@ -3,6 +3,7 @@ import {
   DEFAULT_DESIGN_SYSTEM,
   defaultChartSpec,
   inchesToEmu,
+  hex,
   isShape,
   isText,
   type ChartInstance,
@@ -25,7 +26,7 @@ import {
   type StackMode,
 } from '@/model';
 import { metricMeasurer } from '@/render/measureText';
-import { contrastRatio } from './color';
+import { contrastRatio, hexToOklch, relativeLuminance } from './color';
 import { compileChart } from './compile';
 
 const FRAME = { x: inchesToEmu(1), y: inchesToEmu(1), w: inchesToEmu(8), h: inchesToEmu(4.5) };
@@ -151,6 +152,103 @@ describe('compileChart — geometry', () => {
     });
     expect(elements.length).toBeGreaterThan(0);
     expect(elements.every((e) => e.rect.w >= 0 && e.rect.h >= 0)).toBe(true);
+  });
+});
+
+/**
+ * Every box a chart measures to its own text is a promise that the string fits
+ * on one line. The renderer measures with the real font, half a point off ours,
+ * so a box sized to the measurement EXACTLY is a coin flip — and losing it
+ * wrapped "1,250" across two lines and painted a five-tick axis as garbage. Two
+ * defences, both asserted here: slack in the box, and no wrapping.
+ */
+describe('compileChart — labels fit on one line', () => {
+  const TICK = { font: 'Geist Mono' as const, sizePt: 8.5, caps: true };
+  const measurer = metricMeasurer();
+
+  /** A frame whose tick step forces five-character labels. */
+  const wide = chart((s) => {
+    s.data.series = [{ key: 's0', name: 'Enterprise', values: [420, 512, 1240] }];
+  });
+
+  it('gives a tick label room to spare, not room to the pixel', () => {
+    const ticks = compile(wide).elements.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick' && e.chartRef.axis === 'y',
+    );
+    expect(ticks.length).toBeGreaterThan(3);
+    for (const t of ticks) {
+      const text = t.type === 'text' ? t.body.paragraphs[0].runs[0].text : '';
+      expect(t.rect.w).toBeGreaterThan(measurer.measure(text, TICK).wEmu);
+    }
+  });
+
+  it('never wraps a label whose box was measured from its own text', () => {
+    for (const kind of ['column', 'bar', 'line', 'pie', 'sankey', 'waterfall'] as ChartKind[]) {
+      const spec = defaultChartSpec(kind);
+      spec.decorations.labels = { ...spec.decorations.labels, show: true };
+      spec.title = 'A title long enough to need two lines in this frame, comfortably';
+      const { elements } = compileChart(
+        { id: 'c1', groupId: 'g1', frame: FRAME, spec },
+        DEFAULT_DESIGN_SYSTEM,
+        measurer,
+      );
+      // The three boxes sized to something other than their own text: the
+      // title, an axis title in its gutter, and a category label in its band.
+      const categoryAxis = kind === 'bar' ? 'y' : 'x';
+      const byDesign = (e: (typeof elements)[number]) =>
+        e.chartRef?.part === 'title' ||
+        (e.chartRef?.part === 'axis' &&
+          (e.chartRef.sub === 'title' ||
+            e.chartRef.sub === 'unitNote' ||
+            (e.chartRef.sub === 'tick' && e.chartRef.axis === categoryAxis)));
+      const measured = elements.filter(isText).filter((e) => !byDesign(e));
+      expect(measured.length).toBeGreaterThan(0);
+      for (const el of measured) {
+        expect(el.body.wrap, `${kind}: ${el.id}`).toBe(false);
+      }
+    }
+  });
+
+  it('still lets a chart title wrap — its box is the frame, not the string', () => {
+    const titled = compile(
+      chart((s) => {
+        s.title = 'A title long enough to need two lines in this frame, comfortably';
+      }),
+    );
+    const title = titled.elements.filter(isText).find((e) => e.chartRef?.part === 'title');
+    expect(title?.body.wrap).toBe(true);
+  });
+
+  it('still lets a banded category label wrap — its box is the band', () => {
+    const { elements } = compile(
+      chart((s) => {
+        s.data.categories = [
+          { key: 'c0', label: 'Financial services and insurance' },
+          { key: 'c1', label: 'Industrials' },
+          { key: 'c2', label: 'Public sector' },
+        ];
+      }),
+    );
+    const cats = elements
+      .filter(isText)
+      .filter((e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'x' && e.chartRef.sub === 'tick');
+    expect(cats).toHaveLength(3);
+    for (const c of cats) expect(c.body.wrap).toBe(true);
+  });
+
+  it('keeps a legend entry inside the frame however long the series names are', () => {
+    const { elements } = compile(
+      chart((s) => {
+        s.data.series = s.data.series.map((ser, i) => ({
+          ...ser,
+          name: `Series ${i} with a deliberately overlong name`,
+        }));
+      }),
+    );
+    for (const el of elements.filter((e) => e.chartRef?.part === 'legend.item')) {
+      expect(el.rect.w).toBeGreaterThanOrEqual(0);
+      expect(el.rect.x + el.rect.w).toBeLessThanOrEqual(FRAME.x + FRAME.w + 1);
+    }
   });
 });
 
@@ -600,36 +698,82 @@ describe('compileChart — sankey', () => {
     }
   });
 
+  it('fills its frame turned on its end, rather than hiding in the middle of it', () => {
+    const flipped = setChartOrientation(defaultChartSpec('sankey'), 'vertical');
+    const { elements } = compileChart(
+      { id: 'c1', groupId: 'g1', frame: FRAME, spec: flipped },
+      DEFAULT_DESIGN_SYSTEM,
+      metricMeasurer(),
+    );
+    // Everything but the backdrop, which spans the frame by construction and
+    // would make this pass whatever the diagram did.
+    const drawn = elements.filter((e) => e.chartRef?.part !== 'plot');
+    const top = Math.min(...drawn.map((e) => e.rect.y));
+    const bottom = Math.max(...drawn.map((e) => e.rect.y + e.rect.h));
+    // A vertical Sankey writes its labels ABOVE and BELOW the end nodes, so the
+    // space the flow gives up at each end is one line of type. Reserving their
+    // WIDTH instead cost most of an inch a side and left the diagram floating
+    // in the middle third of its own frame, clear of its own selection box.
+    expect(bottom - top).toBeGreaterThan(FRAME.h * 0.9);
+  });
+
   it('reads as horizontal by default, which is what a Sankey is', () => {
     expect(chartOrientation(defaultChartSpec('sankey'))).toBe('horizontal');
   });
 
-  it('draws ribbons translucent so crossings stay readable', () => {
-    const ribbons = sankey().elements.filter((e) => e.type === 'path');
-    for (const r of ribbons) {
-      expect(r.fill?.kind === 'solid' && r.fill.alpha).toBeLessThan(1);
+  /** A mark's solid fill, or a throw — a mark without one is itself the failure. */
+  const solidFill = (el: SlideElement) => {
+    const fill = 'fill' in el ? el.fill : undefined;
+    if (fill?.kind !== 'solid') throw new Error(`${el.name ?? el.id} has no solid fill`);
+    return fill;
+  };
+  const fillColor = (el: SlideElement): ColorRef => solidFill(el).color;
+
+  /** The ribbons, top of the stack first. */
+  const ribbonsTopDown = (elements: SlideElement[]) =>
+    elements
+      .filter((e) => e.type === 'path' && e.chartRef?.part === 'mark')
+      .sort((a, b) => a.rect.y - b.rect.y);
+
+  it('draws ribbons opaque, since tone is what tells them apart', () => {
+    for (const r of ribbonsTopDown(sankey().elements)) {
+      expect(solidFill(r).alpha).toBeUndefined();
     }
   });
 
-  it('gives a ribbon the colour of the node it came from', () => {
+  it('steps the ribbons down one hue, deep at the top and pale at the bottom', () => {
+    const lightness = ribbonsTopDown(sankey().elements).map((r) =>
+      relativeLuminance(resolveColor(fillColor(r), DEFAULT_DESIGN_SYSTEM)),
+    );
+    expect(lightness).toHaveLength(5);
+    for (let i = 1; i < lightness.length; i++) {
+      expect(lightness[i]).toBeGreaterThan(lightness[i - 1]);
+    }
+  });
+
+  it('draws the node bars in ink, not in the series colour', () => {
     const { elements } = sankey();
-    const nodes = new Map(
-      elements
-        .filter(isShape)
-        .filter((e) => e.chartRef?.part === 'mark' && e.type === 'shape')
-        .map((e) => [e.name, e.fill]),
+    const bars = elements.filter(isShape).filter((e) => e.chartRef?.part === 'mark');
+    const ribbon = ribbonsTopDown(elements)[0];
+    const ink = resolveColor(fillColor(bars[0]), DEFAULT_DESIGN_SYSTEM);
+    // Every bar the same, and darker than the deepest ribbon: a gate, not a datum.
+    for (const bar of bars) {
+      expect(resolveColor(fillColor(bar), DEFAULT_DESIGN_SYSTEM)).toBe(ink);
+    }
+    expect(relativeLuminance(ink)).toBeLessThan(
+      relativeLuminance(resolveColor(fillColor(ribbon), DEFAULT_DESIGN_SYSTEM)),
     );
-    const inboundRibbon = elements.find(
-      (e) => e.type === 'path' && e.name?.startsWith('Total →'),
-    );
-    const inboundNode = nodes.get('Total');
-    expect(inboundRibbon?.type === 'path' && inboundRibbon.fill?.kind === 'solid').toBe(true);
-    expect(
-      inboundRibbon?.type === 'path' &&
-        inboundRibbon.fill?.kind === 'solid' &&
-        inboundNode?.kind === 'solid' &&
-        JSON.stringify(inboundRibbon.fill.color) === JSON.stringify(inboundNode.color),
-    ).toBe(true);
+  });
+
+  it('ladders a coloured node in ITS hue, so an override still reads as emphasis', () => {
+    const { elements } = sankey((s) => {
+      s.data.nodes[0].format = { fill: { kind: 'solid', color: hex('#B91C1C') } };
+    });
+    for (const r of ribbonsTopDown(elements)) {
+      const { h } = hexToOklch(resolveColor(fillColor(r), DEFAULT_DESIGN_SYSTEM));
+      // Red, laddered — not the brand's blue.
+      expect(Math.min(Math.abs(h - 29), 360 - Math.abs(h - 29))).toBeLessThan(20);
+    }
   });
 
   it('is byte-identical across recompiles', () => {
@@ -972,6 +1116,30 @@ describe('compileChart — turned charts', () => {
     }
   });
 
+  it('keeps every turnable kind inside its frame with its labels upright', () => {
+    for (const kind of ['column', 'bar', 'line', 'area', 'pie', 'waterfall', 'mekko'] as const) {
+      const instance: ChartInstance = {
+        id: 'c1',
+        groupId: 'g1',
+        frame: FRAME,
+        spec: defaultChartSpec(kind),
+      };
+      const upright = overflow(compile(instance).elements);
+      for (const rotation of [90, 180, 270]) {
+        const { elements } = compile({ ...instance, rotation });
+        expect(overflow(elements), `${kind} at ${rotation}`).toBeLessThanOrEqual(upright + 1);
+        for (const el of elements) {
+          if (el.type !== 'text') continue;
+          const part = el.chartRef?.part;
+          const sub = el.chartRef && 'sub' in el.chartRef ? el.chartRef.sub : undefined;
+          if (part === 'label' || part === 'total' || sub === 'tick') {
+            expect(el.rotation ?? 0, `${kind} at ${rotation}`).toBe(0);
+          }
+        }
+      }
+    }
+  });
+
   it('turns the backdrop onto the frame, so the chart stays clickable', () => {
     const { elements } = compile({ ...chart(), rotation: 90 });
     const backdrop = elements.find((e) => e.chartRef?.part === 'plot')!;
@@ -982,9 +1150,81 @@ describe('compileChart — turned charts', () => {
     const bars = (rotation: number) =>
       compile({ ...chart(), rotation }).elements.filter((e) => e.chartRef?.part === 'mark');
     expect(bars(90)).toHaveLength(bars(0).length);
-    expect(texts(compile({ ...chart(), rotation: 90 }).elements).sort()).toEqual(
-      texts(compile(chart()).elements).sort(),
+    // Every series name, category and data label survives the turn. The value
+    // TICKS are excluded on purpose: an upright label on a turned chart lies
+    // across its own axis, so it costs the axis its width rather than a line
+    // height and the axis carries fewer of them — see `tickAlong`.
+    const notTicks = (els: SlideElement[]) =>
+      texts(
+        els.filter((e) => !(e.chartRef && 'sub' in e.chartRef && e.chartRef.sub === 'tick')),
+      ).sort();
+    expect(notTicks(compile({ ...chart(), rotation: 90 }).elements)).toEqual(
+      notTicks(compile(chart()).elements),
     );
+  });
+
+  it('leaves a turned chart with fewer, wider-spaced value ticks', () => {
+    const ticks = (rotation: number) =>
+      compile({ ...chart(), rotation }).elements.filter(
+        (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick' && e.chartRef.axis === 'y',
+      );
+    // Not a regression: standing "1,250" up next to a turned axis takes the
+    // width of the number where a sideways one took a line height.
+    expect(ticks(90).length).toBeLessThanOrEqual(ticks(0).length);
+    expect(ticks(90).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stands every label back up, whichever way the chart is turned', () => {
+    for (const rotation of [90, 180, 270]) {
+      const { elements } = compile({ ...chart(), rotation });
+      const upright = elements.filter(
+        (e) =>
+          e.type === 'text' &&
+          (e.chartRef?.part === 'label' ||
+            e.chartRef?.part === 'total' ||
+            (e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick')),
+      );
+      expect(upright.length).toBeGreaterThan(0);
+      for (const el of upright) expect(el.rotation ?? 0).toBe(0);
+    }
+  });
+
+  it('keeps each label in its own gutter rather than across the plot', () => {
+    // The failure this catches: standing a category name up without re-cutting
+    // the gutter leaves a box five times too wide for the strip it sits in, so
+    // it laps over the plot. Every category label must stay clear of the marks.
+    const { elements } = compile({ ...chart(), rotation: 90 });
+    const cats = elements.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick' && e.chartRef.axis === 'x',
+    );
+    const bars = elements.filter((e) => e.chartRef?.part === 'mark').map(painted);
+    expect(cats.length).toBeGreaterThan(0);
+    for (const label of cats.map(painted)) {
+      for (const bar of bars) {
+        const over =
+          Math.min(label.x + label.w, bar.x + bar.w) - Math.max(label.x, bar.x) > 0 &&
+          Math.min(label.y + label.h, bar.y + bar.h) - Math.max(label.y, bar.y) > 0;
+        expect(over).toBe(false);
+      }
+    }
+  });
+
+  it('keeps the title and legend out of the turn entirely', () => {
+    const withTitle = () => {
+      const c = chart();
+      return { ...c, spec: { ...c.spec, title: 'Revenue by segment' } };
+    };
+    const chromeOf = (rotation: number) =>
+      compile({ ...withTitle(), rotation })
+        .elements.filter(
+          (e) => e.chartRef?.part === 'title' || e.chartRef?.part.startsWith('legend'),
+        )
+        .map((e) => ({ ...e.rect, rotation: e.rotation ?? 0 }));
+    // Byte-for-byte the same box at every angle: the chrome belongs to the
+    // chart's frame, not to the picture inside it.
+    expect(chromeOf(90)).toEqual(chromeOf(0));
+    expect(chromeOf(180)).toEqual(chromeOf(0));
+    expect(chromeOf(0).length).toBeGreaterThan(0);
   });
 
   it('ignores rotation on a scatter or bubble — they have no side to lie on', () => {

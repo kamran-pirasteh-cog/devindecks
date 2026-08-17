@@ -468,7 +468,11 @@ export interface SankeySpec extends SpecBase {
   nodeThicknessEmu?: EMU;
   /** Clear space between two nodes stacked in the same column. */
   nodePaddingEmu?: EMU;
-  /** Ribbons are translucent so crossings stay readable. */
+  /**
+   * Ribbon opacity. Unset means OPAQUE: ribbons are told apart by tone, stepped
+   * down the brand hue by where each one sits in the stack. Set it below 1 for
+   * the tangled diagram that has to show its crossings through each other.
+   */
   linkAlpha?: number;
 }
 

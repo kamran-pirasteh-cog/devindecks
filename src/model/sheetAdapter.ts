@@ -42,9 +42,14 @@ const textCell = (s: string): CellValue => (s ? { kind: 'text', text: s } : EMPT
 /* spec -> sheet                                                      */
 /* ------------------------------------------------------------------ */
 
-export function sheetFromSpec(spec: ChartSpec): SheetModel {
-  const schema = datasheetSchemaFor(spec);
-  const series = datasheetSeriesFor(spec);
+/**
+ * `turn` is the placed chart's quarter-turn rotation, which decides which way
+ * round the grid is laid out — see `datasheetSchemaFor`. Callers holding a bare
+ * spec (a template, a test) can leave it out and get the upright answer.
+ */
+export function sheetFromSpec(spec: ChartSpec, turn = 0): SheetModel {
+  const schema = datasheetSchemaFor(spec, turn);
+  const series = datasheetSeriesFor(spec, turn);
   const columns = columnsFor(schema, series);
   const dateKey = schema.keyColumns[0]?.type === 'date';
 

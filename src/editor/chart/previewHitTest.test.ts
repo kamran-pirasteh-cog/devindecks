@@ -85,6 +85,47 @@ describe('hitTestChart', () => {
   });
 });
 
+describe('hitTestChart — on a turned chart', () => {
+  const turned = (rotation: number): SlideElement[] =>
+    compileChart(
+      { ...chart(), rotation },
+      DEFAULT_DESIGN_SYSTEM,
+      metricMeasurer(),
+    ).elements;
+
+  /**
+   * The bug this covers: a turned part keeps the rect it was LAID OUT in and
+   * carries the angle separately, so a click aimed at where the part is
+   * PAINTED missed it entirely and landed on the plot behind.
+   */
+  it('hits a bar where it is painted, not where it was laid out', () => {
+    const els = turned(90);
+    const bar = els.find((e) => e.chartRef?.part === 'mark')!;
+    // The painted box is the laid-out one with its sides swapped about the
+    // same centre — a wide bar becomes a tall one.
+    const painted = {
+      x: bar.rect.x + (bar.rect.w - bar.rect.h) / 2,
+      y: bar.rect.y + (bar.rect.h - bar.rect.w) / 2,
+      w: bar.rect.h,
+      h: bar.rect.w,
+    };
+    // Well along the painted bar, and outside the laid-out rect entirely.
+    const x = painted.x + painted.w * 0.12;
+    expect(x).toBeLessThan(bar.rect.x);
+    expect(hitTestChart(els, x, centreOf(bar).y)).toEqual(bar.chartRef);
+  });
+
+  it('still finds nothing outside the chart', () => {
+    expect(hitTestChart(turned(90), -1000, -1000)).toBeNull();
+  });
+
+  it('is unchanged by a half turn, which swaps no sides', () => {
+    const els = turned(180);
+    const bar = els.find((e) => e.chartRef?.part === 'mark')!;
+    expect(rectOfPart(els, bar.chartRef!)).toEqual(bar.rect);
+  });
+});
+
 describe('rectOfPart', () => {
   it('finds the rect for the exact ref, for drawing the ring', () => {
     const els = elements();

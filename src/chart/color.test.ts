@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRamp,
   contrastRatio,
+  flowTint,
   hexToOklch,
   inkOn,
   isTooPale,
@@ -147,5 +148,39 @@ describe('shadeOf', () => {
     for (let cycle = 1; cycle < 6; cycle++) {
       expect(isTooPale(shadeOf('#4F46E5', cycle))).toBe(false);
     }
+  });
+});
+
+describe('flowTint', () => {
+  const SEED = '#4F46E5';
+
+  it('climbs from deep to pale without turning back on itself', () => {
+    const steps = [0, 0.25, 0.5, 0.75, 1].map((t) => relativeLuminance(flowTint(SEED, t)));
+    for (let i = 1; i < steps.length; i++) expect(steps[i]).toBeGreaterThan(steps[i - 1]);
+  });
+
+  it('keeps the seed hue all the way up, so the pale end is still the brand', () => {
+    const seedHue = hexToOklch(SEED).h;
+    for (const t of [0, 0.5, 1]) {
+      const { h, c } = hexToOklch(flowTint(SEED, t));
+      expect(Math.abs(h - seedHue)).toBeLessThan(6);
+      // Pale, but not washed out to grey.
+      expect(c).toBeGreaterThan(0.04);
+    }
+  });
+
+  it('leaves room to climb even when the seed is already pale', () => {
+    const deep = relativeLuminance(flowTint('#C7D2FE', 0));
+    const pale = relativeLuminance(flowTint('#C7D2FE', 1));
+    expect(pale / deep).toBeGreaterThan(1.5);
+  });
+
+  it('gives a hueless seed a hue to ladder in', () => {
+    for (const t of [0, 1]) expect(hexToOklch(flowTint('#808080', t)).c).toBeGreaterThan(0.05);
+  });
+
+  it('clamps a t outside 0..1 rather than running off the ladder', () => {
+    expect(flowTint(SEED, -1)).toBe(flowTint(SEED, 0));
+    expect(flowTint(SEED, 2)).toBe(flowTint(SEED, 1));
   });
 });

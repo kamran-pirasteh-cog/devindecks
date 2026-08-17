@@ -33,6 +33,13 @@ export interface LineAreaInput {
   measurer: TextMeasurer;
   /** Restrict to these series (combo draws its column members separately). */
   onlySeries?: Set<string>;
+  /**
+   * The chart will be turned and its labels stood back up, so an end label's
+   * gutter was cut for it lying on its side — see `uprightText` in `frame.ts`.
+   * The box keeps the proportions the words need; only the footprint it is
+   * positioned by trades sides.
+   */
+  uprightText?: boolean;
 }
 
 /**
@@ -194,7 +201,7 @@ export function endLabelTexts(spec: LineSpec, derived: GridDerived): string[] {
 }
 
 export function placeLineArea(input: LineAreaInput): Mark[] {
-  const { chartId, spec, derived, proj, theme, measurer, onlySeries } = input;
+  const { chartId, spec, derived, proj, theme, measurer, onlySeries, uprightText } = input;
   const marks: Mark[] = [];
   const centers = lineCategoryCenters(derived.categoryLabels.length);
   const smooth = spec.kind === 'line' ? (spec.smooth ?? false) : false;
@@ -333,13 +340,18 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
             fill: { kind: 'solid', color },
           });
         }
+        // The gutter past the last point is as deep as the label's FOOTPRINT,
+        // which is the label on its side once the chart is turned. Positioning
+        // by the box instead would run a stood-up name clean off the chart.
+        const fw = uprightText ? h : w;
+        const cx = last.x + theme.sizes.labelGapEmu * 2 + fw / 2;
         marks.push({
           kind: 'text',
           ref: { chartId, part: 'label', series: s.key, point: 'end' },
           text,
           style,
           rect: {
-            x: Math.round(last.x + theme.sizes.labelGapEmu * 2),
+            x: Math.round(cx - w / 2),
             y: Math.round(last.y - h / 2),
             w,
             h,

@@ -52,6 +52,12 @@ export interface ChartTheme {
    * comparator lines of a line chart.
    */
   mutedInk: ColorRef;
+  /**
+   * The brand's strong ink. Marks that are STRUCTURE rather than data draw in
+   * it — a Sankey's node bars are gates the flow passes through, not one more
+   * category competing with the ribbons for a palette slot.
+   */
+  strongInk: ColorRef;
   text: {
     tick: ChartTextRole;
     category: ChartTextRole;
@@ -214,6 +220,7 @@ export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme
     gridline: token(style.gridlines.tokenId),
     gridlineDash: style.gridlines.dash,
     mutedInk: muted,
+    strongInk: ink,
     gridlines: {
       major: style.gridlines.horizontal !== 'none',
       minor: style.gridlines.horizontal === 'major+minor',

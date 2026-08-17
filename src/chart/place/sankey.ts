@@ -6,12 +6,13 @@
  * canonical left-to-right space, and transposes on the way out if the flow runs
  * top to bottom. One solve, two orientations.
  */
-import { pointsToEmu, type EMU, type Rect, type SankeySpec } from '@/model';
+import { hex, pointsToEmu, type EMU, type Rect, type SankeySpec } from '@/model';
 import type { TextMeasurer } from '@/render/measureText';
 import { lineHeightEmu } from '@/render/measureText';
 import type { ChartTheme } from '../theme';
 import type { Mark } from '../mark';
 import { ribbonPath } from '../geom/path';
+import { flowTint } from '../color';
 import { formatNumber } from '../format/number';
 import { layoutSankey, type SankeyDiagnostic } from '../derive/sankey';
 import { textStyle } from './cartesian';
@@ -27,8 +28,21 @@ export interface SankeyInput {
 /** Node bar thickness across the flow. Thin enough to read as a gate, not a bar. */
 const DEFAULT_THICKNESS = pointsToEmu(9);
 const DEFAULT_PADDING = pointsToEmu(10);
-/** Ribbons overlap constantly; opaque ones would hide each other outright. */
-const DEFAULT_ALPHA = 0.45;
+/**
+ * Ribbons are opaque by default and told apart by TONE — see the ladder below.
+ * `linkAlpha` is still honoured for the diagram that genuinely needs to show
+ * its crossings through each other.
+ */
+const DEFAULT_ALPHA = 1;
+/**
+ * Hairline of slide between two ribbons stacked on the same node.
+ *
+ * Opaque neighbours a step apart on the ladder butt into each other and read as
+ * one thick ribbon with a colour change in the middle; a sliver of background
+ * is what makes the stack countable. Taken off the thickness symmetrically, and
+ * capped as a fraction of it so a thin flow isn't erased to draw its own gap.
+ */
+const RIBBON_GAP = pointsToEmu(1.25);
 
 export function placeSankey(input: SankeyInput): {
   marks: Mark[];
@@ -42,28 +56,39 @@ export function placeSankey(input: SankeyInput): {
   const labelH = lineHeightEmu(labelStyle);
 
   /**
-   * A Sankey is ONE colour.
+   * A Sankey is ONE hue, laddered.
    *
    * Handing each node the next entry of a categorical ramp is what a bar chart
    * wants and what a Sankey emphatically doesn't: nodes in a flow diagram
    * aren't competing categories, they're stations on the same journey, and
    * seven of them exhausts any palette's first hue and starts inventing
    * clashes — a brown "Disqualified" next to an orange "Won" that mean nothing
-   * by being different colours. Thickness carries the meaning here. Colour is
-   * left free for EMPHASIS: set a node's fill and it tints everything
-   * flowing out of it.
+   * by being different colours.
+   *
+   * So the ribbons take the brand hue and step its LIGHTNESS down the stack,
+   * deep at the top and pale at the bottom, opaque throughout. That reads as
+   * one flow fanning out rather than as a pile of translucent sheets, and it
+   * still leaves colour free for EMPHASIS: set a node's fill and everything
+   * flowing out of it ladders in that hue instead.
+   *
+   * The node bars themselves are INK, not palette — they're the gates the flow
+   * passes through, and drawing them in the series colour made the widest of
+   * them read as the loudest datum on the chart.
    */
-  const nodeColor = theme.seriesColor(0);
+  const seed = theme.resolve(theme.seriesColor(0));
+  const barColor = theme.strongInk;
 
   // Labels sit outside the end columns, so the flow has to give up that space
   // before anything is laid out — the alternative is a diagram that fills its
   // frame and then writes its labels off the edge of it.
   //
-  // The same chicken-and-egg the axis gutter has: a label reads "Total  500",
-  // and the 500 comes out of the layout we're sizing. Pass one measures the
-  // names alone, pass two re-measures against the values it got back and
-  // re-solves if they need more room. Two passes converge because the second
-  // gutter is only ever wider.
+  // What that space COSTS depends on which way the flow runs. Left to right,
+  // the label is set beside its node and the gutter is its width. Top to
+  // bottom, it is set above or below the node, so the gutter is one LINE — and
+  // measuring the width there reserved most of an inch at each end to carry a
+  // single line of type. Both gutters hit the 30% cap, which squeezed a
+  // vertical Sankey into the middle third of its own frame and left its
+  // selection box floating clear of the diagram on every side.
   const gap = theme.sizes.labelGapEmu;
   const flowExtent = vertical ? plot.h : plot.w;
   const acrossExtent = Math.max(1, vertical ? plot.w : plot.h);
@@ -79,14 +104,23 @@ export function placeSankey(input: SankeyInput): {
 
   const gutterFor = (widest: number) => Math.min(widest + gap * 2, flowExtent * 0.3);
 
-  const namesOnly = spec.data.nodes.reduce(
-    (w, n) => Math.max(w, measurer.measure(labelText(n.label, undefined), labelStyle).wEmu),
-    0,
-  );
-  let gutter = gutterFor(namesOnly);
+  // Running down the slide the gutter is a line of type and nothing else, so
+  // it's known before the layout is: no re-measure, no second solve.
+  const firstPass = vertical
+    ? labelH
+    : spec.data.nodes.reduce(
+        (w, n) => Math.max(w, measurer.measure(labelText(n.label, undefined), labelStyle).wEmu),
+        0,
+      );
+  let gutter = gutterFor(firstPass);
   let layout = solve(gutter);
 
-  if (layout.nodes.length) {
+  // The chicken-and-egg the axis gutter has, and only on the horizontal side: a
+  // label reads "Total  500", and the 500 comes out of the layout we're sizing.
+  // Pass one measured the names alone, pass two re-measures against the values
+  // it got back and re-solves if they need more room. Two passes converge
+  // because the second gutter is only ever wider.
+  if (!vertical && layout.nodes.length) {
     const peers = layout.nodes.map((n) => n.value);
     const widest = layout.nodes.reduce((w, n) => {
       const value = spec.decorations.labels.show
@@ -119,19 +153,49 @@ export function placeSankey(input: SankeyInput): {
     return fill?.kind === 'solid' ? fill.color : undefined;
   };
 
+  /**
+   * Where each ribbon sits on the ladder: by its POSITION across the diagram,
+   * not by the order it appears in the data.
+   *
+   * Position is what makes the whole diagram read as a single gradient — a
+   * ribbon that leaves the second column pale carries on pale, because it's
+   * still low in the stack. Ranking instead of interpolating the raw offset is
+   * what keeps the steps even, so five ribbons crammed into the top third are
+   * still five distinguishable tones rather than five near-identical ones.
+   */
+  const ranked = [...layout.links].sort(
+    (a, b) =>
+      a.startAcross + a.thickness / 2 - (b.startAcross + b.thickness / 2) ||
+      a.key.localeCompare(b.key),
+  );
+  const rungOf = new Map(
+    ranked.map((l, i) => [l.key, ranked.length > 1 ? i / (ranked.length - 1) : 0] as const),
+  );
+
   for (const link of layout.links) {
-    const start = toXY(link.startAlong, link.startAcross);
-    const end = toXY(link.endAlong, link.endAcross);
-    const path = ribbonPath(start, end, link.thickness, vertical ? 'y' : 'x');
+    // The gap comes off both edges, so the ribbon stays centred on the band the
+    // layout gave it and the stack keeps its proportions.
+    const inset = Math.min(RIBBON_GAP, link.thickness * 0.3);
+    const thickness = Math.max(1, link.thickness - inset);
+    const shift = Math.round((link.thickness - thickness) / 2);
+    const start = toXY(link.startAlong, link.startAcross + shift);
+    const end = toXY(link.endAlong, link.endAcross + shift);
+    const path = ribbonPath(start, end, thickness, vertical ? 'y' : 'x');
+    // A ribbon takes its HUE from where it came from, so a coloured node tints
+    // everything downstream of it, and its TONE from where it sits.
+    const override = overrideFor(link.from);
+    const color = hex(
+      flowTint(override ? theme.resolve(override) : seed, rungOf.get(link.key) ?? 0),
+    );
     marks.push({
       kind: 'path',
       ref: { chartId, part: 'mark', series: link.from, point: link.key },
       name: `${nameOf(layout, link.from)} → ${nameOf(layout, link.to)}`,
       rect: path.box,
       d: path.d,
-      // A ribbon takes its colour from where it came FROM, so a coloured node
-      // tints everything downstream of it.
-      fill: { kind: 'solid', color: overrideFor(link.from) ?? nodeColor, alpha },
+      // Opaque is the default now, and an explicit `alpha: 1` is noise every
+      // consumer of the mark has to carry through to its own output.
+      fill: { kind: 'solid', color, ...(alpha < 1 ? { alpha } : {}) },
     });
   }
 
@@ -147,7 +211,7 @@ export function placeSankey(input: SankeyInput): {
       ref: { chartId, part: 'mark', series: node.key, point: node.key },
       name: node.label,
       rect,
-      fill: { kind: 'solid', color: overrideFor(node.key) ?? nodeColor },
+      fill: { kind: 'solid', color: overrideFor(node.key) ?? barColor },
     });
 
     /* --- its label --- */

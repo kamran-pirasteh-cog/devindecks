@@ -32,7 +32,7 @@ import { ChartPartOptions } from './ChartPartOptions';
 import { hitTestChart, rectOfPart } from './previewHitTest';
 import { DevinChartMenu } from './DevinChartMenu';
 
-const UI_KEY = 'devindesign.datasheet.ui.v5';
+const UI_KEY = 'devindesign.datasheet.ui.v6';
 
 interface PanelBox {
   x: number;
@@ -47,13 +47,18 @@ const MIN_H = 420;
 /**
  * Sized off the viewport rather than fixed. It stacks a properties band, a
  * datasheet and a preview, and all three are judged by how much you can see at
- * once — so it opens nearly the full width and most of the height.
+ * once — so it opens wide. But not edge-to-edge: filling the window read as a
+ * modal takeover of the slide it's meant to sit beside, so it leaves a visible
+ * margin and caps its width on a large display. Dragging the corner still gets
+ * you the old size, and that size is remembered.
  */
+const MAX_DEFAULT_W = 1100;
+
 function defaultSize(): { w: number; h: number } {
-  if (typeof window === 'undefined') return { w: 1180, h: 760 };
+  if (typeof window === 'undefined') return { w: 1040, h: 640 };
   return {
-    w: Math.max(MIN_W, window.innerWidth - 64),
-    h: Math.max(MIN_H, Math.round(window.innerHeight * 0.84)),
+    w: Math.max(MIN_W, Math.min(MAX_DEFAULT_W, window.innerWidth - 200)),
+    h: Math.max(MIN_H, Math.round(window.innerHeight * 0.72)),
   };
 }
 

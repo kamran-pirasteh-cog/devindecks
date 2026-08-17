@@ -12,6 +12,8 @@ import { useEditor, loadDeck, type AlignMode } from '@/store/editorStore';
 import { SAMPLE_DECK } from '@/model/sample';
 import { expandSelection, inchesToEmu, unionRect, type Deck } from '@/model';
 import { getDoc, saveDoc } from '@/docs/repository';
+import { getFolder } from '@/docs/folders';
+import { getLastSlide, rememberLastSlide } from '@/docs/lastSlide';
 import { getStoredTemplate, saveTemplateFromDeck, templateAsDeck } from '@/templates/repository';
 import { getStoredLayout, layoutAsDeck, saveLayoutFromSlide } from '@/templates/layoutRepository';
 import { getActiveDesignSystem } from '@/design/repository';
@@ -25,7 +27,9 @@ import { EditorCanvas } from './EditorCanvas';
 import { fontSizeDirection } from './fontSizeShortcut';
 import { formatPainterAction } from './formatShortcut';
 import { isCommentShortcut } from './commentShortcut';
+import { clipboardAction } from './clipboardShortcut';
 import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
+import { reorderDirection } from './reorderShortcut';
 import { NAV_KEYS, nextInDirection } from './spatialNav';
 import { TemplateDrawer } from './TemplateDrawer';
 import { ExportMenu } from './ExportMenu';
@@ -59,6 +63,22 @@ const ARROWS: Record<string, [number, number] | undefined> = {
   ArrowDown: [0, 1],
 };
 
+/** Matches the folder glyph on the dashboard rail, so the same folder reads the
+ *  same in both places. */
+function FolderCrumbIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className="h-3.5 w-3.5 shrink-0">
+      <path
+        d="M1.75 4.25c0-.55.45-1 1-1h3.1c.32 0 .62.15.81.4l.68.9h6.16c.55 0 1 .45 1 1v6.2c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1v-7.5Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function Editor({
   deckId,
   templateId,
@@ -70,6 +90,7 @@ export function Editor({
 }) {
   const router = useRouter();
   const title = useEditor((s) => s.deck.title);
+  const folderId = useEditor((s) => s.deck.folderId);
   const ds = useEditor((s) => s.designSystem);
   const ready = useEditor((s) => s.currentSlideId !== '');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -101,8 +122,21 @@ export function Editor({
       router.replace('/');
       return;
     }
-    loadDeck(doc, getActiveDesignSystem());
+    // Land back on the slide you were last on in this document, so a refresh
+    // doesn't throw you to slide 1.
+    loadDeck(doc, getActiveDesignSystem(), deckId ? getLastSlide(deckId) : null);
   }, [deckId, templateId, layoutId, router]);
+
+  // ...and keep that memory current as you move through the deck. Templates,
+  // layouts and the bare sample have no document id, so they don't take part.
+  useEffect(() => {
+    if (!deckId || templateId || layoutId) return;
+    return useEditor.subscribe((state, prev) => {
+      if (state.currentSlideId !== prev.currentSlideId) {
+        rememberLastSlide(deckId, state.currentSlideId);
+      }
+    });
+  }, [deckId, templateId, layoutId]);
 
   // Comments belong to a document, so templates, layouts and the bare sample
   // get an in-memory thread list that is never persisted.
@@ -165,6 +199,8 @@ export function Editor({
       const sizeDir = fontSizeDirection(e);
       const painter = formatPainterAction(e);
       const textEdge = textAlignEdge(e);
+      const restack = reorderDirection(e);
+      const clip = clipboardAction(e);
 
       const slide = s.currentSlide();
       // Every selected box the character shortcuts can act on. A group arrives
@@ -199,6 +235,13 @@ export function Editor({
         e.preventDefault();
         if (painter === 'copy') s.copyFormat();
         else s.pasteFormat();
+      } else if (clip && (clip === 'paste' ? s.clipboard : s.selectedIds.length)) {
+        // Left unhandled when there's nothing to act on, so ⌘V with an empty
+        // clipboard still reaches the browser rather than being swallowed here.
+        e.preventDefault();
+        if (clip === 'cut') s.cutSelection();
+        else if (clip === 'copy') s.copySelection();
+        else s.pasteClipboard();
       } else if (alignMode && s.selectedIds.length) {
         e.preventDefault();
         s.align(alignMode);
@@ -265,6 +308,10 @@ export function Editor({
         e.preventDefault();
         const up = e.key === 'ArrowUp';
         s.reorder(e.shiftKey ? (up ? 'front' : 'back') : up ? 'forward' : 'backward');
+      } else if (restack && s.selectedIds.length) {
+        // The same four moves on ⌘[ / ⌘] — see `reorderShortcut.ts`.
+        e.preventDefault();
+        s.reorder(restack);
       } else if (e.altKey && !mod && NAV_KEYS[e.key]) {
         // ⌥ + arrow walks the selection between objects instead of moving one,
         // the way arrows alone do in PowerPoint. Matched ahead of both the
@@ -345,6 +392,13 @@ export function Editor({
 
   if (!ready) return null;
 
+  // Where this document lives, for the header crumb. Document folders are flat
+  // (see `docs/folders.ts`), so the path is one level: the folder's name, or
+  // "Unfiled" for a document that was never filed. Templates and layouts don't
+  // live in folders at all, so they get no crumb.
+  const folder = folderId ? getFolder(folderId) : null;
+  const inFolders = !templateId && !layoutId;
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-white dark:bg-black">
       <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
@@ -357,6 +411,21 @@ export function Editor({
             {templateId || layoutId ? 'Admin' : 'Devin Decks'}
           </Link>
           <span className="text-zinc-300">/</span>
+          {inFolders ? (
+            <>
+              {/* The crumb doubles as the way back to that folder: the
+                  dashboard reads `?folder=` and opens scoped to it. */}
+              <Link
+                href={folder ? `/?folder=${encodeURIComponent(folder.id)}` : '/'}
+                title={folder ? `Open folder “${folder.name}”` : 'Open unfiled documents'}
+                className="flex max-w-40 items-center gap-1.5 text-sm text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+              >
+                <FolderCrumbIcon />
+                <span className="truncate">{folder ? folder.name : 'Unfiled'}</span>
+              </Link>
+              <span className="text-zinc-300">/</span>
+            </>
+          ) : null}
           {layoutId ? (
             <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-indigo-600 dark:bg-indigo-950 dark:text-indigo-300">
               Editing layout
