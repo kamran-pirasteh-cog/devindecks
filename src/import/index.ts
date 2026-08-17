@@ -9,13 +9,14 @@
 import type { DesignSystem } from '@/model';
 import { parsePptx, type ImportedDeck } from './pptx';
 
-export type { ImportedDeck, ImportedSlide } from './pptx';
+export type { ImportedDeck, ImportedSlide, ParseOptions } from './pptx';
 
 export const IMPORT_ACCEPT = '.pptx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
 export async function parseImportFile(
   file: File,
   ds: DesignSystem,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<ImportedDeck> {
   const buffer = await file.arrayBuffer();
   const head = new Uint8Array(buffer.slice(0, 5));
@@ -26,11 +27,11 @@ export async function parseImportFile(
 
   if (isPdf) {
     const { parsePdf } = await import('./pdf');
-    return parsePdf(buffer);
+    return parsePdf(buffer, { onProgress });
   }
 
   if (isZip) {
-    const deck = await parsePptx(buffer, ds);
+    const deck = await parsePptx(buffer, ds, { onProgress });
     if (!deck.slides.length) {
       throw new ImportError(
         'That file is a zip but has no slides in it — .ppt and .key files need to be saved as .pptx or PDF first.',

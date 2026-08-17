@@ -630,20 +630,108 @@ const MIME: Record<string, string> = {
   wmf: 'image/wmf',
 };
 
+/**
+ * Every media part is turned into a data URL exactly ONCE per package, and the
+ * same string is handed to every shape that uses it.
+ *
+ * This matters more than it looks: a deck's logo or section photo is one part in
+ * the zip but appears on dozens of slides, and without this cache each use got
+ * its own copy of the base64 — the same picture inflated 40× in memory and again
+ * in whatever the deck is saved into.
+ */
+const mediaCache = new WeakMap<OpcPackage, Map<string, string | null>>();
+
+/**
+ * Longest edge we keep, in pixels. A slide is 13.3in wide, so ~2000px is 150dpi
+ * across the full bleed — past that the extra pixels are invisible on screen and
+ * in an export, and are the single biggest reason a big deck won't fit in
+ * storage.
+ */
+const MAX_IMAGE_EDGE = 2000;
+/** Below this, re-encoding costs more than it saves. */
+const SHRINK_OVER_BYTES = 200 * 1024;
+
 async function imageDataUrl(rId: string | undefined, ctx: SlideContext): Promise<string | null> {
   const part = await ctx.pkg.related(ctx.part, rId);
   if (!part) return null;
-  const bytes = await ctx.pkg.bytes(part);
-  if (!bytes) return null;
+
   const ext = part.slice(part.lastIndexOf('.') + 1).toLowerCase();
   const mime = MIME[ext];
   if (!mime || mime === 'image/emf' || mime === 'image/wmf') {
     // EMF/WMF are vector metafiles no browser can draw; better to say so than
-    // to plant an unrenderable data URL in the deck.
+    // to plant an unrenderable data URL in the deck. Warned per use, since the
+    // note is about this shape, not about the part.
     ctx.warn(`Vector image format .${ext} isn't supported by browsers; that image was skipped.`);
     return null;
   }
-  return `data:${mime};base64,${base64(bytes)}`;
+
+  let cache = mediaCache.get(ctx.pkg);
+  if (!cache) {
+    cache = new Map();
+    mediaCache.set(ctx.pkg, cache);
+  }
+  const hit = cache.get(part);
+  if (hit !== undefined) return hit;
+
+  const bytes = await ctx.pkg.bytes(part);
+  if (!bytes) {
+    cache.set(part, null);
+    return null;
+  }
+
+  const shrunk = await shrink(bytes, mime);
+  if (shrunk) ctx.warn('Oversized images were scaled down so the deck stays a workable size.');
+  const url = shrunk ?? `data:${mime};base64,${base64(bytes)}`;
+  cache.set(part, url);
+  return url;
+}
+
+/**
+ * Re-encode an oversized raster at screen resolution, or return null to keep the
+ * original. Null is also the answer wherever the platform can't decode images
+ * (Node, tests) — the import still works there, just without the saving.
+ */
+async function shrink(bytes: Uint8Array, mime: string): Promise<string | null> {
+  if (mime === 'image/svg+xml') return null; // vector: pixels don't apply
+  if (bytes.length <= SHRINK_OVER_BYTES) return null;
+  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas === 'undefined') {
+    return null;
+  }
+
+  try {
+    const source = new Blob([bytes as BlobPart], { type: mime });
+    const bmp = await createImageBitmap(source);
+    const longest = Math.max(bmp.width, bmp.height);
+    const scale = Math.min(1, MAX_IMAGE_EDGE / longest);
+    // Already small enough in pixels: re-encoding at 1:1 would only trade one
+    // set of compression artefacts for another.
+    if (scale === 1) {
+      bmp.close();
+      return null;
+    }
+
+    const canvas = new OffscreenCanvas(
+      Math.max(1, Math.round(bmp.width * scale)),
+      Math.max(1, Math.round(bmp.height * scale)),
+    );
+    const c2d = canvas.getContext('2d');
+    if (!c2d) {
+      bmp.close();
+      return null;
+    }
+    c2d.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close();
+
+    // PNG keeps its alpha; photographs go to JPEG, which is what they were.
+    const outMime = mime === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+    const blob = await canvas.convertToBlob({ type: outMime, quality: 0.85 });
+    // A re-encode that isn't actually smaller is a pure loss of fidelity.
+    if (blob.size >= bytes.length) return null;
+    const out = new Uint8Array(await blob.arrayBuffer());
+    return `data:${outMime};base64,${base64(out)}`;
+  } catch {
+    return null; // undecodable: fall back to shipping the original bytes
+  }
 }
 
 function base64(bytes: Uint8Array): string {

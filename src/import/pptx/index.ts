@@ -14,6 +14,7 @@ import {
   type Slide,
 } from '@/model';
 import { insertChartInto } from '@/store/chartActions';
+import { makePacer } from '../breathe';
 import { child, children, numAttr, type XmlNode } from '../xml';
 import { OpcPackage } from './opc';
 import {
@@ -51,9 +52,15 @@ export interface ImportedDeck {
   notes: string[];
 }
 
+export interface ParseOptions {
+  /** Called after each slide, so a long file can report where it's up to. */
+  onProgress?: (done: number, total: number) => void;
+}
+
 export async function parsePptx(
   buffer: ArrayBuffer,
   ds: DesignSystem,
+  opts: ParseOptions = {},
 ): Promise<ImportedDeck> {
   const pkg = await OpcPackage.open(buffer);
   const deckNotes: string[] = [];
@@ -69,6 +76,7 @@ export async function parsePptx(
 
   const slideParts = await pkg.slideParts();
   const slides: ImportedSlide[] = [];
+  const pace = makePacer();
 
   for (let i = 0; i < slideParts.length; i++) {
     const part = slideParts[i];
@@ -81,6 +89,10 @@ export async function parsePptx(
         `Slide ${i + 1} could not be read (${(err as Error).message}) and was skipped.`,
       );
     }
+    opts.onProgress?.(i + 1, slideParts.length);
+    // A 300-slide deck is otherwise one uninterrupted block of work: no paint,
+    // no progress, and a window the browser reports as unresponsive.
+    await pace();
   }
 
   return { slideSize, slides, notes: deckNotes };

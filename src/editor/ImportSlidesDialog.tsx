@@ -18,8 +18,9 @@ import { MODAL_Z } from './layers';
 
 type Phase =
   | { state: 'choosing' }
-  | { state: 'reading'; name: string }
+  | { state: 'reading'; name: string; done: number; total: number }
   | { state: 'ready'; name: string; deck: ImportedDeck }
+  | { state: 'inserting'; count: number }
   | { state: 'failed'; message: string };
 
 const THUMB_WIDTH = 232;
@@ -34,19 +35,26 @@ export function ImportSlidesDialog({ onClose }: { onClose: () => void }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // A file being read or inserted is minutes of the user's patience on a big
+  // deck; Escape and a stray click on the backdrop must not throw that away.
+  // Cancel and ✕ still close, because those are unambiguous.
+  const busy = phase.state === 'reading' || phase.state === 'inserting';
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && !busy) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, busy]);
 
   const load = useCallback(
     async (file: File) => {
-      setPhase({ state: 'reading', name: file.name });
+      setPhase({ state: 'reading', name: file.name, done: 0, total: 0 });
       try {
-        const deck = await parseImportFile(file, ds);
+        const deck = await parseImportFile(file, ds, (done, total) =>
+          setPhase({ state: 'reading', name: file.name, done, total }),
+        );
         setPicked(new Set(deck.slides.map((_, i) => i)));
         setPhase({ state: 'ready', name: file.name, deck });
       } catch (err) {
@@ -77,8 +85,23 @@ export function ImportSlidesDialog({ onClose }: { onClose: () => void }) {
       .filter((_, i) => picked.has(i))
       .map((s) => fitSlide(s.slide, placement));
     if (!chosen.length) return;
-    insertSlides(chosen);
-    onClose();
+    // Two steps: paint "Adding…" first, then do the work. Inserting a hundred
+    // slides takes seconds, and a dead button with no explanation is how this
+    // reads as a crash.
+    setPhase({ state: 'inserting', count: chosen.length });
+    setTimeout(() => {
+      try {
+        insertSlides(chosen);
+        onClose();
+      } catch (err) {
+        // The dialog stays put and says what happened. Closing on a failed
+        // insert leaves the user staring at an unchanged deck with no idea why.
+        setPhase({
+          state: 'failed',
+          message: `Those slides couldn’t be added (${(err as Error).message}). Try importing fewer at a time.`,
+        });
+      }
+    }, 0);
   };
 
   const size = phase.state === 'ready' ? phase.deck.slideSize : deckSlideSize;
@@ -91,7 +114,9 @@ export function ImportSlidesDialog({ onClose }: { onClose: () => void }) {
       role="dialog"
       aria-modal="true"
       aria-label="Import slides"
-      onClick={onClose}
+      onClick={() => {
+        if (!busy) onClose();
+      }}
       style={{ zIndex: MODAL_Z }}
       className="fixed inset-0 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
     >
@@ -179,8 +204,26 @@ export function ImportSlidesDialog({ onClose }: { onClose: () => void }) {
           ) : null}
 
           {phase.state === 'reading' ? (
+            <div className="py-16 text-center">
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                {phase.total
+                  ? `Reading slide ${phase.done} of ${phase.total}…`
+                  : `Reading ${phase.name}…`}
+              </p>
+              {phase.total ? (
+                <div className="mx-auto mt-3 h-1 w-56 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+                  <div
+                    className="h-full rounded-full bg-indigo-600 transition-[width]"
+                    style={{ width: `${Math.round((phase.done / phase.total) * 100)}%` }}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {phase.state === 'inserting' ? (
             <p className="py-16 text-center text-sm text-zinc-500 dark:text-zinc-400">
-              Reading {phase.name}…
+              Adding {phase.count} slide{phase.count === 1 ? '' : 's'} to your deck…
             </p>
           ) : null}
 
@@ -220,12 +263,7 @@ export function ImportSlidesDialog({ onClose }: { onClose: () => void }) {
                         : 'ring-zinc-200 hover:ring-zinc-400 dark:ring-zinc-700'
                     }`}
                   >
-                    <SlideView
-                      slide={s.slide}
-                      slideSize={phase.deck.slideSize}
-                      designSystem={ds}
-                      width={THUMB_WIDTH}
-                    />
+                    <Thumb slide={s.slide} slideSize={phase.deck.slideSize} ds={ds} />
                     <span
                       className={`absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold ${
                         picked.has(i)
@@ -263,6 +301,57 @@ export function ImportSlidesDialog({ onClose }: { onClose: () => void }) {
           </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One preview, rendered only once it's near the viewport.
+ *
+ * `<SlideView>` is the real renderer — text measurement, images, chart
+ * primitives — so a 300-slide file used to mean 300 of them laid out at once
+ * before anything appeared. Rendering on approach keeps the picker usable at any
+ * deck size, and once a thumbnail has been drawn it stays drawn, so scrolling
+ * back is instant.
+ */
+function Thumb({
+  slide,
+  slideSize,
+  ds,
+}: {
+  slide: Parameters<typeof SlideView>[0]['slide'];
+  slideSize: { w: number; h: number };
+  ds: Parameters<typeof SlideView>[0]['designSystem'];
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || shown) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setShown(true);
+      },
+      // A screen of lead time, so a thumbnail is drawn by the time it arrives.
+      { root: el.closest('.overflow-y-auto'), rootMargin: '600px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [shown]);
+
+  return (
+    <div ref={ref} style={{ aspectRatio: `${slideSize.w} / ${slideSize.h}` }}>
+      {shown ? (
+        <SlideView
+          slide={slide}
+          slideSize={slideSize}
+          designSystem={ds}
+          width={THUMB_WIDTH}
+        />
+      ) : (
+        <div className="h-full w-full bg-zinc-100 dark:bg-zinc-800" />
+      )}
     </div>
   );
 }

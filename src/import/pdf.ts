@@ -15,12 +15,22 @@
  */
 import { nanoid } from 'nanoid';
 import { EMU_PER_POINT, type Slide } from '@/model';
-import type { ImportedDeck, ImportedSlide } from './pptx';
+import { breathe } from './breathe';
+import type { ImportedDeck, ImportedSlide, ParseOptions } from './pptx';
 
 /** Raster density. 2× the slide's own size keeps text crisp when zoomed. */
 const RENDER_SCALE = 2;
+/**
+ * Ceiling on the rendered width in pixels, whatever the page size. A tabloid or
+ * A0 page at 2× is a canvas tens of megapixels wide; past ~2600px the detail is
+ * invisible on screen and every extra pixel is bytes in the saved deck.
+ */
+const MAX_RENDER_WIDTH = 2600;
 
-export async function parsePdf(buffer: ArrayBuffer): Promise<ImportedDeck> {
+export async function parsePdf(
+  buffer: ArrayBuffer,
+  opts: ParseOptions = {},
+): Promise<ImportedDeck> {
   const pdfjs = await import('pdfjs-dist');
   // The worker ships with the package; resolving it through import.meta.url
   // keeps it in the bundle rather than reaching for a CDN at runtime.
@@ -45,7 +55,9 @@ export async function parsePdf(buffer: ArrayBuffer): Promise<ImportedDeck> {
     if (n === 1) slideSize = size;
 
     const canvas = document.createElement('canvas');
-    const scaled = page.getViewport({ scale: RENDER_SCALE });
+    const scaled = page.getViewport({
+      scale: Math.min(RENDER_SCALE, MAX_RENDER_WIDTH / viewport.width),
+    });
     canvas.width = Math.ceil(scaled.width);
     canvas.height = Math.ceil(scaled.height);
     const ctx = canvas.getContext('2d');
@@ -84,6 +96,16 @@ export async function parsePdf(buffer: ArrayBuffer): Promise<ImportedDeck> {
     });
 
     page.cleanup();
+    // The canvas holds width×height×4 bytes until it's collected, which on a
+    // long PDF is the difference between finishing and running the tab out of
+    // memory. Drop it to nothing now that its pixels are in `src`.
+    canvas.width = 0;
+    canvas.height = 0;
+
+    opts.onProgress?.(n, doc.numPages);
+    // Let the browser paint the progress line between pages — rendering a page
+    // is the single most expensive thing in the import.
+    await breathe();
   }
 
   if (slides.some((s) => s.slide.elements[0].rect.w !== slideSize.w)) {

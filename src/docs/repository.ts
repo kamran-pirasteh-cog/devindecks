@@ -29,9 +29,33 @@ function read(): DocMap {
   }
 }
 
+/**
+ * Thrown when the browser refuses the write. localStorage is a few megabytes
+ * per origin, and one imported deck of photographs can be all of it — so this
+ * is a normal outcome, not a bug, and it has to reach the user: a swallowed
+ * quota error means every later save fails too and the work is gone at the next
+ * reload with nothing ever having said so.
+ */
+export class StorageFullError extends Error {
+  constructor() {
+    super(
+      'There isn’t room to save this deck in the browser’s local storage. Delete some documents, or import fewer slides at a time.',
+    );
+    this.name = 'StorageFullError';
+  }
+}
+
 function write(map: DocMap) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(KEY, JSON.stringify(map));
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify(map));
+  } catch (err) {
+    const quota =
+      err instanceof DOMException &&
+      (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED');
+    if (quota) throw new StorageFullError();
+    throw err;
+  }
 }
 
 const now = () => new Date().toISOString();
