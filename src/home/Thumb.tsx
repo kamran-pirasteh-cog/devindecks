@@ -2,7 +2,7 @@
 
 /** Shared slide thumbnail — renders through SlideView so it matches the editor. */
 import { SlideView } from '@/render/SlideView';
-import { type Deck } from '@/model';
+import { showsPageNumbers, type Deck } from '@/model';
 import { getActiveDesignSystem } from '@/design/repository';
 
 export function Thumb({
@@ -27,7 +27,7 @@ export function Thumb({
       slideSize={deck.slideSize}
       designSystem={ds}
       width={width}
-      page={deck.pageNumbers ? { index: 0, count: deck.slides.length } : undefined}
+      page={showsPageNumbers(deck) ? { index: 0, count: deck.slides.length } : undefined}
     />
   );
 }

@@ -17,6 +17,7 @@ import type { WaterfallDerived } from '../derive/waterfall';
 import { formatNumber } from '../format/number';
 import type { Projector } from './cartesian';
 import { textStyle } from './cartesian';
+import { labelRole, labelSpecFor } from './labelSpec';
 
 export interface WaterfallInput {
   chartId: string;
@@ -48,6 +49,7 @@ export function placeWaterfall(input: WaterfallInput): Mark[] {
   const marks: Mark[] = [];
 
   const itemFormat = new Map(spec.data.items.map((i) => [i.key, i.format]));
+  const itemLabels = new Map(spec.data.items.map((i) => [i.key, i.labels]));
 
   /**
    * The role colours are the DEFAULT, not the last word: an item's own format
@@ -116,39 +118,46 @@ export function placeWaterfall(input: WaterfallInput): Mark[] {
   }
 
   /* --- labels --- */
-  const labels = spec.decorations.labels;
-  if (labels.show) {
+  const chartLabels = spec.decorations.labels;
+  const peers = derived.data.map((d) => d.value);
+
+  for (const d of derived.data) {
+    if (d.role === 'spacer') continue;
+    // The ITEM is the narrowest node a waterfall has — no series means no
+    // point override — so that is where a single label restyled on the canvas
+    // is written, and it has to be read back here per bar.
+    const labels = labelSpecFor(chartLabels, itemLabels.get(d.key));
+    if (!labels.show) continue;
+
     const style = textStyle(
-      { ...theme.text.dataLabel, ...(labels.font ?? {}), color: labels.font?.color ?? theme.text.dataLabel.color },
+      {
+        ...labelRole(theme, labels.font),
+        color: labels.font?.color ?? theme.text.dataLabel.color,
+      },
       'center',
       'middle',
     );
     const h = lineHeightEmu(style);
-    const peers = derived.data.map((d) => d.value);
+    // A delta reads as a movement, so it carries its sign explicitly; a
+    // milestone is a level and doesn't.
+    const signed = d.role === 'delta' && d.value > 0;
+    const text =
+      (signed ? '+' : '') + formatNumber(d.value, spec.numberFormat, { peers }).text;
+    const w = measurer.measure(text, style).wEmu + pointsToEmu(2);
+    const centre = proj.category(band.center(d.index));
+    const tip = proj.value(d.top);
+    const outward = d.top >= d.base ? (horizontal ? 1 : -1) : horizontal ? -1 : 1;
+    const pos = tip + outward * (h / 2 + theme.sizes.labelGapEmu);
 
-    for (const d of derived.data) {
-      if (d.role === 'spacer') continue;
-      // A delta reads as a movement, so it carries its sign explicitly; a
-      // milestone is a level and doesn't.
-      const signed = d.role === 'delta' && d.value > 0;
-      const text =
-        (signed ? '+' : '') + formatNumber(d.value, spec.numberFormat, { peers }).text;
-      const w = measurer.measure(text, style).wEmu + pointsToEmu(2);
-      const centre = proj.category(band.center(d.index));
-      const tip = proj.value(d.top);
-      const outward = d.top >= d.base ? (horizontal ? 1 : -1) : horizontal ? -1 : 1;
-      const pos = tip + outward * (h / 2 + theme.sizes.labelGapEmu);
-
-      marks.push({
-        kind: 'text',
-        ref: { chartId, part: 'label', series: 's0', point: d.key },
-        text,
-        style,
-        rect: horizontal
-          ? { x: Math.round(pos - w / 2), y: Math.round(centre - h / 2), w, h }
-          : { x: Math.round(centre - w / 2), y: Math.round(pos - h / 2), w, h },
-      });
-    }
+    marks.push({
+      kind: 'text',
+      ref: { chartId, part: 'label', series: 's0', point: d.key },
+      text,
+      style,
+      rect: horizontal
+        ? { x: Math.round(pos - w / 2), y: Math.round(centre - h / 2), w, h }
+        : { x: Math.round(centre - w / 2), y: Math.round(pos - h / 2), w, h },
+    });
   }
 
   return marks;

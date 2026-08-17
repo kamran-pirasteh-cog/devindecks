@@ -8,7 +8,7 @@
  */
 import { nanoid } from 'nanoid';
 import { reidentifyCharts, SLIDE_16x9, type Deck, type Slide } from '@/model';
-import { TEMPLATES } from '@/templates/registry';
+import { getTemplate, RETIRED_TEMPLATE_IDS, TEMPLATES } from '@/templates/registry';
 import { getTemplateSlides } from '@/templates/repository';
 import { copyThreads, purgeThreads } from '@/comments/repository';
 
@@ -16,7 +16,44 @@ import { copyThreads, purgeThreads } from '@/comments/repository';
 export const DEFAULT_OWNER = 'Me';
 
 const KEY = 'devindesign.docs.v1';
+/** What the last seed put on the dashboard, so the next one can clear it. */
 const SEED_KEY = 'devindesign.seeded.v1';
+
+/**
+ * Bumping this reseeds. v1 was a synthetic "Sample QBR"; v2 replaced it with
+ * the three standard reference decks; v3 re-imported those at full canvas
+ * scale; v4 rebuilds seeded decks in place, from any page, so a browser holding
+ * a v2-era copy gets the fitted one without visiting the dashboard.
+ */
+const SEED_VERSION = 4;
+
+/** The decks every fresh dashboard starts with, in the order they appear. */
+const DEFAULT_DOC_TEMPLATE_IDS = ['wayfair-reskin', 'bva-pitch', 'fiserv-exec-readout'];
+
+/**
+ * The seed's own record of what it created and how the store looked right
+ * afterwards. `updatedAt` is the untouched-check: it can't be inferred from the
+ * deck (creating one goes through `saveDoc`, which stamps `updatedAt`, so a
+ * brand-new deck's timestamps already differ), so the seed writes down what it
+ * left and a later reseed only removes decks still carrying that exact value.
+ */
+interface SeedRecord {
+  version: number;
+  docs: { id: string; updatedAt: string }[];
+}
+
+function readSeed(): SeedRecord | null {
+  const raw = window.localStorage.getItem(SEED_KEY);
+  if (!raw) return null;
+  // v1 wrote the string '1' before this record existed. Its one seeded doc is
+  // recognizable by its template instead — see `seedIfFirstRun`.
+  if (raw === '1') return { version: 1, docs: [] };
+  try {
+    return JSON.parse(raw) as SeedRecord;
+  } catch {
+    return null;
+  }
+}
 
 type DocMap = Record<string, Deck>;
 
@@ -325,14 +362,81 @@ export function duplicateDoc(id: string, title?: string): Deck | null {
   return deck;
 }
 
-/** Seed one sample doc on first run so the dashboard isn't empty. */
+/**
+ * Was this deck put here by a seed that kept no record of itself (v1, v2)?
+ *
+ * Those seeds wrote a bare flag, so their decks have to be recognized by what
+ * they are: built from a template the seed used, and still carrying the name
+ * that seed gave them — which is the template's own name, since `createDoc`
+ * titles an untitled deck after its template. Renaming one is enough to keep
+ * it, and so is starting from a template and naming the result, which is what
+ * anyone does with a deck they mean to keep.
+ */
+function isUnclaimedLegacySeed(doc: Deck): boolean {
+  if (!doc.deckTemplateId) return false;
+  // A retired template can only have come from a seed — nothing else could have
+  // created one, and the template itself no longer exists to start from.
+  if ((RETIRED_TEMPLATE_IDS as readonly string[]).includes(doc.deckTemplateId)) return true;
+  if (!DEFAULT_DOC_TEMPLATE_IDS.includes(doc.deckTemplateId)) return false;
+  return doc.title === getTemplate(doc.deckTemplateId)?.name;
+}
+
+/**
+ * Bring the three standard reference decks up to date, once per seed version.
+ *
+ * A bump REBUILDS a seeded deck in place rather than deleting and recreating
+ * it: same id, same title, new slides from the current template. That matters
+ * because the dashboard isn't the only way in — someone sitting on an open
+ * `/edit/<id>` tab has to get the fixed deck when they reload, and a deck that
+ * vanished out from under that URL would be worse than a stale one. Decks from
+ * templates that no longer exist have nothing to rebuild from, so those go.
+ *
+ * Nothing the user has claimed is touched. For decks this seed recorded, that
+ * means an exact `updatedAt` match: one edit, rename or comment and the deck is
+ * theirs. For the older seeds, which recorded nothing, it means the deck still
+ * has its seeded title — see `isUnclaimedLegacySeed`.
+ */
 export function seedIfFirstRun(): void {
   if (typeof window === 'undefined') return;
-  if (window.localStorage.getItem(SEED_KEY)) return;
-  window.localStorage.setItem(SEED_KEY, '1');
-  if (Object.keys(read()).length === 0) {
-    createDoc('qbr', 'Sample QBR');
+  const prev = readSeed();
+  if (prev?.version === SEED_VERSION) return;
+
+  const map = read();
+  const recorded = new Map(prev?.docs.map((d) => [d.id, d.updatedAt]));
+  const refreshed: string[] = [];
+  for (const doc of Object.values(map)) {
+    const isSeed = recorded.has(doc.id)
+      ? recorded.get(doc.id) === doc.updatedAt
+      : isUnclaimedLegacySeed(doc);
+    if (!isSeed) continue;
+
+    const tpl = doc.deckTemplateId ? getTemplateSlides(doc.deckTemplateId) : null;
+    if (!tpl) {
+      delete map[doc.id];
+      purgeThreads(doc.id);
+      continue;
+    }
+    map[doc.id] = {
+      ...doc,
+      slides: structuredClone(tpl.slides).map((s) => rekeySlide(s)),
+      updatedAt: now(),
+    };
+    refreshed.push(doc.id);
+    // The deck's discussion was pinned to slides and elements that no longer
+    // exist, and there's no honest mapping onto a rebuilt deck.
+    purgeThreads(doc.id);
   }
+  write(map);
+
+  const created = listDocs().length === 0 ? DEFAULT_DOC_TEMPLATE_IDS.map((id) => createDoc(id)) : [];
+  const record: SeedRecord = {
+    version: SEED_VERSION,
+    docs: [...refreshed, ...created.map((d) => d.id)].flatMap((id) => {
+      const doc = getDoc(id);
+      return doc ? [{ id, updatedAt: doc.updatedAt }] : [];
+    }),
+  };
+  window.localStorage.setItem(SEED_KEY, JSON.stringify(record));
 }
 
 export { TEMPLATES };

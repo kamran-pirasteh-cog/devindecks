@@ -53,6 +53,16 @@ export const DEFAULT_PAGE_NUMBERS: PageNumberStyle = {
 };
 
 /**
+ * Whether a deck shows page numbers. Unset means on: numbering is the house
+ * default, so only an explicit `false` — someone turning them off — suppresses
+ * them. Read the flag through here rather than testing it for truthiness, or a
+ * deck that has never been toggled reads as "off" in that one renderer.
+ */
+export function showsPageNumbers(deck: { pageNumbers?: boolean }): boolean {
+  return deck.pageNumbers !== false;
+}
+
+/**
  * The label for slide `index` (0-based) in a deck of `count`, or null when this
  * slide is deliberately unnumbered.
  */

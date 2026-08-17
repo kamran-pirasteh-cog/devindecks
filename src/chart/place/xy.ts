@@ -10,6 +10,7 @@ import { lineHeightEmu } from '@/render/measureText';
 import type { LinearScale } from '../scale/linear';
 import type { ChartTheme } from '../theme';
 import type { Mark } from '../mark';
+import { labelRole, labelSpecFor } from './labelSpec';
 import { textStyle } from './cartesian';
 
 export type XYSpecAny = ScatterSpec | BubbleSpec;
@@ -37,7 +38,7 @@ export function placeXY(input: XYInput): Mark[] {
   const sizes = spec.kind === 'bubble' ? spec.data.series.flatMap((s) => s.points.map((p) => p.size ?? 0)) : [];
   const maxSize = Math.max(1, ...sizes);
 
-  const labels = spec.decorations.labels;
+  const chartLabels = spec.decorations.labels;
 
   spec.data.series.forEach((s, si) => {
     const color =
@@ -79,8 +80,16 @@ export function placeXY(input: XYInput): Mark[] {
         outline: s.format?.marker?.outline,
       });
 
-      if (labels.show && p.label) {
-        const style = textStyle(theme.text.dataLabel, 'left', 'middle');
+      // Chart < series < point, so restyling one point's label on the canvas —
+      // which writes a point override — reaches the mark it was aimed at.
+      const label = labelSpecFor(chartLabels, s.labels, override?.label);
+
+      if (label.show && p.label) {
+        const style = textStyle(
+          { ...labelRole(theme, label.font), color: label.font?.color ?? theme.text.dataLabel.color },
+          'left',
+          'middle',
+        );
         const w = measurer.measure(p.label, style).wEmu + pointsToEmu(2);
         const h = lineHeightEmu(style);
         marks.push({

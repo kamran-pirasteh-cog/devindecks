@@ -195,6 +195,12 @@ function ParagraphView({
           {marker}
         </span>
       ) : null}
+      {/* A paragraph whose runs are all empty — a deliberate blank line between
+          two others — has no inline content, so the browser gives the <p> no
+          line box and it collapses to zero height. A <br> restores the line at
+          the paragraph's own font-size and line-height, which is what the
+          editor (TextEditor) and the PPTX exporter already do. */}
+      {p.runs.some((r) => r.text) ? null : <br />}
       {p.runs.map((r, i) => {
         const font = FONTS[r.font ?? ds.fonts.body];
         return (

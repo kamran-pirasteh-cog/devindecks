@@ -284,6 +284,51 @@ const ANCHORS: { value: VerticalAnchor; label: string }[] = [
 ];
 
 /**
+ * Space before/after a paragraph, in points — PowerPoint's own ladder. The gap
+ * a blank line would give at body size is roughly 12–18pt, so the useful range
+ * sits well under a full line.
+ */
+const PARA_SPACING_PT = [0, 3, 6, 9, 12, 18, 24, 36];
+
+/**
+ * One end of the paragraph-spacing pair. `value` is points as a string, or ''
+ * when the selection disagrees; an off-ladder value (imported from a deck) is
+ * spliced in rather than snapped, same as the font-size menu.
+ */
+function ParaSpacingSelect({
+  label,
+  value,
+  prefix,
+  onPick,
+}: {
+  label: string;
+  value: string;
+  /** Arrow glyph marking which side of the paragraph this is. */
+  prefix: string;
+  onPick: (pt: number) => void;
+}) {
+  const current = parseFloat(value);
+  const options = [...new Set([...PARA_SPACING_PT, ...(Number.isFinite(current) ? [current] : [])])]
+    .sort((a, b) => a - b);
+  return (
+    <select
+      value={value}
+      onChange={(e) => onPick(parseFloat(e.target.value))}
+      aria-label={label}
+      title={label}
+      className={FIELD_CLASS}
+    >
+      {value === '' ? <option value="">Mixed</option> : null}
+      {options.map((pt) => (
+        <option key={pt} value={pt}>
+          {prefix} {pt}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
  * The one value a set of boxes shares, or '' when they disagree — the empty
  * string is what a `<select>` needs to land on its "Mixed" placeholder.
  */
@@ -379,6 +424,10 @@ export function SelectionFormatBar({
   const allParagraphs = textBodies.flatMap((b) => b.paragraphs);
   const paraAlign = agreedOn(allParagraphs.map((p) => p.align ?? 'left'));
   const anchor = agreedOn(textBodies.map((b) => b.anchor ?? 'top'));
+  // Points as strings, so the same "every box agrees" rule (and the '' the
+  // Mixed placeholder needs) covers the numeric fields too.
+  const spaceBeforePt = agreedOn(allParagraphs.map((p) => String(p.spaceBeforePt ?? 0)));
+  const spaceAfterPt = agreedOn(allParagraphs.map((p) => String(p.spaceAfterPt ?? 0)));
 
   /** Border edits patch whatever outline exists, falling back to a real one. */
   const patchOutline = (patch: Partial<Outline>) =>
@@ -508,6 +557,24 @@ export function SelectionFormatBar({
                 </option>
               ))}
             </select>
+          </Group>
+          {/* Paragraph spacing, the gap above and below each paragraph. Two
+              dropdowns rather than one "spacing" number: PowerPoint's before
+              and after are separate properties, and a list usually wants the
+              gap only after each item. */}
+          <Group label="Spacing">
+            <ParaSpacingSelect
+              label="Space before paragraph"
+              value={spaceBeforePt}
+              prefix="↑"
+              onPick={(pt) => store().patchParagraphs(selectedIds, { spaceBeforePt: pt })}
+            />
+            <ParaSpacingSelect
+              label="Space after paragraph"
+              value={spaceAfterPt}
+              prefix="↓"
+              onPick={(pt) => store().patchParagraphs(selectedIds, { spaceAfterPt: pt })}
+            />
           </Group>
           <Group label="Text">
             <ColorPicker

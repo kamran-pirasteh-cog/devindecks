@@ -10,10 +10,24 @@
  */
 import { nanoid } from 'nanoid';
 import { SLIDE_16x9, type Deck, type PictureElement, type Slide } from '@/model';
-import { SLIDE_LAYOUTS, type SlideLayoutCategory } from './registry';
+import {
+  BUILTIN_LAYOUT_IDS,
+  LAYOUT_CATEGORY_MOVES,
+  RETIRED_LAYOUT_IDS,
+  SLIDE_LAYOUTS,
+  type SlideLayoutCategory,
+} from './registry';
 
 const KEY = 'devindesign.layouts.v1';
 const SEED_KEY = 'devindesign.layouts.seeded.v1';
+
+/**
+ * Bumping this re-seeds the built-in layouts. v2 replaced the four original
+ * buckets (Title / Section / KPI / Blank) with the SmartArt-style families;
+ * v3 replaced their hand-authored contents with exact slides lifted from the
+ * three reference decks.
+ */
+const LAYOUT_SEED_VERSION = 3;
 
 export interface StoredLayout {
   id: string;
@@ -51,29 +65,54 @@ function freshIds(slide: Slide): Slide {
   };
 }
 
-/** Seed the store from the built-in registry (once) so they're editable. */
+/**
+ * Seed the store from the built-in registry, once per seed version.
+ *
+ * A bump rebuilds the BUILT-IN layouts and leaves everything else alone. That
+ * split is the whole point: built-ins are ours to restyle, and a layout Admin
+ * authored or uploaded is not, so it survives untouched — with only its
+ * category re-bucketed if the family it sat in was renamed.
+ */
 export function seedLayoutsIfFirstRun(): void {
   if (typeof window === 'undefined') return;
-  if (window.localStorage.getItem(SEED_KEY)) return;
-  window.localStorage.setItem(SEED_KEY, '1');
+  const stamp = window.localStorage.getItem(SEED_KEY);
+  // v1 wrote the bare string '1' before this was versioned.
+  if (Number(stamp) === LAYOUT_SEED_VERSION) return;
+  window.localStorage.setItem(SEED_KEY, String(LAYOUT_SEED_VERSION));
+
   const map = read();
+  for (const id of RETIRED_LAYOUT_IDS) delete map[id];
+  const builtin = new Set(BUILTIN_LAYOUT_IDS);
+  for (const l of Object.values(map)) {
+    if (builtin.has(l.id)) continue;
+    const moved = LAYOUT_CATEGORY_MOVES[l.category];
+    if (moved) map[l.id] = { ...l, category: moved, updatedAt: now() };
+  }
   for (const l of SLIDE_LAYOUTS) {
-    if (map[l.id]) continue;
     const ts = now();
     map[l.id] = {
       id: l.id,
       name: l.name,
       category: l.layout,
       slide: l.buildSlide(),
-      createdAt: ts,
+      createdAt: map[l.id]?.createdAt ?? ts,
       updatedAt: ts,
     };
   }
   write(map);
 }
 
+/**
+ * Built-ins in registry order, then anything Admin added, alphabetically.
+ * Registry order is authored — within a family the plainest layout comes
+ * first — and alphabetizing it would shuffle that into nonsense.
+ */
 export function listLayouts(): StoredLayout[] {
-  return Object.values(read()).sort((a, b) => a.name.localeCompare(b.name));
+  const rank = new Map(BUILTIN_LAYOUT_IDS.map((id, i) => [id, i]));
+  return Object.values(read()).sort(
+    (a, b) =>
+      (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity) || a.name.localeCompare(b.name),
+  );
 }
 
 export function getStoredLayout(id: string): StoredLayout | null {

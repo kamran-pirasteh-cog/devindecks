@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "validate:decks": "tsx scripts/validate-decks.ts"
+    "validate:decks": "tsx scripts/validate-decks.ts",
+    "import:deck": "tsx scripts/import-deck.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",

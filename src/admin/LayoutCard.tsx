@@ -5,7 +5,12 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DesignSystem } from '@/model';
 import { FitSlideView } from '@/render/FitSlideView';
-import { SLIDE_LAYOUT_CATEGORIES, type SlideLayoutCategory } from '@/templates/registry';
+import {
+  DECK_LABELS,
+  LAYOUT_SOURCES,
+  SLIDE_LAYOUT_CATEGORIES,
+  type SlideLayoutCategory,
+} from '@/templates/registry';
 import {
   deleteLayout,
   duplicateLayout,
@@ -25,6 +30,7 @@ export function LayoutCard({
   onChange: () => void;
 }) {
   const router = useRouter();
+  const source = LAYOUT_SOURCES[layout.id];
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(layout.name);
@@ -96,8 +102,10 @@ export function LayoutCard({
           ) : (
             <div className="min-w-0">
               <div className="truncate text-xs font-medium">{layout.name}</div>
-              <div className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
-                {layout.category}
+              {/* Provenance where there is any: a replica is only trustworthy if
+                  you can see which approved slide it was taken from. */}
+              <div className="mt-0.5 truncate text-[10px] uppercase tracking-wide text-zinc-400">
+                {source ? `${DECK_LABELS[source.deck]} · slide ${source.slide}` : layout.category}
               </div>
             </div>
           )}
