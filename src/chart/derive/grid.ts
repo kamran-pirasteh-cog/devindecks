@@ -36,23 +36,38 @@ export interface GridDerived {
   categoryLabels: string[];
 }
 
+export interface DeriveOptions {
+  /**
+   * Series that sit OUTSIDE the stack — a combo chart's line and area members,
+   * whose `stack` applies to the column members only. They run from zero, and
+   * they stay out of the totals so a line tracking margin doesn't inflate the
+   * column stack's total label or its 100% denominator.
+   */
+  unstacked?: ReadonlySet<string>;
+}
+
 /**
  * Stacking sums positives and negatives on OPPOSITE sides of the baseline —
  * a -88 churn bar in a stack of positives has to hang below zero, not eat into
  * the bar beneath it. Two running accumulators, not one.
  */
-export function deriveGrid(data: GridData, stack: StackMode): GridDerived {
+export function deriveGrid(
+  data: GridData,
+  stack: StackMode,
+  options: DeriveOptions = {},
+): GridDerived {
   const { categories, series } = data;
   const stacked = stack === 'stacked' || stack === 'stacked100';
   const pct = stack === 'stacked100';
+  const inStack = (s: GridSeries) => !options.unstacked?.has(s.key);
 
   const totals = categories.map((_, ci) =>
-    series.reduce((sum, s) => sum + (s.values[ci] ?? 0), 0),
+    series.reduce((sum, s) => sum + (inStack(s) ? (s.values[ci] ?? 0) : 0), 0),
   );
   // 100% stacking divides by the total MAGNITUDE, so a category holding +10 and
   // -10 doesn't divide by zero and blow the chart up.
   const magnitudes = categories.map((_, ci) =>
-    series.reduce((sum, s) => sum + Math.abs(s.values[ci] ?? 0), 0),
+    series.reduce((sum, s) => sum + (inStack(s) ? Math.abs(s.values[ci] ?? 0) : 0), 0),
   );
 
   const datums: GridDatum[] = [];
@@ -76,7 +91,7 @@ export function deriveGrid(data: GridData, stack: StackMode): GridDerived {
 
       let base = 0;
       let top = v ?? 0;
-      if (stacked && v !== null) {
+      if (stacked && v !== null && inStack(s)) {
         if (v >= 0) {
           base = up;
           top = up + v;

@@ -23,6 +23,10 @@ import { textStyle } from './cartesian';
 
 export type LineLikeSpec = LineSpec | AreaSpec | ComboSpec;
 
+/** How a combo chart draws a given series; unlisted series are columns. */
+export const comboMode = (spec: ComboSpec, seriesKey: string): 'column' | 'line' | 'area' =>
+  spec.render[seriesKey] ?? 'column';
+
 export interface LineAreaInput {
   chartId: string;
   spec: LineLikeSpec;
@@ -205,50 +209,56 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
   const marks: Mark[] = [];
   const centers = lineCategoryCenters(derived.categoryLabels.length);
   const smooth = spec.kind === 'line' ? (spec.smooth ?? false) : false;
-  const isArea = spec.kind === 'area' || spec.kind === 'combo';
-  const stacked = 'stack' in spec && spec.stack !== 'clustered';
+  // A combo's members are areas only where they were asked to be. Filling every
+  // non-column member is what turns a combo's LINE into an area.
+  const fillsArea = (seriesKey: string) =>
+    spec.kind === 'area' || (spec.kind === 'combo' && comboMode(spec, seriesKey) === 'area');
+  // Only an area chart's own stack applies here; a combo's stack is its
+  // columns', and its area members run from the baseline.
+  const stacked = spec.kind === 'area' && spec.stack !== 'clustered';
 
   const series = derived.series.filter((s) => !onlySeries || onlySeries.has(s.key));
 
   // Areas paint first, and in reverse so an unstacked chart's later series
   // don't bury the earlier ones.
-  if (isArea) {
-    for (const s of [...series].reverse()) {
-      const si = derived.series.indexOf(s);
-      const color =
-        s.format?.fill?.kind === 'solid' ? s.format.fill.color : theme.seriesColor(si);
-      const tops = pointsOf(derived, s.key, proj, centers, true);
+  for (const s of [...series].reverse()) {
+    if (!fillsArea(s.key)) continue;
+    const si = derived.series.indexOf(s);
+    const color =
+      s.format?.fill?.kind === 'solid' ? s.format.fill.color : theme.seriesColor(si);
+    const tops = pointsOf(derived, s.key, proj, centers, true);
 
-      for (const run of runs(tops)) {
-        if (run.length < 2) continue;
-        // Stacked areas close on the series below; unstacked ones close on the
-        // baseline.
-        const baseline = stacked
-          ? run.map((_, i) => {
-              const d = derived.data.find(
-                (x) => x.seriesKey === s.key && x.pointIndex === i,
-              );
-              const across = proj.value(d?.base ?? 0);
-              const along = proj.category(centers[i] ?? 0);
-              return proj.horizontal ? { x: across, y: along } : { x: along, y: across };
-            })
-          : run.map((p) =>
-              proj.horizontal
-                ? { x: proj.baseline(), y: p.y }
-                : { x: p.x, y: proj.baseline() },
+    for (const run of runs(tops)) {
+      if (run.length < 2) continue;
+      // Stacked areas close on the series below; unstacked ones close on the
+      // baseline.
+      const baseline = stacked
+        ? run.map((_, i) => {
+            const d = derived.data.find(
+              (x) => x.seriesKey === s.key && x.pointIndex === i,
             );
+            const across = proj.value(d?.base ?? 0);
+            const along = proj.category(centers[i] ?? 0);
+            return proj.horizontal ? { x: across, y: along } : { x: along, y: across };
+          })
+        : run.map((p) =>
+            proj.horizontal
+              ? { x: proj.baseline(), y: p.y }
+              : { x: p.x, y: proj.baseline() },
+          );
 
-        const path = areaPath(run, [...baseline].reverse(), smooth);
-        if (!path) continue;
-        marks.push({
-          kind: 'path',
-          ref: { chartId, part: 'mark', series: s.key, point: 'area' },
-          name: `${s.name} area`,
-          rect: path.box,
-          d: path.d,
-          fill: { kind: 'solid', color, alpha: spec.kind === 'area' && !stacked ? 0.6 : 1 },
-        });
-      }
+      const path = areaPath(run, [...baseline].reverse(), smooth);
+      if (!path) continue;
+      marks.push({
+        kind: 'path',
+        ref: { chartId, part: 'mark', series: s.key, point: 'area' },
+        name: `${s.name} area`,
+        rect: path.box,
+        d: path.d,
+        // Unstacked areas overlap — an opaque one hides the series behind it,
+        // and a combo's area always has columns behind it.
+        fill: { kind: 'solid', color, alpha: stacked ? 1 : 0.6 },
+      });
     }
   }
 
@@ -261,8 +271,7 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
   // Then the lines and their markers, on top.
   for (const s of series) {
     const si = derived.series.indexOf(s);
-    const mode = spec.kind === 'combo' ? (spec.render[s.key] ?? 'column') : spec.kind;
-    if (spec.kind === 'combo' && mode !== 'line') continue;
+    if (spec.kind === 'combo' && comboMode(spec, s.key) !== 'line') continue;
     if (spec.kind === 'area') continue;
 
     const look = lineLook(theme, si, s.key === emphasisKey, emphasisKey !== null, recedeIndex);
@@ -315,7 +324,14 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
       const last = [...tops].reverse().find((p): p is Point => p !== null);
       if (last) {
         const role = look.emphasized ? theme.text.endLabelEmphasis : theme.text.endLabel;
-        const style = { ...textStyle({ ...role, color }, 'left', 'middle'), wrap: false };
+        // A per-series size beats the brand's. On a line chart the end label IS
+        // the data label, so "make this series' numbers bigger" has to reach
+        // here or the control writes to the spec and nothing moves.
+        const sizePt = s.labels?.font?.sizePt ?? role.sizePt;
+        const style = {
+          ...textStyle({ ...role, sizePt, color }, 'left', 'middle'),
+          wrap: false,
+        };
         const text = endLabels[si] ?? s.name;
         // Padded generously. A measured width that's a hair under what the
         // renderer's real font metrics need wraps "Enterprise · 640" onto two
@@ -365,12 +381,23 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
 }
 
 /**
+ * The combo members that are NOT columns, and so are not part of the column
+ * stack — `ComboSpec.stack` covers the columns only. A line stacked on top of
+ * the columns it annotates plots a cumulative total nobody asked for.
+ */
+export function comboUnstackedKeys(spec: ComboSpec): Set<string> {
+  return new Set(
+    spec.data.series.filter((s) => comboMode(spec, s.key) !== 'column').map((s) => s.key),
+  );
+}
+
+/**
  * The column members of a combo chart, positioned on the same band scale a
  * pure column chart would use so the two placers agree.
  */
 export function comboColumnBand(spec: ComboSpec, derived: GridDerived) {
   const columnKeys = derived.series
-    .filter((s) => (spec.render[s.key] ?? 'column') === 'column')
+    .filter((s) => comboMode(spec, s.key) === 'column')
     .map((s) => s.key);
   const stacked = spec.stack !== 'clustered';
   return {

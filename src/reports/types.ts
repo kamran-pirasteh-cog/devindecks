@@ -56,6 +56,13 @@ export interface Report {
   createdAt: string;
   updatedAt: string;
   lastSentAt?: string;
+  /**
+   * When the numbers in the deck were last pulled — the "as of" a reader needs
+   * to know how old the figures are. Deliberately separate from `lastSentAt`
+   * and the deck's `updatedAt`: a send can go out without new data (an approval
+   * that sat for a day), and editing a title refreshes neither.
+   */
+  dataRefreshedAt?: string;
 }
 
 export const FREQUENCIES: { value: Frequency; label: string }[] = [
@@ -119,6 +126,32 @@ export function describeSchedule(r: Report): string {
     case 'quarterly':
       return `Quarterly on the ${ordinal(r.dayOfMonth)} ${at}`;
   }
+}
+
+/**
+ * "As of" for the data behind a report — the phrase the card pill and the
+ * editor both show, so one refresh reads the same in both places.
+ *
+ * Granularity follows distance: a same-day refresh is a time (the useful fact
+ * is which morning's numbers these are), anything older is a date, and the year
+ * only appears once it isn't this one.
+ */
+export function describeAsOf(iso: string | undefined, from = new Date()): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const sameDay =
+    d.getFullYear() === from.getFullYear() &&
+    d.getMonth() === from.getMonth() &&
+    d.getDate() === from.getDate();
+  if (sameDay) {
+    return `As of ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+  }
+  return `As of ${d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(d.getFullYear() === from.getFullYear() ? {} : { year: 'numeric' }),
+  })}`;
 }
 
 /**

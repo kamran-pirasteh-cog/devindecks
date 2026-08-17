@@ -21,31 +21,47 @@
  * It is deliberately NOT `ChartPartPopover`: that one is anchored to a selection
  * on the canvas and driven by Moveable and the element selection. This is driven
  * by a `ChartRef` from a preview hit-test, with no canvas underneath it.
+ *
+ * It takes a `patch` callback rather than reaching into the editor store, so the
+ * SAME row edits a chart on a slide and a chart TEMPLATE in Admin. Whoever owns
+ * the spec decides what a write means — a history entry here, local template
+ * state there.
  */
 import {
   canSwapAxes,
   convertData,
   chartOrientation,
+  emuToPoints,
   isGridSpec,
+  isXYSpec,
   legendSeriesKey,
+  pointsToEmu,
   setChartOrientation,
   supportsOrientation,
   swapAxes,
   token,
   type AxisId,
   type AxisSpec,
-  type ChartInstance,
   type ChartKind,
   type ChartRef,
   type ChartSpec,
+  type DashStyle,
   type DesignSystem,
+  type GridSeries,
   type LabelContent,
   type LabelPlacement,
+  type LabelSpec,
+  type MarkerShape,
   type NumberFormat,
+  type SeriesFormat,
+  type XYSeries,
 } from '@/model';
-import { useEditor } from '@/store/editorStore';
 import { SUPPORTED_KINDS } from '@/chart/compile';
+import { emphasisSeriesKey } from '@/chart/place/lineArea';
 import { describePart } from './previewHitTest';
+
+/** Mutate the spec in place. The owner turns that into whatever a write means. */
+export type ChartPatch = (fn: (spec: ChartSpec) => void) => void;
 
 const FIELD =
   'h-6 rounded border border-zinc-200 bg-white px-1 text-[11px] text-zinc-700 outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200';
@@ -77,6 +93,63 @@ const LABEL_CONTENTS: { value: SimpleContent['kind']; label: string }[] = [
   { value: 'category', label: 'Category' },
   { value: 'seriesName', label: 'Series' },
 ];
+
+/** Grid and XY series differ in their DATA; everything formattable is shared. */
+type AnySeries = GridSeries | XYSeries;
+
+/** The series with this key, whichever data shape the spec carries. */
+function findSeries(spec: ChartSpec, key: string): AnySeries | undefined {
+  if (isGridSpec(spec)) return spec.data.series.find((s) => s.key === key);
+  if (isXYSpec(spec)) return spec.data.series.find((s) => s.key === key);
+  return undefined;
+}
+
+/**
+ * How the selected series is DRAWN, which is what decides its options.
+ *
+ * A combo chart's series are not all the same shape — one is a column and the
+ * next is a line over it — so the panel can't read this off `spec.kind`. A
+ * line's options (weight, dash, dots) are meaningless on a bar, and offering
+ * them is worse than not offering them: they write to the spec and nothing on
+ * screen moves.
+ */
+export function seriesRender(
+  spec: ChartSpec,
+  key: string,
+): 'column' | 'line' | 'area' | 'point' | 'slice' {
+  switch (spec.kind) {
+    case 'line':
+      return 'line';
+    case 'area':
+      return 'area';
+    case 'combo':
+      return spec.render[key] ?? 'column';
+    case 'scatter':
+    case 'bubble':
+      return 'point';
+    case 'pie':
+    case 'donut':
+      return 'slice';
+    default:
+      return 'column';
+  }
+}
+
+const DASHES: { value: DashStyle; label: string }[] = [
+  { value: 'solid', label: 'Solid' },
+  { value: 'dash', label: 'Dashed' },
+  { value: 'dot', label: 'Dotted' },
+];
+
+const MARKER_SHAPES: { value: MarkerShape; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'circle', label: 'Circle' },
+  { value: 'square', label: 'Square' },
+  { value: 'diamond', label: 'Diamond' },
+  { value: 'triangle', label: 'Triangle' },
+];
+
+const DEFAULT_MARKER_PT = 5;
 
 const PLACEMENTS: { value: LabelPlacement; label: string }[] = [
   { value: 'auto', label: 'Auto' },
@@ -184,21 +257,22 @@ function Swatches({
 /* ------------------------------------------------------------------ */
 
 export function ChartPartOptions({
-  chart,
+  spec,
   ds,
   part,
+  patch,
   onClear,
+  trailing,
 }: {
-  chart: ChartInstance;
+  spec: ChartSpec;
   ds: DesignSystem;
   /** The part clicked in the preview, or null for the chart as a whole. */
   part: ChartRef | null;
+  patch: ChartPatch;
   onClear: () => void;
+  /** Owner-specific controls, pinned right — Admin's orientation note, say. */
+  trailing?: React.ReactNode;
 }) {
-  const patchChart = useEditor((s) => s.patchChart);
-  const { spec } = chart;
-
-  const patch = (fn: (s: ChartSpec) => void) => patchChart(chart.id, fn);
   // Keyed by `AxisId`, which includes the optional secondary value axis — a
   // combo chart's `y2` is a real axis somebody can click.
   const setAxis = (axis: AxisId, fn: (a: AxisSpec) => void) =>
@@ -216,8 +290,37 @@ export function ChartPartOptions({
       : part?.part === 'legend.item'
         ? legendSeriesKey(part)
         : null;
-  const series =
-    isGridSpec(spec) && seriesKey ? spec.data.series.find((s) => s.key === seriesKey) : undefined;
+  const series = seriesKey ? findSeries(spec, seriesKey) : undefined;
+
+  /** Edit the selected series in place — grid or XY, one path for both. */
+  const setSeries = (fn: (s: AnySeries) => void) =>
+    patch((s) => {
+      if (!seriesKey) return;
+      const ser = findSeries(s, seriesKey);
+      if (ser) fn(ser);
+    });
+
+  const setSeriesFormat = (fn: (f: SeriesFormat) => void) =>
+    setSeries((s) => {
+      s.format = { ...s.format };
+      fn(s.format);
+    });
+
+  /**
+   * The series' own label settings, which fall through to the chart's.
+   *
+   * `LabelSpec` is required-field, and a series override is a partial of it in
+   * practice — the placers spread `{...chartDefault, ...series.labels}`. Seeded
+   * from the chart default on first write so the stored object is a valid one.
+   */
+  const setSeriesLabels = (fn: (l: LabelSpec) => void) =>
+    patch((draft) => {
+      if (!seriesKey) return;
+      const ser = findSeries(draft, seriesKey);
+      if (!ser) return;
+      ser.labels = { ...draft.decorations.labels, ...ser.labels };
+      fn(ser.labels);
+    });
 
   const rows = (() => {
     switch (part?.part) {
@@ -324,28 +427,182 @@ export function ChartPartOptions({
       case 'mark':
       case 'label': {
         const labels = spec.decorations.labels;
-        return (
-          <>
-            {series ? (
-              <Group label="Color">
-                <Swatches
-                  ds={ds}
-                  current={
-                    series.format?.fill?.kind === 'solid' &&
-                    series.format.fill.color.kind === 'token'
-                      ? series.format.fill.color.token
-                      : undefined
-                  }
-                  onPick={(id) =>
-                    patch((s) => {
-                      if (!isGridSpec(s)) return;
-                      const ser = s.data.series.find((x) => x.key === seriesKey);
-                      if (ser) ser.format = { ...ser.format, fill: { kind: 'solid', color: token(id) } };
+        const render = seriesKey ? seriesRender(spec, seriesKey) : null;
+        const colorPicker = series ? (
+          <Group label="Color">
+            <Swatches
+              ds={ds}
+              current={
+                series.format?.fill?.kind === 'solid' && series.format.fill.color.kind === 'token'
+                  ? series.format.fill.color.token
+                  : undefined
+              }
+              onPick={(id) =>
+                setSeriesFormat((f) => {
+                  f.fill = { kind: 'solid', color: token(id) };
+                  // A line takes its colour from the outline; leaving the old
+                  // one set would repaint the dots and leave the line grey.
+                  if (f.outline) f.outline = { ...f.outline, color: token(id) };
+                })
+              }
+            />
+          </Group>
+        ) : null;
+
+        /* --- a line, its dots, and which line the chart is about --- */
+        if (series && seriesKey && (render === 'line' || render === 'area')) {
+          const marker = series.format?.marker;
+          const focused =
+            spec.kind === 'line' &&
+            emphasisSeriesKey(
+              spec,
+              isGridSpec(spec) ? spec.data.series.map((s) => s.key) : [],
+            ) === seriesKey;
+          return (
+            <>
+              {colorPicker}
+
+              {spec.kind === 'line' ? (
+                <Group label="Focus">
+                  <Toggle
+                    on={focused}
+                    title={
+                      focused
+                        ? 'This is the subject of the chart. Turn it off to draw every line in its own colour.'
+                        : 'Draw this line in full colour and let the others recede to grey.'
+                    }
+                    onClick={() =>
+                      patch((s) => {
+                        if (s.kind !== 'line') return;
+                        s.emphasis = focused ? null : seriesKey;
+                      })
+                    }
+                  >
+                    Main line
+                  </Toggle>
+                </Group>
+              ) : null}
+
+              {render === 'line' ? (
+                <>
+                  <Group label="Weight">
+                    <AutoNumber
+                      width="w-14"
+                      value={
+                        series.format?.lineWidthEmu === undefined
+                          ? undefined
+                          : Number(emuToPoints(series.format.lineWidthEmu).toFixed(2))
+                      }
+                      onChange={(v) =>
+                        setSeriesFormat((f) => {
+                          f.lineWidthEmu = v === undefined ? undefined : pointsToEmu(v);
+                        })
+                      }
+                    />
+                  </Group>
+
+                  <Group label="Dash">
+                    <select
+                      value={series.format?.dash ?? ''}
+                      onChange={(e) =>
+                        setSeriesFormat((f) => {
+                          f.dash = (e.target.value || undefined) as DashStyle | undefined;
+                        })
+                      }
+                      className={`${FIELD} w-20`}
+                    >
+                      <option value="">Auto</option>
+                      {DASHES.map((d) => (
+                        <option key={d.value} value={d.value}>
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Group>
+
+                  <Group label="Dots">
+                    <select
+                      value={marker?.shape ?? 'none'}
+                      onChange={(e) => {
+                        const shape = e.target.value as MarkerShape;
+                        setSeriesFormat((f) => {
+                          f.marker =
+                            shape === 'none'
+                              ? undefined
+                              : {
+                                  ...f.marker,
+                                  shape,
+                                  sizeEmu: f.marker?.sizeEmu || pointsToEmu(DEFAULT_MARKER_PT),
+                                };
+                        });
+                      }}
+                      className={`${FIELD} w-24`}
+                    >
+                      {MARKER_SHAPES.map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                    {marker && marker.shape !== 'none' ? (
+                      <AutoNumber
+                        width="w-12"
+                        placeholder={String(DEFAULT_MARKER_PT)}
+                        value={
+                          marker.sizeEmu
+                            ? Number(emuToPoints(marker.sizeEmu).toFixed(1))
+                            : undefined
+                        }
+                        onChange={(v) =>
+                          setSeriesFormat((f) => {
+                            if (!f.marker) return;
+                            f.marker = {
+                              ...f.marker,
+                              sizeEmu: pointsToEmu(v ?? DEFAULT_MARKER_PT),
+                            };
+                          })
+                        }
+                      />
+                    ) : null}
+                  </Group>
+                </>
+              ) : null}
+
+              {spec.kind === 'line' ? (
+                <Group label="End labels">
+                  <Toggle
+                    on={spec.endLabels ?? false}
+                    title="Name each line at its right-hand end, so the chart doesn't need a legend."
+                    onClick={() =>
+                      patch((s) => {
+                        if (s.kind === 'line') s.endLabels = !s.endLabels;
+                      })
+                    }
+                  >
+                    Show
+                  </Toggle>
+                </Group>
+              ) : null}
+
+              <Group label="Label size">
+                <AutoNumber
+                  width="w-14"
+                  placeholder={String(labels.font?.sizePt ?? 'auto')}
+                  value={series.labels?.font?.sizePt}
+                  onChange={(v) =>
+                    setSeriesLabels((l) => {
+                      l.font = v === undefined ? undefined : { ...l.font, sizePt: v };
                     })
                   }
                 />
               </Group>
-            ) : null}
+            </>
+          );
+        }
+
+        return (
+          <>
+            {colorPicker}
 
             <Group label="Labels">
               <Toggle on={labels.show} onClick={() => setLabels((l) => (l.show = !l.show))}>
@@ -382,14 +639,22 @@ export function ChartPartOptions({
                 ))}
               </select>
             </Group>
-            <Group label="Type size">
+            {/* Per SERIES when one is selected — "make the actuals bigger than
+                the forecast" is the common ask, and a chart-wide size can't
+                say it. Blank falls back to the chart's, shown as the hint. */}
+            <Group label={series ? 'Label size' : 'Type size'}>
               <AutoNumber
-                value={labels.font?.sizePt}
+                value={series ? series.labels?.font?.sizePt : labels.font?.sizePt}
                 width="w-14"
+                placeholder={series ? String(labels.font?.sizePt ?? 'auto') : 'auto'}
                 onChange={(v) =>
-                  setLabels((l) => {
-                    l.font = v === undefined ? undefined : { ...l.font, sizePt: v };
-                  })
+                  series
+                    ? setSeriesLabels((l) => {
+                        l.font = v === undefined ? undefined : { ...l.font, sizePt: v };
+                      })
+                    : setLabels((l) => {
+                        l.font = v === undefined ? undefined : { ...l.font, sizePt: v };
+                      })
                 }
               />
             </Group>
@@ -484,13 +749,7 @@ export function ChartPartOptions({
               <Group label="Name">
                 <input
                   value={series.name}
-                  onChange={(e) =>
-                    patch((s) => {
-                      if (!isGridSpec(s)) return;
-                      const ser = s.data.series.find((x) => x.key === seriesKey);
-                      if (ser) ser.name = e.target.value;
-                    })
-                  }
+                  onChange={(e) => setSeries((s) => (s.name = e.target.value))}
                   className={`${FIELD} w-32`}
                 />
               </Group>
@@ -606,7 +865,13 @@ export function ChartPartOptions({
         <span className="text-[10px] text-transparent">.</span>
         <span className="flex h-6 items-center gap-1">
           <span className="whitespace-nowrap text-[11px] font-semibold text-zinc-700 dark:text-zinc-200">
-            {part ? describePart(part, series?.name) : 'Chart'}
+            {part
+              ? describePart(
+                  part,
+                  series?.name,
+                  seriesKey ? seriesRender(spec, seriesKey) : undefined,
+                )
+              : 'Chart'}
           </span>
           {part ? (
             <button
@@ -626,7 +891,9 @@ export function ChartPartOptions({
 
       {rows}
 
-      {part ? null : (
+      {trailing ? <span className="ml-auto shrink-0 self-center">{trailing}</span> : null}
+
+      {part || trailing ? null : (
         <span className="ml-auto shrink-0 self-center text-[11px] text-zinc-400">
           Click a part of the preview — an axis, a bar, the legend — to format it
         </span>

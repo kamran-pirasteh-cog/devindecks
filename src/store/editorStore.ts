@@ -36,6 +36,7 @@ import {
   type DesignSystem,
   type EMU,
   type Fill,
+  type LabelFont,
   type Outline,
   type Paragraph,
   type Rect,
@@ -52,6 +53,9 @@ import { compileChart } from '@/chart/compile';
 import { snapQuarterTurn } from '@/chart/turn';
 import {
   applyChartFormat,
+  applyChartTextFormat,
+  chartFontFromRun,
+  runSizeOf,
   chartById,
   chartElementRects,
   chartElementIdsBefore,
@@ -399,6 +403,29 @@ function withChartSelection(
   const before = chartElementIdsBefore(slide, chartIds);
   run();
   s.selectedIds = repairChartSelection(slide, before, s.selectedIds);
+}
+
+/**
+ * Route a type change on chart parts into the spec, and hand back the ids that
+ * were consumed so the ordinary element loop skips them.
+ *
+ * Wrapped in `withChartSelection` because the recompile it triggers changes
+ * which parts exist — a bigger label can cost the chart a tick — and a
+ * selection left holding retired ids stops reading as the chart.
+ */
+function withChartTextFormat(
+  s: { selectedIds: string[]; designSystem: DesignSystem },
+  slide: Slide,
+  ids: string[],
+  fontFor: (el: SlideElement) => LabelFont | null,
+): Set<string> {
+  const chartIds = chartsForElements(slide, ids).map((c) => c.id);
+  if (!chartIds.length) return new Set();
+  let claimed: string[] = [];
+  withChartSelection(s, slide, chartIds, () => {
+    claimed = applyChartTextFormat(slide, ids, s.designSystem, fontFor);
+  });
+  return new Set(claimed);
 }
 
 function slideById(deck: Deck, id: string): Slide | undefined {
@@ -1102,8 +1129,13 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
+        // A chart part's type belongs to the spec, not to the box the compiler
+        // emitted — see `applyChartTextFormat`. Those ids drop out here.
+        const claimed = withChartTextFormat(s, slide, ids, () =>
+          chartFontFromRun(patch),
+        );
         for (const el of slide.elements) {
-          if (!ids.includes(el.id)) continue;
+          if (!ids.includes(el.id) || claimed.has(el.id)) continue;
           const body = el.type === 'text' ? el.body : el.type === 'shape' ? el.body : undefined;
           if (!body) continue;
           for (const p of body.paragraphs) {
@@ -1118,8 +1150,14 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
+        // Each chart part steps from the size it is DRAWN at, so a part still
+        // on the brand's size steps from that rather than from a guess.
+        const claimed = withChartTextFormat(s, slide, ids, (el) => {
+          const from = runSizeOf(el);
+          return from === undefined ? null : { sizePt: nextFontSize(from, dir) };
+        });
         for (const el of slide.elements) {
-          if (!ids.includes(el.id)) continue;
+          if (!ids.includes(el.id) || claimed.has(el.id)) continue;
           const body = el.type === 'text' ? el.body : el.type === 'shape' ? el.body : undefined;
           if (!body) continue;
           for (const p of body.paragraphs) {

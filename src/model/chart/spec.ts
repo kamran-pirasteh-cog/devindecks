@@ -81,7 +81,8 @@ export type LabelPlacement =
   | 'right';
 
 export interface LabelFont {
-  sizePt: number;
+  /** Unset means the brand's size for this role — see `fontOver` in `theme.ts`. */
+  sizePt?: number;
   bold?: boolean;
   color?: ColorRef;
   font?: FontFamily;
@@ -334,6 +335,11 @@ export interface Decorations {
 export interface LegendSpec {
   show: boolean;
   position: 'top' | 'right' | 'bottom' | 'left';
+  /**
+   * Per-chart type override for the legend's entries, the same escape hatch
+   * `AxisSpec.font` is. Unset falls through to the brand's `fonts.legend`.
+   */
+  font?: LabelFont;
 }
 
 /* ------------------------------------------------------------------ */
@@ -359,6 +365,8 @@ export interface ChartProvenance {
 export interface SpecBase {
   version: 1;
   title?: string;
+  /** Type override for the title alone; unset takes the brand's title role. */
+  titleFont?: LabelFont;
   /** Series palette override; unset falls through to the design system. */
   palette?: ColorRef[];
   numberFormat: NumberFormat;

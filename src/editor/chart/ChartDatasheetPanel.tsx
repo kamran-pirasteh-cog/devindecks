@@ -15,21 +15,15 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { compileChart } from '@/chart/compile';
-import { FitSlideView } from '@/render/FitSlideView';
-import {
-  chartOrientation,
-  setChartOrientation,
-  supportsOrientation,
-  type ChartInstance,
-  type ChartRef,
-} from '@/model';
+import type { ChartInstance, ChartRef, ChartSpec } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { SheetGrid } from '@/sheet/SheetGrid';
+import { chartDrift, restyleChart } from '@/charts/provenance';
+import { getChartTemplate } from '@/charts/repository';
 import { OVERLAY_Z } from '../layers';
 import { useChartDraft } from './useChartDraft';
 import { ChartPartOptions } from './ChartPartOptions';
-import { hitTestChart, rectOfPart } from './previewHitTest';
+import { ChartPreview } from './ChartPreview';
 import { DevinChartMenu } from './DevinChartMenu';
 
 const UI_KEY = 'devindesign.datasheet.ui.v6';
@@ -101,7 +95,13 @@ export function ChartDatasheetPanel({
 }) {
   const ds = useEditor((s) => s.designSystem);
   const slide = useEditor((s) => s.deck.slides.find((sl) => sl.id === s.currentSlideId));
+  const patchChart = useEditor((s) => s.patchChart);
   const { sheet, diagnostics, commit, live } = useChartDraft(chart);
+
+  const patch = useCallback(
+    (fn: (spec: ChartSpec) => void) => patchChart(chart.id, fn),
+    [chart.id, patchChart],
+  );
 
   const [box, setBox] = useState<PanelBox>(loadBox);
   // The panel portals into document.body, which doesn't exist while Next
@@ -190,54 +190,28 @@ export function ChartDatasheetPanel({
     [chart.frame.h, chart.frame.w],
   );
 
-  const previewSlide = useMemo(() => {
-    // Compiled at the origin rather than at the chart's place on the slide —
-    // placers lay out relative to the frame, so the geometry is identical and
-    // the preview has no slide margins to crop.
-    const { elements } = compileChart(
-      { ...chart, frame: { x: 0, y: 0, w: previewSize.w, h: previewSize.h } },
-      ds,
-    );
-    return { id: 'chart-preview', elements, background: slide?.background };
-  }, [chart, ds, previewSize, slide?.background]);
-
   /**
    * The part being formatted. Clicking the preview picks one; clicking an empty
    * corner of it drops back to the chart as a whole.
    */
   const [part, setPart] = useState<ChartRef | null>(null);
-  const previewRef = useRef<HTMLDivElement>(null);
 
-  const onPreviewClick = useCallback(
-    (e: React.MouseEvent) => {
-      const el = previewRef.current;
-      if (!el) return;
-      const box = el.getBoundingClientRect();
-      if (box.width < 1) return;
-      // Screen px back to the EMU the elements are laid out in — the preview is
-      // one uniform scale, so this is a single divide.
-      const perPx = previewSize.w / box.width;
-      const x = (e.clientX - box.left) * perPx;
-      const y = (e.clientY - box.top) * perPx;
-      // A few px of slop, in EMU: a tick label is a hairline tall and a click
-      // that has to be exact reads as a broken control.
-      setPart(hitTestChart(previewSlide.elements, x, y, 4 * perPx));
-    },
-    [previewSize.w, previewSlide.elements],
+  /**
+   * Has the template or the brand moved since this chart was made from it?
+   *
+   * Read from the repository rather than held in state: a template edited in
+   * Admin in another tab should show up here the next time the panel opens,
+   * and the panel is short-lived enough that this is the whole subscription.
+   */
+  const template = useMemo(() => {
+    const id = chart.spec.provenance?.templateId;
+    return id ? getChartTemplate(id) : null;
+  }, [chart.spec.provenance?.templateId]);
+
+  const drift = useMemo(
+    () => chartDrift(chart.spec, ds, template),
+    [chart.spec, ds, template],
   );
-
-  /** The ring drawn over whatever is selected, in fractions of the preview. */
-  const partBox = useMemo(() => {
-    if (!part) return null;
-    const rect = rectOfPart(previewSlide.elements, part);
-    if (!rect) return null;
-    return {
-      left: `${(rect.x / previewSize.w) * 100}%`,
-      top: `${(rect.y / previewSize.h) * 100}%`,
-      width: `${(rect.w / previewSize.w) * 100}%`,
-      height: `${(rect.h / previewSize.h) * 100}%`,
-    };
-  }, [part, previewSize.h, previewSize.w, previewSlide.elements]);
 
   if (!mounted) return null;
 
@@ -266,6 +240,29 @@ export function ChartDatasheetPanel({
         </span>
 
         <div className="ml-auto flex items-center gap-1" onPointerDown={(e) => e.stopPropagation()}>
+          {drift.templateStale || drift.styleStale ? (
+            <button
+              onClick={() =>
+                patch((s) =>
+                  Object.assign(
+                    s,
+                    // Structure and styling, never the numbers — see
+                    // `restyleChart`. Adopting the template is the point of the
+                    // button; the data is the one thing it must not rewrite.
+                    restyleChart(s, ds, template, { adoptTemplateSpec: drift.templateStale }),
+                  ),
+                )
+              }
+              title={
+                drift.templateStale
+                  ? `“${template?.name}” has been edited in Admin since this chart was made. Update it — your numbers are kept.`
+                  : 'The brand has been edited since this chart was made. Restyle it.'
+              }
+              className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
+            >
+              {drift.templateStale ? 'Template updated' : 'Brand updated'}
+            </button>
+          ) : null}
           <DevinChartMenu chart={chart} onApplied={onClose} />
           <button
             onClick={onClose}
@@ -279,7 +276,13 @@ export function ChartDatasheetPanel({
 
       {/* One row of options for whatever is selected in the preview — see
           `ChartPartOptions`. This used to be every chart setting at once. */}
-      <ChartPartOptions chart={chart} ds={ds} part={part} onClear={() => setPart(null)} />
+      <ChartPartOptions
+        spec={chart.spec}
+        ds={ds}
+        part={part}
+        patch={patch}
+        onClear={() => setPart(null)}
+      />
 
       <div className="flex min-h-0 flex-1">
         {/* The sheet takes the whole left side — a datasheet is judged by how
@@ -305,22 +308,17 @@ export function ChartDatasheetPanel({
           {/* Takes the chart's own shape, as wide as the column allows. Making
               the card fill the column instead would only add white around a
               chart that has to keep its proportions to be worth looking at. */}
-          <div
-            ref={previewRef}
-            onClick={onPreviewClick}
-            className="relative shrink-0 cursor-pointer overflow-hidden rounded bg-white ring-1 ring-black/10 dark:bg-zinc-900"
-          >
-            <FitSlideView slide={previewSlide} slideSize={previewSize} designSystem={ds} />
-            {partBox ? (
-              <span
-                // Purely an indicator: it must never eat the next click, which
-                // is usually on a neighbouring part.
-                className="pointer-events-none absolute rounded-sm ring-2 ring-indigo-500/70"
-                style={partBox}
-              />
-            ) : null}
-            <OrientationArrows chart={chart} />
-          </div>
+          <ChartPreview
+            spec={chart.spec}
+            ds={ds}
+            size={previewSize}
+            {...(chart.rotation === undefined ? {} : { rotation: chart.rotation })}
+            {...(slide?.background ? { background: slide.background } : {})}
+            part={part}
+            onPart={setPart}
+            patch={patch}
+            className="shrink-0 rounded ring-1 ring-black/10"
+          />
         </div>
       </div>
 
@@ -335,46 +333,5 @@ export function ChartDatasheetPanel({
       />
     </div>,
     document.body,
-  );
-}
-
-/**
- * Orientation, on the preview instead of in a dropdown.
- *
- * Turning bars on their side is a change you judge by looking at the chart, so
- * the control belongs on the chart: two arrows pointing the way the bars will
- * run. Absent entirely for the kinds that have no orientation to speak of — a
- * pie doesn't lie down.
- */
-function OrientationArrows({ chart }: { chart: ChartInstance }) {
-  const patchChart = useEditor((s) => s.patchChart);
-  if (!supportsOrientation(chart.spec.kind)) return null;
-
-  const current = chartOrientation(chart.spec);
-  const options: { value: 'vertical' | 'horizontal'; glyph: string; title: string }[] = [
-    { value: 'vertical', glyph: '↑', title: 'Bars run up' },
-    { value: 'horizontal', glyph: '→', title: 'Bars run across' },
-  ];
-
-  return (
-    <div className="absolute right-1.5 top-1.5 flex overflow-hidden rounded border border-black/10 bg-white/85 shadow-sm backdrop-blur dark:border-white/15 dark:bg-zinc-900/85">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          onClick={() =>
-            patchChart(chart.id, (s) => Object.assign(s, setChartOrientation(s, o.value)))
-          }
-          title={o.title}
-          aria-pressed={current === o.value}
-          className={`flex h-6 w-6 items-center justify-center text-[13px] leading-none ${
-            current === o.value
-              ? 'bg-zinc-900 text-white dark:bg-white dark:text-black'
-              : 'text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
-          }`}
-        >
-          {o.glyph}
-        </button>
-      ))}
-    </div>
   );
 }

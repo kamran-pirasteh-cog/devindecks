@@ -29,6 +29,12 @@ export interface ColumnBarInput {
   scale: LinearScale;
   theme: ChartTheme;
   measurer: TextMeasurer;
+  /**
+   * Restrict the bars to these series — a combo chart's column members. The
+   * series LIST stays whole so series indexes (and so colours and band slots)
+   * mean the same thing they do everywhere else; only the data is scoped.
+   */
+  onlySeries?: Set<string>;
 }
 
 /** 0..1 centres of each category, for the shared axis furniture. */
@@ -46,6 +52,16 @@ function bandFor(spec: ColumnBarSpec, derived: GridDerived) {
     gapWidthPct: spec.gapWidthPct,
     overlapPct: stacked ? 100 : spec.overlapPct,
   });
+}
+
+/** Drop the data of the series this placer was told to leave alone. */
+function scopeToSeries(input: ColumnBarInput): ColumnBarInput {
+  const only = input.onlySeries;
+  if (!only) return input;
+  return {
+    ...input,
+    derived: { ...input.derived, data: input.derived.data.filter((d) => only.has(d.seriesKey)) },
+  };
 }
 
 const overrideFor = (
@@ -80,7 +96,8 @@ function seriesColor(
   return theme.seriesColor(seriesIndex);
 }
 
-export function placeColumnBar(input: ColumnBarInput): Mark[] {
+export function placeColumnBar(rawInput: ColumnBarInput): Mark[] {
+  const input = scopeToSeries(rawInput);
   const { chartId, spec, derived, proj, theme } = input;
   const { horizontal } = proj;
   const band = bandFor(spec, derived);
@@ -332,7 +349,11 @@ function placeTotals(input: ColumnBarInput, band: ReturnType<typeof bandFor>): M
 
     return {
       kind: 'text' as const,
-      ref: { chartId, part: 'total' as const, point: derived.data[i * derived.series.length]?.pointKey ?? `c${i}` },
+      ref: {
+        chartId,
+        part: 'total' as const,
+        point: derived.data.find((d) => d.pointIndex === i)?.pointKey ?? `c${i}`,
+      },
       text,
       style,
       rect: horizontal

@@ -43,6 +43,7 @@ import { categoryCenters, placeColumnBar } from './place/columnBar';
 import { placeCartesianFurniture, projector, type LegendItem } from './place/cartesian';
 import {
   comboColumnBand,
+  comboUnstackedKeys,
   endLabelTexts,
   lineCategoryCenters,
   placeLineArea,
@@ -334,6 +335,7 @@ function compileCartesian(
     : deriveGrid(
         isGridSpec(spec) ? spec.data : { categories: [], series: [] },
         'stack' in spec ? spec.stack : 'clustered',
+        { unstacked: spec.kind === 'combo' ? comboUnstackedKeys(spec) : undefined },
       );
 
   if (!derived.series.length || !derived.categoryLabels.length) {
@@ -626,7 +628,7 @@ function placeBody(
           kind: 'column',
           data: { ...derived, categories: [], series: [] },
         } as unknown as ColumnBarSpec,
-        derived: { ...derived, series: derived.series.filter((s) => columnSet.has(s.key)) },
+        onlySeries: columnSet,
       });
       const lines = placeLineArea({
         ...common,

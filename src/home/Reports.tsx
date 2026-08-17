@@ -16,12 +16,12 @@ import {
   draftReport,
   duplicateReport,
   listReports,
+  markDataRefreshed,
   saveReport,
   seedIfFirstRun,
   setReportStatus,
 } from '@/reports/repository';
 import {
-  FREQUENCIES,
   STATUSES,
   nextRunAt,
   type Report,
@@ -171,7 +171,6 @@ export function Reports({
   const [scope, setScope] = useState<Scope>({ kind: 'all' });
   const [query, setQuery] = useState('');
   const [deckFilter, setDeckFilter] = useState('');
-  const [freqFilter, setFreqFilter] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [clientFilter, setClientFilter] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('next');
@@ -189,6 +188,9 @@ export function Reports({
   /** Raise a run and say where it went. Shared by "Run now" and "Send test". */
   const raise = (report: Report, kind: 'manual' | 'test') => {
     const run = createRun(report, kind, DEFAULT_OWNER);
+    // Raising a run is the moment the numbers get pulled, so the "as of" moves
+    // with it — including for a test, which reads the same live data.
+    markDataRefreshed(report.id);
     setToast(
       kind === 'test'
         ? `Test run of “${report.name}” sent to you.`
@@ -249,11 +251,10 @@ export function Reports({
   const hasUnowned = reports.some((r) => !r.owner?.trim());
   const hasUntagged = reports.some((r) => clientsOf(r).length === 0);
 
-  const hasFilters = Boolean(query || deckFilter || freqFilter || ownerFilter || clientFilter);
+  const hasFilters = Boolean(query || deckFilter || ownerFilter || clientFilter);
   const clearFilters = () => {
     setQuery('');
     setDeckFilter('');
-    setFreqFilter('');
     setOwnerFilter('');
     setClientFilter('');
   };
@@ -275,7 +276,6 @@ export function Reports({
     .filter((r) => {
       if (scope.kind === 'status' && r.status !== scope.status) return false;
       if (deckFilter && r.deckId !== deckFilter) return false;
-      if (freqFilter && r.frequency !== freqFilter) return false;
       if (ownerFilter === NO_OWNER) {
         if (r.owner?.trim()) return false;
       } else if (ownerFilter && r.owner?.trim() !== ownerFilter) return false;
@@ -396,19 +396,6 @@ export function Reports({
                       {d.title}
                     </option>
                   ))}
-              </ToolbarSelect>
-              <ToolbarSelect
-                label="Filter by frequency"
-                value={freqFilter}
-                onChange={setFreqFilter}
-                active={Boolean(freqFilter)}
-              >
-                <option value="">All frequencies</option>
-                {FREQUENCIES.map((f) => (
-                  <option key={f.value} value={f.value}>
-                    {f.label}
-                  </option>
-                ))}
               </ToolbarSelect>
               <ToolbarSelect
                 label="Filter by owner"
