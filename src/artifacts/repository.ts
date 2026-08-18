@@ -14,6 +14,7 @@
  * with the real blob store.
  */
 import { nanoid } from 'nanoid';
+import { SEED_ARTIFACTS } from './seed';
 
 export type ArtifactFolderId =
   | 'cognition-logos'
@@ -60,6 +61,13 @@ export const ACCEPT_ATTR = ACCEPTED.join(',');
 
 const KEY = 'devindesign.artifacts.v1';
 
+/**
+ * Set once the built-in brand marks have been folded into the store. It's what
+ * makes deleting a seeded logo stick — without it, every read would put back
+ * whatever the user just removed.
+ */
+const SEEDED_KEY = 'devindesign.artifacts.seeded.v1';
+
 /** A rejection with a message that's already fit to show the user. */
 export class ArtifactError extends Error {}
 
@@ -67,11 +75,37 @@ type ArtifactMap = Record<string, StoredArtifact>;
 
 function read(): ArtifactMap {
   if (typeof window === 'undefined') return {};
+  let map: ArtifactMap;
   try {
-    return JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as ArtifactMap;
+    map = JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as ArtifactMap;
   } catch {
-    return {};
+    map = {};
   }
+  return seedOnce(map);
+}
+
+/**
+ * Fold the built-in brand marks into the store the first time it's read on a
+ * given browser, then leave them alone forever: once they're ordinary rows,
+ * rename and delete work on them with no special-casing anywhere downstream.
+ *
+ * A failed write is deliberately swallowed rather than thrown. Seeding is a
+ * convenience, and the caller here is a plain read — a full store shouldn't
+ * turn browsing the library into an error. The marker stays unset, so the next
+ * read tries again once there's room.
+ */
+function seedOnce(map: ArtifactMap): ArtifactMap {
+  if (window.localStorage.getItem(SEEDED_KEY)) return map;
+  for (const artifact of SEED_ARTIFACTS) {
+    if (!map[artifact.id]) map[artifact.id] = artifact;
+  }
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify(map));
+    window.localStorage.setItem(SEEDED_KEY, '1');
+  } catch {
+    // Retried on the next read.
+  }
+  return map;
 }
 
 function write(map: ArtifactMap) {

@@ -67,11 +67,6 @@ export function Toolbar() {
   const toggleGuides = useEditor((s) => s.toggleGuides);
   const pageNumbers = useEditor((s) => showsPageNumbers(s.deck));
   const togglePageNumbers = useEditor((s) => s.togglePageNumbers);
-  const fitToMargins = useEditor((s) => s.fitToMargins);
-  const slideIsEmpty = useEditor(
-    (s) => !s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.elements.length,
-  );
-  const selCount = useEditor((s) => s.selectedIds.length);
   const togglePanel = useComments((s) => s.togglePanel);
   const panelOpen = useComments((s) => s.panelOpen);
   const openThreads = useComments((s) => s.threads.filter((t) => !t.resolved).length);
@@ -168,17 +163,6 @@ export function Toolbar() {
         title={showGuides ? 'Hide margin guides (⌘⇧G)' : 'Show margin guides (⌘⇧G)'}
       >
         <span className={showGuides ? 'text-sky-500' : undefined}>⊞</span>
-      </Btn>
-      <Btn
-        onClick={fitToMargins}
-        title={
-          selCount > 0
-            ? 'Pull the selection inside the margin guides'
-            : 'Pull all slide content inside the margin guides'
-        }
-        disabled={slideIsEmpty}
-      >
-        <span className="text-xs font-medium">Enforce margins</span>
       </Btn>
       <Btn
         onClick={togglePageNumbers}
