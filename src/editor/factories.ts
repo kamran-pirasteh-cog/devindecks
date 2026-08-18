@@ -11,6 +11,7 @@ import type {
   EMU,
   FontFamily,
   LineElement,
+  PictureElement,
   ShapeElement,
   ShapePreset,
   TextElement,
@@ -145,7 +146,7 @@ const LINE_HEIGHT = 1.25;
 /**
  * The slide's title, hung in the title band and typed from the brand's title
  * role — the one object whose position is a rule rather than a layout choice
- * (see `fitToMargins`), so it needs no drag to be right.
+ * (see `alignTitles`), so it needs no drag to be right.
  *
  * The run carries the styling but no text: the box is inserted straight into
  * edit mode, and typing into an empty paragraph inherits the first run's font,
@@ -196,6 +197,45 @@ export function makeShape(preset: ShapePreset): ShapeElement {
     preset,
     rect: { x: inchesToEmu(5.2), y: inchesToEmu(2.9), w: inchesToEmu(2.4), h: inchesToEmu(1.6) },
     fill: { kind: 'solid', color: token('brand.accent') },
+  };
+}
+
+/** The box a dropped picture is fitted inside, before centring. */
+const PICTURE_FIT = { w: inchesToEmu(4), h: inchesToEmu(3) };
+
+/**
+ * A picture placed centred on the slide, scaled to sit inside `PICTURE_FIT`
+ * with its aspect ratio intact.
+ *
+ * Aspect matters more here than it does for a shape: a picture with no `crop`
+ * is COVER-fit into its rect (see `PictureElement`), so a rect that doesn't
+ * match the source's proportions doesn't letterbox — it silently crops. Sizing
+ * from the intrinsic pixels is what keeps a wordmark whole. A source with no
+ * intrinsic size (an SVG with no width/height) falls back to the fit box.
+ */
+export function makePicture(
+  src: string,
+  intrinsic: { width: number; height: number },
+  slideSize: { w: EMU; h: EMU },
+): PictureElement {
+  const ratio =
+    intrinsic.width > 0 && intrinsic.height > 0 ? intrinsic.height / intrinsic.width : null;
+  let w = PICTURE_FIT.w;
+  let h = ratio === null ? PICTURE_FIT.h : Math.round(PICTURE_FIT.w * ratio);
+  if (h > PICTURE_FIT.h && ratio !== null) {
+    h = PICTURE_FIT.h;
+    w = Math.round(PICTURE_FIT.h / ratio);
+  }
+  return {
+    id: newId('picture'),
+    type: 'picture',
+    src,
+    rect: {
+      x: Math.round((slideSize.w - w) / 2),
+      y: Math.round((slideSize.h - h) / 2),
+      w,
+      h,
+    },
   };
 }
 
