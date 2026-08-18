@@ -12,12 +12,12 @@ import {
   removeDocTag,
   renameDoc,
   setDocFolder,
-  setDocOwner,
   suggestCopyTitle,
 } from '@/docs/repository';
 import type { DocFolder } from '@/docs/folders';
 import { Thumb } from './Thumb';
 import { ConfirmDialog } from './ConfirmDialog';
+import { clientColor } from './clientColor';
 
 function timeAgo(iso: string): string {
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -30,17 +30,24 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-type MenuView = 'main' | 'tag' | 'owner' | 'duplicate' | 'folder';
+type MenuView = 'main' | 'tag' | 'duplicate' | 'folder';
 
 export function DocCard({
   deck,
   onChange,
   /** Folders offered by "Move to folder"; omitted where there's no rail. */
   folders = [],
+  /**
+   * Slide preview on or off, from the dashboard's Thumbnails switch. Off leaves
+   * the card as its own header — title, tag, owner, dates — which is the dense
+   * list a long shelf of decks wants.
+   */
+  showThumb = true,
 }: {
   deck: Deck;
   onChange: () => void;
   folders?: DocFolder[];
+  showThumb?: boolean;
 }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -50,12 +57,10 @@ export function DocCard({
   const [title, setTitle] = useState(deck.title);
   const [copied, setCopied] = useState(false);
   const [tagInput, setTagInput] = useState('');
-  const [ownerInput, setOwnerInput] = useState(deck.owner ?? '');
   const [dupName, setDupName] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const tagInputRef = useRef<HTMLInputElement>(null);
-  const ownerInputRef = useRef<HTMLInputElement>(null);
   const dupInputRef = useRef<HTMLInputElement>(null);
 
   const tags = deck.tags ?? [];
@@ -81,13 +86,6 @@ export function DocCard({
 
   useEffect(() => {
     if (menuView === 'tag') tagInputRef.current?.focus();
-    if (menuView === 'owner') {
-      setOwnerInput(deck.owner ?? '');
-      requestAnimationFrame(() => {
-        ownerInputRef.current?.focus();
-        ownerInputRef.current?.select();
-      });
-    }
     if (menuView === 'duplicate') {
       setDupName(suggestCopyTitle(deck.title));
       requestAnimationFrame(() => {
@@ -131,16 +129,12 @@ export function DocCard({
     onChange();
   };
 
+  // Enter closes the menu: the tag is in, and the next thing you want is the
+  // grid — usually to search or filter by the client you just typed.
   const commitTag = () => {
-    if (tagInput.trim()) {
-      addDocTag(deck.id, tagInput);
-      setTagInput('');
-      onChange();
-    }
-  };
-
-  const commitOwner = () => {
-    setDocOwner(deck.id, ownerInput);
+    if (!tagInput.trim()) return;
+    addDocTag(deck.id, tagInput);
+    setTagInput('');
     setMenuOpen(false);
     setMenuView('main');
     onChange();
@@ -190,10 +184,7 @@ export function DocCard({
         menuOpen ? 'z-20' : ''
       }`}
     >
-      <div className="overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-        <Thumb deck={deck} />
-      </div>
-      <div className="px-3 py-2">
+      <div className="border-b border-zinc-100 px-3 py-2 dark:border-zinc-800">
         <div className="flex items-center justify-between">
           <div className="min-w-0">
             {renaming ? (
@@ -222,13 +213,28 @@ export function DocCard({
                     {tags.map((t) => (
                       <span
                         key={t}
-                        className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                        className={`rounded-full px-2 py-0.5 text-[11px] ${clientColor(t).pill}`}
                       >
                         {t}
                       </span>
                     ))}
                   </span>
-                ) : null}
+                ) : (
+                  // Untagged decks get the pill's slot as an affordance rather
+                  // than nothing: tagging is the common next thing to do with a
+                  // new deck, and it shouldn't need a trip through the ••• menu.
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(true);
+                      setMenuView('tag');
+                    }}
+                    title="Tag with client"
+                    className="shrink-0 rounded-full border border-dashed border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-600 dark:hover:border-zinc-500 dark:hover:text-zinc-300"
+                  >
+                    Tag +
+                  </button>
+                )}
               </div>
             )}
             <div className="mt-0.5 text-xs text-zinc-400">
@@ -278,12 +284,6 @@ export function DocCard({
                       Tag{tags.length ? ` (${tags.length})` : ''}
                     </button>
                     <button
-                      onClick={() => setMenuView('owner')}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                    >
-                      Set owner
-                    </button>
-                    <button
                       onClick={() => setMenuView('folder')}
                       className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
                     >
@@ -326,12 +326,14 @@ export function DocCard({
                         {tags.map((t) => (
                           <span
                             key={t}
-                            className="flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                            className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${
+                              clientColor(t).pill
+                            }`}
                           >
                             {t}
                             <button
                               onClick={() => removeTag(t)}
-                              className="text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-100"
+                              className={clientColor(t).remove}
                             >
                               ×
                             </button>
@@ -352,41 +354,6 @@ export function DocCard({
                       placeholder="Type a client name…"
                       className="w-full rounded border border-zinc-200 bg-white px-2 py-1 text-xs outline-none focus:border-indigo-300 dark:border-zinc-600 dark:bg-zinc-900"
                     />
-                  </div>
-                ) : menuView === 'owner' ? (
-                  <div className="px-3 py-2">
-                    <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
-                      <button
-                        onClick={() => setMenuView('main')}
-                        className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                        title="Back"
-                      >
-                        ←
-                      </button>
-                      Owner
-                    </div>
-                    <input
-                      ref={ownerInputRef}
-                      value={ownerInput}
-                      onChange={(e) => setOwnerInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          commitOwner();
-                        }
-                      }}
-                      placeholder="Who owns this document?"
-                      className="w-full rounded border border-zinc-200 bg-white px-2 py-1 text-xs outline-none focus:border-indigo-300 dark:border-zinc-600 dark:bg-zinc-900"
-                    />
-                    <button
-                      onClick={commitOwner}
-                      className="mt-2 w-full rounded bg-black px-2 py-1 text-xs font-medium text-white dark:bg-white dark:text-black"
-                    >
-                      Save owner
-                    </button>
-                    <div className="mt-1 text-[10px] text-zinc-400">
-                      Leave blank to clear the owner.
-                    </div>
                   </div>
                 ) : menuView === 'duplicate' ? (
                   <div className="px-3 py-2">
@@ -479,6 +446,12 @@ export function DocCard({
           </div>
         </div>
       </div>
+
+      {showThumb ? (
+        <div className="overflow-hidden rounded-b-lg [&>div]:!w-full">
+          <Thumb deck={deck} />
+        </div>
+      ) : null}
 
       {confirmDelete ? (
         <ConfirmDialog

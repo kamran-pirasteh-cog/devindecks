@@ -10,9 +10,9 @@
  * behind a panel that made it feel like a separate mode.
  */
 import { useEffect, useState } from 'react';
-import { SLIDE_LAYOUT_CATEGORIES, type SlideLayoutCategory } from '@/templates/registry';
 import {
   getLayoutSlide,
+  listFolders,
   listLayouts,
   seedLayoutsIfFirstRun,
   type StoredLayout,
@@ -138,7 +138,8 @@ export function TemplateDrawer() {
   const [tab, setTab] = useState<Tab>('templates');
   const [layouts, setLayouts] = useState<StoredLayout[]>([]);
   /** null = folder list; otherwise the folder whose layouts are shown. */
-  const [folder, setFolder] = useState<SlideLayoutCategory | null>(null);
+  const [folder, setFolder] = useState<string | null>(null);
+  const [folders, setFolders] = useState<string[]>([]);
   const slideSize = useEditor((s) => s.deck.slideSize);
   const insertSlides = useEditor((s) => s.insertSlides);
   const { width, startDrag } = useResizableWidth(220, 200, 400, 'left');
@@ -148,6 +149,7 @@ export function TemplateDrawer() {
   useEffect(() => {
     seedLayoutsIfFirstRun();
     setLayouts(listLayouts());
+    setFolders(listFolders());
   }, []);
 
   if (!open) {
@@ -205,7 +207,7 @@ export function TemplateDrawer() {
         {tab === 'templates' ? (
           folder === null ? (
             <div className="flex-1 overflow-y-auto p-2">
-              {SLIDE_LAYOUT_CATEGORIES.map((category) => {
+              {folders.map((category) => {
                 const count = layouts.filter((l) => l.category === category).length;
                 return (
                   <button

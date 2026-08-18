@@ -35,8 +35,10 @@ export function ShapeGeom({
 
   // Inset by half stroke so the outline isn't clipped by the viewBox edge.
   const s = strokeWidth / 2;
-  const iw = w - strokeWidth;
-  const ih = h - strokeWidth;
+  // Clamped: at thumbnail scale a shape can be thinner than its own stroke,
+  // and a negative width/height is invalid SVG.
+  const iw = Math.max(0, w - strokeWidth);
+  const ih = Math.max(0, h - strokeWidth);
 
   switch (preset) {
     case 'ellipse':

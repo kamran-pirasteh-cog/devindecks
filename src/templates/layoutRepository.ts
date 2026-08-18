@@ -15,11 +15,12 @@ import {
   LAYOUT_CATEGORY_MOVES,
   RETIRED_LAYOUT_IDS,
   SLIDE_LAYOUTS,
-  type SlideLayoutCategory,
+  SLIDE_LAYOUT_CATEGORIES,
 } from './registry';
 
 const KEY = 'devindesign.layouts.v1';
 const SEED_KEY = 'devindesign.layouts.seeded.v1';
+const FOLDERS_KEY = 'devindesign.layoutFolders.v1';
 
 /**
  * Bumping this re-seeds the built-in layouts. v2 replaced the four original
@@ -29,10 +30,16 @@ const SEED_KEY = 'devindesign.layouts.seeded.v1';
  */
 const LAYOUT_SEED_VERSION = 3;
 
+/**
+ * A folder is one of the built-in families or a name Admin typed, so this is
+ * just a string — `SlideLayoutCategory` stays the type for the built-in set.
+ */
+export type LayoutFolder = string;
+
 export interface StoredLayout {
   id: string;
   name: string;
-  category: SlideLayoutCategory;
+  category: LayoutFolder;
   slide: Slide;
   createdAt: string;
   updatedAt: string;
@@ -55,6 +62,48 @@ function write(map: LayoutMap) {
 }
 
 const now = () => new Date().toISOString();
+
+function readFolders(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(FOLDERS_KEY) ?? '[]') as unknown;
+    return Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Folders Admin created, alphabetically. Any folder a layout was filed under is
+ * included even if the folder record is gone, so no layout can end up homeless.
+ */
+export function listCustomFolders(): string[] {
+  const known = new Set(SLIDE_LAYOUT_CATEGORIES as string[]);
+  const out = new Set<string>();
+  for (const f of readFolders()) if (!known.has(f)) out.add(f);
+  for (const l of Object.values(read())) if (!known.has(l.category)) out.add(l.category);
+  return [...out].sort((a, b) => a.localeCompare(b));
+}
+
+/** Built-in families in authored order, then Admin's own folders. */
+export function listFolders(): string[] {
+  return [...SLIDE_LAYOUT_CATEGORIES, ...listCustomFolders()];
+}
+
+/**
+ * Create a folder, or return the existing one it collides with (matched
+ * case-insensitively, so "Case study" and "case study" stay one folder).
+ */
+export function addCustomFolder(name: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const existing = listFolders().find((f) => f.toLowerCase() === trimmed.toLowerCase());
+  if (existing) return existing;
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(FOLDERS_KEY, JSON.stringify([...readFolders(), trimmed]));
+  }
+  return trimmed;
+}
 
 /** Give a slide's elements fresh ids so inserting/duplicating never collides. */
 function freshIds(slide: Slide): Slide {
@@ -125,7 +174,7 @@ export function getLayoutSlide(id: string): Slide | null {
   return l ? freshIds(l.slide) : null;
 }
 
-export function createLayout(opts: { name: string; category: SlideLayoutCategory; slide?: Slide }): StoredLayout {
+export function createLayout(opts: { name: string; category: LayoutFolder; slide?: Slide }): StoredLayout {
   const map = read();
   const ts = now();
   const l: StoredLayout = {
@@ -178,7 +227,11 @@ export function duplicateLayout(id: string, name?: string): StoredLayout | null 
 }
 
 /** Seed a new layout from an uploaded reference image (a full-bleed picture, editable after). */
-export function createLayoutFromImage(dataUrl: string, name: string): StoredLayout {
+export function createLayoutFromImage(
+  dataUrl: string,
+  name: string,
+  category: LayoutFolder = 'Blank',
+): StoredLayout {
   const picture: PictureElement = {
     id: `picture-${nanoid(6)}`,
     type: 'picture',
@@ -187,7 +240,7 @@ export function createLayoutFromImage(dataUrl: string, name: string): StoredLayo
   };
   return createLayout({
     name,
-    category: 'Blank',
+    category,
     slide: { id: `s-${nanoid(8)}`, elements: [picture] },
   });
 }
