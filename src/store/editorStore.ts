@@ -76,6 +76,13 @@ import {
 import { clampLevel } from '@/render/bullets';
 import { applyFormat, extractFormat, type ElementFormat } from '@/editor/elementFormat';
 import { formatRange, locateRun } from '@/editor/textRange';
+import {
+  eyebrowElement,
+  eyebrowOrigin,
+  eyebrowSlotAction,
+  makeEyebrow,
+  titleYUnderEyebrow,
+} from '@/editor/eyebrow';
 
 export type AlignMode =
   | 'left'
@@ -85,9 +92,13 @@ export type AlignMode =
   | 'vcenter'
   | 'bottom';
 
-/** PowerPoint's "increase/decrease font size" buttons step through this preset list. */
+/**
+ * PowerPoint's "increase/decrease font size" buttons step through this preset
+ * list. 26 is ours rather than PowerPoint's — the size menu offers it, so the
+ * shortcut has to be able to land on it too.
+ */
 export const FONT_SIZE_STEPS = [
-  8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96,
+  8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 26, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96,
 ];
 
 function nextFontSize(current: number, dir: 'up' | 'down'): number {
@@ -104,6 +115,22 @@ const PASTE_STEP = inchesToEmu(0.1);
 
 /** A detached deep copy — the deck holds only plain JSON, so this is enough. */
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/**
+ * A detached, freshly identified copy of a slide — what a duplicate or a slide
+ * paste drops into the deck.
+ *
+ * Chart-owned element ids encode which chart and part they are, so they can't
+ * be randomized: `reidentifyCharts` regenerates them from a fresh chart id
+ * instead, and everything else re-keys as usual. Group ids are left alone —
+ * a group never spans slides, so a whole-slide copy carries a whole group.
+ */
+function freshSlideCopy(slide: Slide): Slide {
+  const copy: Slide = clone(slide);
+  copy.id = `s-${nanoid(8)}`;
+  copy.elements = copy.elements.map((e) => (e.chartRef ? e : { ...e, id: `${e.id}-${nanoid(4)}` }));
+  return reidentifyCharts(copy);
+}
 
 /**
  * What a cut or copy puts on the clipboard: detached copies, never live
@@ -158,6 +185,14 @@ interface EditorState {
    * change when the original does.
    */
   clipboard: ObjectClipboard | null;
+
+  /**
+   * Cut/copy buffer for whole slides, filled from the filmstrip. Separate from
+   * the object clipboard so a copied slide isn't lost the moment you copy a box
+   * on the canvas, and outside the deck for the same reason as both of the
+   * others — it survives undo and isn't autosaved.
+   */
+  slideClipboard: Slide[] | null;
 
   /**
    * Whether the margin guides are painted on the canvas. View state, not deck
@@ -215,6 +250,12 @@ interface EditorState {
    * arrive, select and undo together, not four presses of ⌘Z.
    */
   addElements: (els: SlideElement[]) => void;
+  /**
+   * Insert an eyebrow above this slide's title and leave the caret in it,
+   * nudging the title down to make room. One step: the mark, the type and the
+   * title's new position arrive and undo together.
+   */
+  insertEyebrow: () => void;
   updateElement: (id: string, patch: Partial<SlideElement>, transient?: boolean) => void;
   setRect: (id: string, rect: Rect, transient?: boolean) => void;
   /** Commit several boxes at once (a group transform) as ONE history step. */
@@ -332,6 +373,18 @@ interface EditorState {
   selectSlideRange: (id: string) => void;
   deleteSlides: (ids: string[]) => void;
   moveSlides: (ids: string[], beforeId: string | null) => void;
+  /** Add or drop one slide from the filmstrip selection (⌘-click). */
+  toggleSlideSelection: (id: string) => void;
+
+  // slide clipboard
+  /**
+   * Copy whole slides. Defaults to the filmstrip selection, falling back to the
+   * current slide, so ⌘C with one thumbnail focused does the obvious thing.
+   */
+  copySlides: (ids?: string[]) => void;
+  cutSlides: (ids?: string[]) => void;
+  /** Drop the buffered slides in after the current one and select them. */
+  pasteSlides: () => void;
 
   // history
   commit: () => void;
@@ -515,6 +568,7 @@ export const useEditor = create<EditorState>()(
     transientBase: null,
     formatClipboard: null,
     clipboard: null,
+    slideClipboard: null,
     showGuides: true,
     pendingFitId: null,
 
@@ -827,21 +881,15 @@ export const useEditor = create<EditorState>()(
 
     duplicateSlide(id) {
       get().commit();
-      const newSlideId = `s-${nanoid(8)}`;
       set((s) => {
         const idx = s.deck.slides.findIndex((sl) => sl.id === id);
         if (idx < 0) return;
-        const copy: Slide = JSON.parse(JSON.stringify(s.deck.slides[idx]));
-        copy.id = newSlideId;
-        // Chart-owned ids encode which chart and part they are, so they can't
-        // be randomized — `reidentifyCharts` regenerates them from a fresh
-        // chart id instead, and everything else re-keys as usual.
-        copy.elements = copy.elements.map((e) =>
-          e.chartRef ? e : { ...e, id: `${e.id}-${nanoid(4)}` },
-        );
-        s.deck.slides.splice(idx + 1, 0, reidentifyCharts(copy));
-        s.currentSlideId = newSlideId;
+        const copy = freshSlideCopy(s.deck.slides[idx]);
+        s.deck.slides.splice(idx + 1, 0, copy);
+        s.currentSlideId = copy.id;
         s.selectedIds = [];
+        s.selectedSlideIds = [copy.id];
+        s.slideSelectionAnchor = copy.id;
       });
     },
 
@@ -865,6 +913,69 @@ export const useEditor = create<EditorState>()(
         s.selectedIds = [];
         s.selectedSlideIds = [];
         s.slideSelectionAnchor = null;
+      });
+    },
+
+    toggleSlideSelection(id) {
+      set((s) => {
+        const current = s.selectedSlideIds.length ? s.selectedSlideIds : [s.currentSlideId];
+        const next = current.includes(id)
+          ? current.filter((sid) => sid !== id)
+          : [...current, id];
+        // Never leave the strip with nothing selected: ⌘-clicking the last
+        // remaining thumbnail keeps it, the way it stays put in Finder.
+        if (!next.length) return;
+        // Deck order, not click order — every consumer (copy, move, delete)
+        // wants the slides in the order they appear.
+        const order = s.deck.slides.map((sl) => sl.id);
+        s.selectedSlideIds = order.filter((sid) => next.includes(sid));
+        s.currentSlideId = next.includes(id) ? id : s.selectedSlideIds[0];
+        s.slideSelectionAnchor = id;
+        s.selectedIds = [];
+        s.editingId = null;
+        s.croppingId = null;
+      });
+    },
+
+    copySlides(ids) {
+      const { deck, selectedSlideIds, currentSlideId } = get();
+      const wanted = new Set(ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]));
+      // Deck order, so a multi-slide paste lands in the order it was taken.
+      const slides = deck.slides.filter((sl) => wanted.has(sl.id)).map(clone);
+      if (!slides.length) return;
+      set((s) => {
+        s.slideClipboard = slides;
+      });
+    },
+
+    cutSlides(ids) {
+      const { deck, selectedSlideIds, currentSlideId } = get();
+      const targets = ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]);
+      // A deck must keep a slide, and `deleteSlides` refuses to empty it — so
+      // refuse the copy too, rather than buffering a cut that never happened.
+      if (deck.slides.every((sl) => targets.includes(sl.id))) return;
+      const before = get().slideClipboard;
+      get().copySlides(targets);
+      if (get().slideClipboard === before) return;
+      get().deleteSlides(targets);
+    },
+
+    pasteSlides() {
+      const clip = get().slideClipboard;
+      if (!clip?.length) return;
+      get().commit();
+      // Fresh ids on every paste, so pasting the same buffer twice gives two
+      // independent slides rather than two views of one.
+      const copies = clip.map(freshSlideCopy);
+      set((s) => {
+        const idx = s.deck.slides.findIndex((sl) => sl.id === s.currentSlideId);
+        s.deck.slides.splice(idx + 1, 0, ...copies);
+        s.currentSlideId = copies[0].id;
+        s.selectedSlideIds = copies.map((sl) => sl.id);
+        s.slideSelectionAnchor = copies[0].id;
+        s.selectedIds = [];
+        s.editingId = null;
+        s.croppingId = null;
       });
     },
 
@@ -931,6 +1042,56 @@ export const useEditor = create<EditorState>()(
         // whatever built it, so there is nothing to shrink-wrap here.
         s.pendingFitId = null;
       });
+    },
+
+    /**
+     * The eyebrow command. Adding one is never JUST an insert — the line has to
+     * come from somewhere, so the title moves down out of its way — which is why
+     * this is an action rather than an `addElements` call from the toolbar.
+     *
+     * An empty eyebrow already sitting there is re-opened instead of duplicated,
+     * exactly as the empty title slot is (see `eyebrowSlotAction`).
+     */
+    insertEyebrow() {
+      const s = get();
+      const slide = slideById(s.deck, s.currentSlideId);
+      if (!slide) return;
+      const action = eyebrowSlotAction(slide.elements);
+      if (action === 'none') return;
+      if (action === 'edit') {
+        const existing = eyebrowElement(slide.elements);
+        if (existing) get().setEditing(existing.id);
+        return;
+      }
+
+      const els = makeEyebrow(
+        s.designSystem,
+        eyebrowOrigin(slide.elements),
+        slide.background,
+        undefined,
+        s.deck.slideSize,
+      );
+      const text = els.find((el) => el.type === 'text');
+      get().commit();
+      set((d) => {
+        const sl = slideById(d.deck, d.currentSlideId);
+        if (!sl) return;
+        sl.elements.push(...els);
+        for (const el of sl.elements) {
+          // Only a title still hanging in the band moves; one dragged lower on a
+          // section slide is already clear of the eyebrow and stays put.
+          if (el.type === 'text' && isTitleRole(el.role)) {
+            el.rect.y = titleYUnderEyebrow(d.designSystem, el.rect.y);
+          }
+        }
+        d.selectedIds = els.map((el) => el.id);
+        // Both boxes are sized by `makeEyebrow`; nothing to shrink-wrap.
+        d.pendingFitId = null;
+        d.deck.updatedAt = new Date(0).toISOString();
+      });
+      // Straight into typing — the click that asks for an eyebrow is followed by
+      // the words, not by hunting for the box.
+      if (text) get().setEditing(text.id);
     },
 
     updateElement(id, patch, transient = false) {

@@ -7,6 +7,12 @@
       "runtimeArgs": ["run", "dev"],
       "port": 3210,
       "autoPort": true
+    },
+    {
+      "name": "devindecks-kpe15",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "/Users/kamranpirasteh/devindecks", "run", "dev", "--", "-p", "3211"],
+      "port": 3211
     }
   ]
 }

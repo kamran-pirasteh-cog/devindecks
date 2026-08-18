@@ -336,6 +336,17 @@ function agreedOn<T extends string>(values: T[]): T | '' {
   return values.length && values.every((v) => v === values[0]) ? values[0] : '';
 }
 
+/**
+ * Whether an element reads as a text box — a text element, or a shape whose
+ * body carries text. An imported box with a fill lands as a shape rather than
+ * a text element, and a caption in a rounded rect is still a caption: either
+ * way the corner and border controls are noise next to the type controls.
+ */
+function isTextBoxLike(el: SlideElement): boolean {
+  if (el.type === 'text') return true;
+  return el.type === 'shape' && !!el.body?.paragraphs.length;
+}
+
 function outlineOf(el: SlideElement | undefined): Outline | undefined {
   if (!el || el.type === 'picture') return undefined;
   return 'outline' in el ? el.outline : undefined;
@@ -377,10 +388,10 @@ export function SelectionFormatBar({
   if (pictures.length === selected.length) {
     return <PictureFormatCluster pictures={pictures} />;
   }
-  // Shapes and lines only. A plain text box can take an outline, but it's a
-  // rare want and the color/weight/dash trio costs the bar a whole second row —
-  // the Inspector still has it.
-  const hasBorder = selected.some((e) => e.type !== 'picture' && e.type !== 'text');
+  // Shapes and lines only. A text box can take an outline, but it's a rare
+  // want and the color/weight/dash trio costs the bar a whole second row — the
+  // Inspector still has it.
+  const hasBorder = selected.some((e) => e.type !== 'picture' && !isTextBoxLike(e));
   if (!hasText && !hasFillable && !hasBorder) return null;
 
   const fillPrimary = selected.find((e) => e.type === 'text' || e.type === 'shape');
@@ -389,7 +400,9 @@ export function SelectionFormatBar({
   // needs to land on an integer percentage to match an <option>.
   const fillTransparencyPct =
     fill?.kind === 'solid' ? Math.round((1 - (fill.alpha ?? 1)) * 100) : 0;
-  const borderPrimary = selected.find((e) => e.type !== 'picture');
+  // The shape the border controls speak for, skipping the text boxes they no
+  // longer apply to.
+  const borderPrimary = selected.find((e) => e.type !== 'picture' && !isTextBoxLike(e));
   const outline = outlineOf(borderPrimary);
   // A line's outline is structural, so its color and weight can be changed but
   // never removed.
@@ -399,7 +412,7 @@ export function SelectionFormatBar({
   // the control and rounds whichever shapes can take it.
   const roundable = selected.filter(
     (e): e is Extract<SlideElement, { type: 'shape' }> =>
-      e.type === 'shape' && ROUNDABLE_PRESETS.includes(e.preset),
+      e.type === 'shape' && !isTextBoxLike(e) && ROUNDABLE_PRESETS.includes(e.preset),
   );
   const cornersRounded = roundable.length > 0 && roundable.every((e) => isRoundedPreset(e.preset));
 
