@@ -33,6 +33,7 @@ import {
   legendSeriesKey,
   supportsTurn,
   type ChartInstance,
+  showsPageNumbers,
 } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { legendBoxAt } from '@/store/chartActions';
@@ -1536,7 +1537,7 @@ export function EditorCanvas() {
             element: it isn't selectable, movable or deletable, and it re-reads
             the slide's index every render, so the deck renumbers as you add,
             delete and reorder slides. */}
-        {deck.pageNumbers ? (
+        {showsPageNumbers(deck) ? (
           <PageNumber
             index={deck.slides.findIndex((s) => s.id === slide.id)}
             count={deck.slides.length}

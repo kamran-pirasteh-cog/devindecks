@@ -3,6 +3,7 @@
 /** Slide navigator — thumbnails via the same SlideView renderer, scaled down. */
 import { useEffect, useRef, useState } from 'react';
 import { SlideView } from '@/render/SlideView';
+import { showsPageNumbers } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { useComments } from '@/store/commentStore';
 import { unresolvedCounts } from '@/comments/types';
@@ -25,6 +26,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
   const selectedSlideIds = useEditor((s) => s.selectedSlideIds);
   const setCurrentSlide = useEditor((s) => s.setCurrentSlide);
   const selectSlideRange = useEditor((s) => s.selectSlideRange);
+  const toggleSlideSelection = useEditor((s) => s.toggleSlideSelection);
   const addSlide = useEditor((s) => s.addSlide);
   const duplicateSlide = useEditor((s) => s.duplicateSlide);
   const deleteSlides = useEditor((s) => s.deleteSlides);
@@ -75,9 +77,13 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
           )}
         </div>
         {/* pt-1: the active thumbnail's ring and the drop indicator are drawn
-            outside the box, so the scroll container needs slack or they clip. */}
+            outside the box, so the scroll container needs slack or they clip.
+
+            data-slide-strip marks the keyboard's home for the clipboard chords:
+            ⌘X/⌘C/⌘V with focus in here act on slides, not on canvas objects. */}
         <div
           ref={listRef}
+          data-slide-strip={singleSlide ? undefined : ''}
           className="flex-1 space-y-2 overflow-y-auto px-3 pb-3 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           onKeyDown={(e) => {
             if (singleSlide) return;
@@ -149,6 +155,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                 <button
                   onClick={(e) => {
                     if (e.shiftKey) selectSlideRange(slide.id);
+                    else if (e.metaKey || e.ctrlKey) toggleSlideSelection(slide.id);
                     else setCurrentSlide(slide.id);
                   }}
                   style={{ aspectRatio: `${deck.slideSize.w} / ${deck.slideSize.h}` }}
@@ -167,7 +174,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                       designSystem={ds}
                       width={thumbWidth}
                       page={
-                        deck.pageNumbers ? { index: i, count: deck.slides.length } : undefined
+                        showsPageNumbers(deck) ? { index: i, count: deck.slides.length } : undefined
                       }
                     />
                   )}

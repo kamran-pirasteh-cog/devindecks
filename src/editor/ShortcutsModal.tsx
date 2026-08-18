@@ -41,6 +41,11 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: [MOD, 'Y'], label: 'Redo', note: `or ${MOD}⇧Z` },
       { keys: [MOD, 'A'], label: 'Select everything on the slide' },
       { keys: [MOD, 'M'], label: 'New slide', note: 'after the current one' },
+      {
+        keys: [MOD, '⇧', 'E'],
+        label: 'Add an eyebrow above the title',
+        note: 'nudges the title down',
+      },
       { keys: ['Delete'], label: 'Delete selection' },
       { keys: ['Esc'], label: 'Clear selection', note: 'exits text editing first' },
       { keys: ['Double-click'], label: 'Edit text in place' },
@@ -115,6 +120,10 @@ const buildGroups = (MOD: string): Group[] => [
     title: 'Slides panel',
     items: [
       { keys: ['⇧', 'Click'], label: 'Select a range of slides' },
+      { keys: [MOD, 'Click'], label: 'Add or remove one slide from the selection' },
+      { keys: [MOD, 'C'], label: 'Copy the selected slides' },
+      { keys: [MOD, 'X'], label: 'Cut the selected slides' },
+      { keys: [MOD, 'V'], label: 'Paste slides', note: 'after the current one' },
       { keys: ['Delete'], label: 'Delete selected slides' },
       { keys: ['Drag'], label: 'Reorder slides' },
     ],

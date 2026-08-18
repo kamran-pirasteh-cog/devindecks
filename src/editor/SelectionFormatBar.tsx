@@ -284,11 +284,67 @@ const ANCHORS: { value: VerticalAnchor; label: string }[] = [
 ];
 
 /**
+ * Space before/after a paragraph, in points — PowerPoint's own ladder. The gap
+ * a blank line would give at body size is roughly 12–18pt, so the useful range
+ * sits well under a full line.
+ */
+const PARA_SPACING_PT = [0, 3, 6, 9, 12, 18, 24, 36];
+
+/**
+ * One end of the paragraph-spacing pair. `value` is points as a string, or ''
+ * when the selection disagrees; an off-ladder value (imported from a deck) is
+ * spliced in rather than snapped, same as the font-size menu.
+ */
+function ParaSpacingSelect({
+  label,
+  value,
+  prefix,
+  onPick,
+}: {
+  label: string;
+  value: string;
+  /** Arrow glyph marking which side of the paragraph this is. */
+  prefix: string;
+  onPick: (pt: number) => void;
+}) {
+  const current = parseFloat(value);
+  const options = [...new Set([...PARA_SPACING_PT, ...(Number.isFinite(current) ? [current] : [])])]
+    .sort((a, b) => a - b);
+  return (
+    <select
+      value={value}
+      onChange={(e) => onPick(parseFloat(e.target.value))}
+      aria-label={label}
+      title={label}
+      className={FIELD_CLASS}
+    >
+      {value === '' ? <option value="">Mixed</option> : null}
+      {options.map((pt) => (
+        <option key={pt} value={pt}>
+          {prefix} {pt}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
  * The one value a set of boxes shares, or '' when they disagree — the empty
  * string is what a `<select>` needs to land on its "Mixed" placeholder.
  */
 function agreedOn<T extends string>(values: T[]): T | '' {
   return values.length && values.every((v) => v === values[0]) ? values[0] : '';
+}
+
+/**
+ * Whether an element reads as a text box — a text element, or a shape whose
+ * body carries text. An imported box with a fill lands as a shape rather than
+ * a text element, and a caption in a rounded rect is still a caption: either
+ * way the corner and border controls are noise next to the type controls.
+ */
+function isTextBoxLike(el: SlideElement): boolean {
+  if (el.type === 'text') return true;
+  return el.type === 'shape' && !!el.body?.paragraphs.length;
 }
 
 function outlineOf(el: SlideElement | undefined): Outline | undefined {
@@ -332,10 +388,10 @@ export function SelectionFormatBar({
   if (pictures.length === selected.length) {
     return <PictureFormatCluster pictures={pictures} />;
   }
-  // Shapes and lines only. A plain text box can take an outline, but it's a
-  // rare want and the color/weight/dash trio costs the bar a whole second row —
-  // the Inspector still has it.
-  const hasBorder = selected.some((e) => e.type !== 'picture' && e.type !== 'text');
+  // Shapes and lines only. A text box can take an outline, but it's a rare
+  // want and the color/weight/dash trio costs the bar a whole second row — the
+  // Inspector still has it.
+  const hasBorder = selected.some((e) => e.type !== 'picture' && !isTextBoxLike(e));
   if (!hasText && !hasFillable && !hasBorder) return null;
 
   const fillPrimary = selected.find((e) => e.type === 'text' || e.type === 'shape');
@@ -344,7 +400,9 @@ export function SelectionFormatBar({
   // needs to land on an integer percentage to match an <option>.
   const fillTransparencyPct =
     fill?.kind === 'solid' ? Math.round((1 - (fill.alpha ?? 1)) * 100) : 0;
-  const borderPrimary = selected.find((e) => e.type !== 'picture');
+  // The shape the border controls speak for, skipping the text boxes they no
+  // longer apply to.
+  const borderPrimary = selected.find((e) => e.type !== 'picture' && !isTextBoxLike(e));
   const outline = outlineOf(borderPrimary);
   // A line's outline is structural, so its color and weight can be changed but
   // never removed.
@@ -354,7 +412,7 @@ export function SelectionFormatBar({
   // the control and rounds whichever shapes can take it.
   const roundable = selected.filter(
     (e): e is Extract<SlideElement, { type: 'shape' }> =>
-      e.type === 'shape' && ROUNDABLE_PRESETS.includes(e.preset),
+      e.type === 'shape' && !isTextBoxLike(e) && ROUNDABLE_PRESETS.includes(e.preset),
   );
   const cornersRounded = roundable.length > 0 && roundable.every((e) => isRoundedPreset(e.preset));
 
@@ -379,6 +437,10 @@ export function SelectionFormatBar({
   const allParagraphs = textBodies.flatMap((b) => b.paragraphs);
   const paraAlign = agreedOn(allParagraphs.map((p) => p.align ?? 'left'));
   const anchor = agreedOn(textBodies.map((b) => b.anchor ?? 'top'));
+  // Points as strings, so the same "every box agrees" rule (and the '' the
+  // Mixed placeholder needs) covers the numeric fields too.
+  const spaceBeforePt = agreedOn(allParagraphs.map((p) => String(p.spaceBeforePt ?? 0)));
+  const spaceAfterPt = agreedOn(allParagraphs.map((p) => String(p.spaceAfterPt ?? 0)));
 
   /** Border edits patch whatever outline exists, falling back to a real one. */
   const patchOutline = (patch: Partial<Outline>) =>
@@ -508,6 +570,24 @@ export function SelectionFormatBar({
                 </option>
               ))}
             </select>
+          </Group>
+          {/* Paragraph spacing, the gap above and below each paragraph. Two
+              dropdowns rather than one "spacing" number: PowerPoint's before
+              and after are separate properties, and a list usually wants the
+              gap only after each item. */}
+          <Group label="Spacing">
+            <ParaSpacingSelect
+              label="Space before paragraph"
+              value={spaceBeforePt}
+              prefix="↑"
+              onPick={(pt) => store().patchParagraphs(selectedIds, { spaceBeforePt: pt })}
+            />
+            <ParaSpacingSelect
+              label="Space after paragraph"
+              value={spaceAfterPt}
+              prefix="↓"
+              onPick={(pt) => store().patchParagraphs(selectedIds, { spaceAfterPt: pt })}
+            />
           </Group>
           <Group label="Text">
             <ColorPicker

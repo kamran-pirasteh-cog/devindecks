@@ -201,6 +201,9 @@ export function Editor({
       const textEdge = textAlignEdge(e);
       const restack = reorderDirection(e);
       const clip = clipboardAction(e);
+      /** Focus sits on a filmstrip thumbnail — see the clipboard branch below. */
+      const inSlideStrip =
+        e.target instanceof HTMLElement && !!e.target.closest('[data-slide-strip]');
 
       const slide = s.currentSlide();
       // Every selected box the character shortcuts can act on. A group arrives
@@ -235,6 +238,14 @@ export function Editor({
         e.preventDefault();
         if (painter === 'copy') s.copyFormat();
         else s.pasteFormat();
+      } else if (clip && inSlideStrip && (clip === 'paste' ? s.slideClipboard : true)) {
+        // The filmstrip owns the chord whenever the keyboard is in it — a
+        // thumbnail keeps focus after the click that selected the slide — so
+        // ⌘C there copies whole slides rather than whatever is on the canvas.
+        e.preventDefault();
+        if (clip === 'cut') s.cutSlides();
+        else if (clip === 'copy') s.copySlides();
+        else s.pasteSlides();
       } else if (clip && (clip === 'paste' ? s.clipboard : s.selectedIds.length)) {
         // Left unhandled when there's nothing to act on, so ⌘V with an empty
         // clipboard still reaches the browser rather than being swallowed here.
@@ -347,6 +358,12 @@ export function Editor({
       } else if (mod && key === 'u' && primaryBody) {
         e.preventDefault();
         s.patchRuns(s.selectedIds, { underline: !firstRun?.underline });
+      } else if (mod && e.shiftKey && !e.altKey && (e.code === 'KeyE' || key === 'e')) {
+        // Ahead of ⌘E (align centre), which doesn't rule ⇧ out. Needs no
+        // selection: an eyebrow belongs to the slide's title, not to whatever
+        // happens to be picked.
+        e.preventDefault();
+        s.insertEyebrow();
       } else if (mod && key === 'e' && primaryBody) {
         e.preventDefault();
         s.patchParagraphs(s.selectedIds, { align: 'center' });

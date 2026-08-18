@@ -1,9 +1,18 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { inchesToEmu, type Deck, type ShapeElement } from '@/model';
+import {
+  DEFAULT_DESIGN_SYSTEM,
+  defaultChartSpec,
+  inchesToEmu,
+  type Deck,
+  type ShapeElement,
+  type Slide,
+} from '@/model';
 import { DEFAULT_MARGINS } from '@/model/layout';
+import { insertChartInto } from './chartActions';
 import { loadDeck, useEditor } from './editorStore';
 
 const SIZE = { w: 12_192_000, h: 6_858_000 };
+const CHART_FRAME = { x: inchesToEmu(4), y: inchesToEmu(2), w: inchesToEmu(6), h: inchesToEmu(4) };
 const RECT = { x: inchesToEmu(4), y: inchesToEmu(3), w: inchesToEmu(2), h: inchesToEmu(1) };
 
 function shape(id: string, over: Partial<ShapeElement['rect']> = {}): ShapeElement {
@@ -46,6 +55,30 @@ describe('align, one object selected', () => {
     expect(rectOf('e1').y).toBe(DEFAULT_MARGINS.contentTop);
   });
 
+  it('walks on up to the title top guide and then the slide top', () => {
+    s().align('top');
+    expect(rectOf('e1').y).toBe(DEFAULT_MARGINS.contentTop);
+    s().align('top');
+    expect(rectOf('e1').y).toBe(DEFAULT_MARGINS.top);
+    s().align('top');
+    expect(rectOf('e1').y).toBe(0);
+    s().align('top'); // nothing further up — stops dead
+    expect(rectOf('e1').y).toBe(0);
+  });
+
+  it('takes the top margin guide going up, rather than dropping to content-top', () => {
+    // Sitting between the two top guides, ⌘↑ must go UP to the nearer one. The
+    // content-top guide is below it, and a press on the up arrow that moves the
+    // object down reads as a bug however "canonical" that guide is.
+    const mid = Math.round((DEFAULT_MARGINS.top + DEFAULT_MARGINS.contentTop) / 2);
+    loadDeck(deck([shape('e1', { y: mid })]));
+    s().select(['e1']);
+    s().align('top');
+    expect(rectOf('e1').y).toBe(DEFAULT_MARGINS.top);
+    s().align('top');
+    expect(rectOf('e1').y).toBe(0);
+  });
+
   it('snaps bottom to the bottom margin guide', () => {
     s().align('bottom');
     const r = rectOf('e1');
@@ -60,15 +93,18 @@ describe('align, one object selected', () => {
     expect(r.y + r.h / 2).toBe(SIZE.h / 2);
   });
 
-  it('lands in one press from outside the guide, and stays put on a second', () => {
+  it('lands on the guide in one press from outside it', () => {
     // Overhanging the left guide: the old walk parked it on the guide's far
-    // side first. One press now, and the second is a no-op — not another step.
+    // side first. One press now — the guide itself, not an intermediate stop.
     loadDeck(deck([shape('e1', { x: -inchesToEmu(1) })]));
     s().select(['e1']);
     s().align('left');
     expect(rectOf('e1').x).toBe(DEFAULT_MARGINS.left);
+    // …and only then does it carry on to the slide edge.
     s().align('left');
-    expect(rectOf('e1').x).toBe(DEFAULT_MARGINS.left);
+    expect(rectOf('e1').x).toBe(0);
+    s().align('left');
+    expect(rectOf('e1').x).toBe(0);
   });
 });
 
@@ -83,5 +119,40 @@ describe('align, several objects selected', () => {
     s().align('left');
     expect(rectOf('e1').x).toBe(DEFAULT_MARGINS.left);
     expect(rectOf('e2').x).toBe(DEFAULT_MARGINS.left);
+  });
+});
+
+describe('align, a chart selected', () => {
+  /** A chart's parts are one group, so a click on it selects all of them. */
+  function withChart() {
+    const slide: Slide = { id: 's1', elements: [] };
+    insertChartInto(slide, defaultChartSpec('column'), CHART_FRAME, DEFAULT_DESIGN_SYSTEM);
+    loadDeck({ ...deck([]), slides: [slide] });
+    const ids = s().deck.slides[0].elements.filter((e) => e.chartRef).map((e) => e.id);
+    s().select(ids);
+    return ids;
+  }
+  const frame = () => s().deck.slides[0].charts![0].frame;
+
+  it('carries the chart FRAME along with its parts', () => {
+    // The elements are only a rendering of the frame: a frame left behind puts
+    // the chart back where it was the moment anything recompiles it.
+    const ids = withChart();
+    const partX = () => Math.min(...s().deck.slides[0].elements.filter((e) => ids.includes(e.id)).map((e) => e.rect.x));
+    const before = { frame: frame().x, part: partX() };
+    s().align('left');
+    expect(frame().x - before.frame).toBe(partX() - before.part);
+    expect(frame().x).toBeLessThan(before.frame);
+  });
+
+  it('moves it as ONE unit, not part by part', () => {
+    const ids = withChart();
+    const spread = () => {
+      const rects = s().deck.slides[0].elements.filter((e) => ids.includes(e.id)).map((e) => e.rect);
+      return Math.max(...rects.map((r) => r.x)) - Math.min(...rects.map((r) => r.x));
+    };
+    const before = spread();
+    s().align('left');
+    expect(spread()).toBe(before);
   });
 });

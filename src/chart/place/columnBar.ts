@@ -20,6 +20,7 @@ import { stackTops } from '../derive/grid';
 import { formatNumber } from '../format/number';
 import type { Projector } from './cartesian';
 import { textStyle } from './cartesian';
+import { labelRole, labelSpecFor } from './labelSpec';
 
 export interface ColumnBarInput {
   chartId: string;
@@ -71,15 +72,17 @@ const overrideFor = (
 ): PointOverride | undefined => derived.series[seriesIndex]?.pointOverrides?.[pointKey];
 
 /** Spec default < series override < point override. Most specific wins. */
-function labelSpecFor(
+function labelFor(
   chartDefault: LabelSpec,
   derived: GridDerived,
   seriesIndex: number,
   pointKey: string,
 ): LabelSpec {
-  const series = derived.series[seriesIndex];
-  const point = overrideFor(derived, seriesIndex, pointKey);
-  return { ...chartDefault, ...(series?.labels ?? {}), ...(point?.label ?? {}) };
+  return labelSpecFor(
+    chartDefault,
+    derived.series[seriesIndex]?.labels,
+    overrideFor(derived, seriesIndex, pointKey)?.label,
+  );
 }
 
 function seriesColor(
@@ -165,7 +168,7 @@ function placeDataLabels(
     const point = overrideFor(derived, d.seriesIndex, d.pointKey);
     if (point?.hidden) continue;
 
-    const label = labelSpecFor(chartDefault, derived, d.seriesIndex, d.pointKey);
+    const label = labelFor(chartDefault, derived, d.seriesIndex, d.pointKey);
     if (!label.show) continue;
 
     const text = labelText(label, d, spec, peers);
@@ -180,8 +183,7 @@ function placeDataLabels(
 
     const style = textStyle(
       {
-        ...theme.text.dataLabel,
-        ...(label.font ?? {}),
+        ...labelRole(theme, label.font),
         // An author's explicit colour always wins. Otherwise a label drawn on
         // top of a mark takes its ink from that mark, which is what keeps a
         // number legible on a saturated fill instead of near-black on indigo.

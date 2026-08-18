@@ -7,7 +7,7 @@
  * filmstrip use — so the HTML/PDF output matches the on-screen WYSIWYG exactly.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { emuToInches, type Deck, type DesignSystem } from '@/model';
+import { emuToInches, showsPageNumbers, type Deck, type DesignSystem } from '@/model';
 import { SlideView } from '@/render/SlideView';
 
 // All three allowed families (see src/model/fonts.ts) are Google Fonts; load
@@ -39,7 +39,7 @@ function renderSlides(deck: Deck, ds: DesignSystem, widthPx: number, className: 
             slideSize={deck.slideSize}
             designSystem={ds}
             width={widthPx}
-            page={deck.pageNumbers ? { index: i, count: deck.slides.length } : undefined}
+            page={showsPageNumbers(deck) ? { index: i, count: deck.slides.length } : undefined}
           />,
         )}</section>`,
     )

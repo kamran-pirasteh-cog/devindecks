@@ -16,8 +16,7 @@ import { ShortcutsModal } from './ShortcutsModal';
 import { ChartPopover } from './ChartPopover';
 import { ImportSlidesDialog } from './ImportSlidesDialog';
 import { OVERLAY_Z } from './layers';
-import { FIT_TO_MARGINS_BUTTON } from '@/flags';
-import type { ShapePreset } from '@/model';
+import { showsPageNumbers, type ShapePreset } from '@/model';
 
 const SHAPES: { preset: ShapePreset; label: string }[] = [{ preset: 'rect', label: '▭' }];
 
@@ -63,9 +62,10 @@ const Divider = () => <div className="mx-1 h-5 w-px bg-zinc-200 dark:bg-zinc-700
 
 export function Toolbar() {
   const addElement = useEditor((s) => s.addElement);
+  const insertEyebrow = useEditor((s) => s.insertEyebrow);
   const showGuides = useEditor((s) => s.showGuides);
   const toggleGuides = useEditor((s) => s.toggleGuides);
-  const pageNumbers = useEditor((s) => !!s.deck.pageNumbers);
+  const pageNumbers = useEditor((s) => showsPageNumbers(s.deck));
   const togglePageNumbers = useEditor((s) => s.togglePageNumbers);
   const fitToMargins = useEditor((s) => s.fitToMargins);
   const slideIsEmpty = useEditor(
@@ -130,6 +130,14 @@ export function Toolbar() {
           <CalloutPopover onClose={() => setShowCallout(false)} anchorRef={calloutAnchorRef} />
         ) : null}
       </div>
+      <Btn onClick={insertEyebrow} title="Add eyebrow above the title (⌘⇧E)">
+        {/* The feature itself, in miniature: the accent square, then the line
+            of type it introduces. */}
+        <span className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 bg-blue-600" />
+          <span className="h-0.5 w-3 rounded-full bg-current opacity-60" />
+        </span>
+      </Btn>
       <div ref={textAnchorRef} className="relative flex">
         <Btn onClick={() => setShowText((v) => !v)} title="Add text">
           <span className="font-serif">T</span>
@@ -161,19 +169,17 @@ export function Toolbar() {
       >
         <span className={showGuides ? 'text-sky-500' : undefined}>⊞</span>
       </Btn>
-      {FIT_TO_MARGINS_BUTTON ? (
-        <Btn
-          onClick={fitToMargins}
-          title={
-            selCount > 0
-              ? 'Fit selection inside margin guides'
-              : 'Fit slide content inside margin guides'
-          }
-          disabled={slideIsEmpty}
-        >
-          ⊡
-        </Btn>
-      ) : null}
+      <Btn
+        onClick={fitToMargins}
+        title={
+          selCount > 0
+            ? 'Pull the selection inside the margin guides'
+            : 'Pull all slide content inside the margin guides'
+        }
+        disabled={slideIsEmpty}
+      >
+        <span className="text-xs font-medium">Enforce margins</span>
+      </Btn>
       <Btn
         onClick={togglePageNumbers}
         title={pageNumbers ? 'Remove page numbers' : 'Add page numbers to all slides'}

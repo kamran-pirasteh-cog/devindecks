@@ -11,7 +11,7 @@ import type { TextMeasurer } from '@/render/measureText';
 import { lineHeightEmu } from '@/render/measureText';
 import type { LinearScale } from '../scale/linear';
 import { bandScale } from '../scale/band';
-import type { ChartTheme } from '../theme';
+import { fontOver, type ChartTheme } from '../theme';
 import type { Mark } from '../mark';
 import { rectFromEdges } from '../mark';
 import type { GridDerived } from '../derive/grid';
@@ -19,6 +19,7 @@ import { areaPath, linePath, type Point } from '../geom/path';
 import { shadeOf } from '../color';
 import { formatSet } from '../format/number';
 import type { Projector } from './cartesian';
+import { labelSpecFor } from './labelSpec';
 import { textStyle } from './cartesian';
 
 export type LineLikeSpec = LineSpec | AreaSpec | ComboSpec;
@@ -329,12 +330,17 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
       const last = [...tops].reverse().find((p): p is Point => p !== null);
       if (last) {
         const role = look.emphasized ? theme.text.endLabelEmphasis : theme.text.endLabel;
-        // A per-series size beats the brand's. On a line chart the end label IS
+        // A per-series font beats the brand's. On a line chart the end label IS
         // the data label, so "make this series' numbers bigger" has to reach
-        // here or the control writes to the spec and nothing moves.
-        const sizePt = s.labels?.font?.sizePt ?? role.sizePt;
+        // here or the control writes to the spec and nothing moves. The series
+        // is also where selecting a single end label writes, since 'end' is not
+        // one of the chart's categories — see `labelHomeFor`.
+        const font = labelSpecFor(spec.decorations.labels, s.labels).font;
         const style = {
-          ...textStyle({ ...role, sizePt, color }, 'left', 'middle'),
+          // The line's own colour is the default: the label names the line, and
+          // matching it is what lets the reader skip the legend. An explicit
+          // colour still wins.
+          ...textStyle({ ...role, ...fontOver(font), color: font?.color ?? color }, 'left', 'middle'),
           wrap: false,
         };
         const text = endLabels[si] ?? s.name;

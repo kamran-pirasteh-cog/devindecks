@@ -34,6 +34,7 @@ import {
   type SlideElement,
   type TextBody,
   type TextElement,
+  showsPageNumbers,
 } from '@/model';
 import { bulletGlyph } from '@/render/bullets';
 
@@ -329,7 +330,7 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
         }
       }
     }
-    if (deck.pageNumbers) addPageNumber(slide, deck, slideIndex, ds);
+    if (showsPageNumbers(deck)) addPageNumber(slide, deck, slideIndex, ds);
   });
 
   return pptx;

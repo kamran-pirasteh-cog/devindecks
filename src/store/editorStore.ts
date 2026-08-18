@@ -49,6 +49,7 @@ import {
   type SlideElement,
   type TextRun,
   type VerticalAnchor,
+  showsPageNumbers,
 } from '@/model';
 import { compileChart } from '@/chart/compile';
 import { snapQuarterTurn } from '@/chart/turn';
@@ -75,6 +76,13 @@ import {
 import { clampLevel } from '@/render/bullets';
 import { applyFormat, extractFormat, type ElementFormat } from '@/editor/elementFormat';
 import { formatRange, locateRun } from '@/editor/textRange';
+import {
+  eyebrowElement,
+  eyebrowOrigin,
+  eyebrowSlotAction,
+  makeEyebrow,
+  titleYUnderEyebrow,
+} from '@/editor/eyebrow';
 
 export type AlignMode =
   | 'left'
@@ -84,9 +92,13 @@ export type AlignMode =
   | 'vcenter'
   | 'bottom';
 
-/** PowerPoint's "increase/decrease font size" buttons step through this preset list. */
+/**
+ * PowerPoint's "increase/decrease font size" buttons step through this preset
+ * list. 26 is ours rather than PowerPoint's — the size menu offers it, so the
+ * shortcut has to be able to land on it too.
+ */
 export const FONT_SIZE_STEPS = [
-  8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96,
+  8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 26, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96,
 ];
 
 function nextFontSize(current: number, dir: 'up' | 'down'): number {
@@ -103,6 +115,22 @@ const PASTE_STEP = inchesToEmu(0.1);
 
 /** A detached deep copy — the deck holds only plain JSON, so this is enough. */
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/**
+ * A detached, freshly identified copy of a slide — what a duplicate or a slide
+ * paste drops into the deck.
+ *
+ * Chart-owned element ids encode which chart and part they are, so they can't
+ * be randomized: `reidentifyCharts` regenerates them from a fresh chart id
+ * instead, and everything else re-keys as usual. Group ids are left alone —
+ * a group never spans slides, so a whole-slide copy carries a whole group.
+ */
+function freshSlideCopy(slide: Slide): Slide {
+  const copy: Slide = clone(slide);
+  copy.id = `s-${nanoid(8)}`;
+  copy.elements = copy.elements.map((e) => (e.chartRef ? e : { ...e, id: `${e.id}-${nanoid(4)}` }));
+  return reidentifyCharts(copy);
+}
 
 /**
  * What a cut or copy puts on the clipboard: detached copies, never live
@@ -157,6 +185,14 @@ interface EditorState {
    * change when the original does.
    */
   clipboard: ObjectClipboard | null;
+
+  /**
+   * Cut/copy buffer for whole slides, filled from the filmstrip. Separate from
+   * the object clipboard so a copied slide isn't lost the moment you copy a box
+   * on the canvas, and outside the deck for the same reason as both of the
+   * others — it survives undo and isn't autosaved.
+   */
+  slideClipboard: Slide[] | null;
 
   /**
    * Whether the margin guides are painted on the canvas. View state, not deck
@@ -214,6 +250,12 @@ interface EditorState {
    * arrive, select and undo together, not four presses of ⌘Z.
    */
   addElements: (els: SlideElement[]) => void;
+  /**
+   * Insert an eyebrow above this slide's title and leave the caret in it,
+   * nudging the title down to make room. One step: the mark, the type and the
+   * title's new position arrive and undo together.
+   */
+  insertEyebrow: () => void;
   updateElement: (id: string, patch: Partial<SlideElement>, transient?: boolean) => void;
   setRect: (id: string, rect: Rect, transient?: boolean) => void;
   /** Commit several boxes at once (a group transform) as ONE history step. */
@@ -331,6 +373,18 @@ interface EditorState {
   selectSlideRange: (id: string) => void;
   deleteSlides: (ids: string[]) => void;
   moveSlides: (ids: string[], beforeId: string | null) => void;
+  /** Add or drop one slide from the filmstrip selection (⌘-click). */
+  toggleSlideSelection: (id: string) => void;
+
+  // slide clipboard
+  /**
+   * Copy whole slides. Defaults to the filmstrip selection, falling back to the
+   * current slide, so ⌘C with one thumbnail focused does the obvious thing.
+   */
+  copySlides: (ids?: string[]) => void;
+  cutSlides: (ids?: string[]) => void;
+  /** Drop the buffered slides in after the current one and select them. */
+  pasteSlides: () => void;
 
   // history
   commit: () => void;
@@ -462,18 +516,40 @@ function unitBoxes(state: EditorState, ids: string[]) {
     .filter((b): b is { ids: string[]; r: NonNullable<typeof b.r> } => !!b.r);
 }
 
-/** Translate whole units — every member of a group moves by the same delta. */
+/**
+ * Translate whole units — every member of a group moves by the same delta.
+ *
+ * A chart is one such unit (its parts share a group), and its FRAME has to
+ * travel with them: the elements are only a rendering of the frame, so a chart
+ * left behind by its frame snaps back to where it was the moment anything
+ * recompiles it. This is the same move the drag and nudge paths make — see
+ * `translateChartFrames`. Only a chart whose every part is in the shift counts:
+ * aligning a lone bar is a part-level edit, and dragging the whole chart after
+ * it would be wrong.
+ */
 const shiftUnits =
   (shifts: { ids: string[]; dx: number; dy: number }[]) => (s: EditorState) => {
     const slide = slideById(s.deck, s.currentSlideId);
     if (!slide) return;
     for (const { ids, dx, dy } of shifts) {
       if (!dx && !dy) continue;
+      const moving = new Set(ids);
+      const whole = chartsForElements(slide, ids)
+        .filter((c) =>
+          slide.elements.every((e) => e.chartRef?.chartId !== c.id || moving.has(e.id)),
+        )
+        .map((c) => c.id);
       for (const el of slide.elements) {
         if (!ids.includes(el.id)) continue;
         el.rect.x += dx;
         el.rect.y += dy;
       }
+      translateChartFrames(
+        slide,
+        slide.elements.filter((e) => whole.includes(e.chartRef?.chartId ?? '')).map((e) => e.id),
+        dx,
+        dy,
+      );
     }
   };
 
@@ -492,6 +568,7 @@ export const useEditor = create<EditorState>()(
     transientBase: null,
     formatClipboard: null,
     clipboard: null,
+    slideClipboard: null,
     showGuides: true,
     pendingFitId: null,
 
@@ -627,11 +704,15 @@ export const useEditor = create<EditorState>()(
      * slides, because the numbers are derived at render time from each slide's
      * index (see `model/pageNumbers.ts`). That's what keeps them correct
      * through every insert, delete and reorder without a renumbering pass.
+     *
+     * Written against `showsPageNumbers`, not the raw flag: unset means on, so
+     * `!s.deck.pageNumbers` would turn a fresh deck's numbers "on" while they
+     * were already showing, and the first click would look like a no-op.
      */
     togglePageNumbers() {
       get().commit();
       set((s) => {
-        s.deck.pageNumbers = !s.deck.pageNumbers;
+        s.deck.pageNumbers = !showsPageNumbers(s.deck);
       });
     },
 
@@ -800,21 +881,15 @@ export const useEditor = create<EditorState>()(
 
     duplicateSlide(id) {
       get().commit();
-      const newSlideId = `s-${nanoid(8)}`;
       set((s) => {
         const idx = s.deck.slides.findIndex((sl) => sl.id === id);
         if (idx < 0) return;
-        const copy: Slide = JSON.parse(JSON.stringify(s.deck.slides[idx]));
-        copy.id = newSlideId;
-        // Chart-owned ids encode which chart and part they are, so they can't
-        // be randomized — `reidentifyCharts` regenerates them from a fresh
-        // chart id instead, and everything else re-keys as usual.
-        copy.elements = copy.elements.map((e) =>
-          e.chartRef ? e : { ...e, id: `${e.id}-${nanoid(4)}` },
-        );
-        s.deck.slides.splice(idx + 1, 0, reidentifyCharts(copy));
-        s.currentSlideId = newSlideId;
+        const copy = freshSlideCopy(s.deck.slides[idx]);
+        s.deck.slides.splice(idx + 1, 0, copy);
+        s.currentSlideId = copy.id;
         s.selectedIds = [];
+        s.selectedSlideIds = [copy.id];
+        s.slideSelectionAnchor = copy.id;
       });
     },
 
@@ -838,6 +913,69 @@ export const useEditor = create<EditorState>()(
         s.selectedIds = [];
         s.selectedSlideIds = [];
         s.slideSelectionAnchor = null;
+      });
+    },
+
+    toggleSlideSelection(id) {
+      set((s) => {
+        const current = s.selectedSlideIds.length ? s.selectedSlideIds : [s.currentSlideId];
+        const next = current.includes(id)
+          ? current.filter((sid) => sid !== id)
+          : [...current, id];
+        // Never leave the strip with nothing selected: ⌘-clicking the last
+        // remaining thumbnail keeps it, the way it stays put in Finder.
+        if (!next.length) return;
+        // Deck order, not click order — every consumer (copy, move, delete)
+        // wants the slides in the order they appear.
+        const order = s.deck.slides.map((sl) => sl.id);
+        s.selectedSlideIds = order.filter((sid) => next.includes(sid));
+        s.currentSlideId = next.includes(id) ? id : s.selectedSlideIds[0];
+        s.slideSelectionAnchor = id;
+        s.selectedIds = [];
+        s.editingId = null;
+        s.croppingId = null;
+      });
+    },
+
+    copySlides(ids) {
+      const { deck, selectedSlideIds, currentSlideId } = get();
+      const wanted = new Set(ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]));
+      // Deck order, so a multi-slide paste lands in the order it was taken.
+      const slides = deck.slides.filter((sl) => wanted.has(sl.id)).map(clone);
+      if (!slides.length) return;
+      set((s) => {
+        s.slideClipboard = slides;
+      });
+    },
+
+    cutSlides(ids) {
+      const { deck, selectedSlideIds, currentSlideId } = get();
+      const targets = ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]);
+      // A deck must keep a slide, and `deleteSlides` refuses to empty it — so
+      // refuse the copy too, rather than buffering a cut that never happened.
+      if (deck.slides.every((sl) => targets.includes(sl.id))) return;
+      const before = get().slideClipboard;
+      get().copySlides(targets);
+      if (get().slideClipboard === before) return;
+      get().deleteSlides(targets);
+    },
+
+    pasteSlides() {
+      const clip = get().slideClipboard;
+      if (!clip?.length) return;
+      get().commit();
+      // Fresh ids on every paste, so pasting the same buffer twice gives two
+      // independent slides rather than two views of one.
+      const copies = clip.map(freshSlideCopy);
+      set((s) => {
+        const idx = s.deck.slides.findIndex((sl) => sl.id === s.currentSlideId);
+        s.deck.slides.splice(idx + 1, 0, ...copies);
+        s.currentSlideId = copies[0].id;
+        s.selectedSlideIds = copies.map((sl) => sl.id);
+        s.slideSelectionAnchor = copies[0].id;
+        s.selectedIds = [];
+        s.editingId = null;
+        s.croppingId = null;
       });
     },
 
@@ -904,6 +1042,56 @@ export const useEditor = create<EditorState>()(
         // whatever built it, so there is nothing to shrink-wrap here.
         s.pendingFitId = null;
       });
+    },
+
+    /**
+     * The eyebrow command. Adding one is never JUST an insert — the line has to
+     * come from somewhere, so the title moves down out of its way — which is why
+     * this is an action rather than an `addElements` call from the toolbar.
+     *
+     * An empty eyebrow already sitting there is re-opened instead of duplicated,
+     * exactly as the empty title slot is (see `eyebrowSlotAction`).
+     */
+    insertEyebrow() {
+      const s = get();
+      const slide = slideById(s.deck, s.currentSlideId);
+      if (!slide) return;
+      const action = eyebrowSlotAction(slide.elements);
+      if (action === 'none') return;
+      if (action === 'edit') {
+        const existing = eyebrowElement(slide.elements);
+        if (existing) get().setEditing(existing.id);
+        return;
+      }
+
+      const els = makeEyebrow(
+        s.designSystem,
+        eyebrowOrigin(slide.elements),
+        slide.background,
+        undefined,
+        s.deck.slideSize,
+      );
+      const text = els.find((el) => el.type === 'text');
+      get().commit();
+      set((d) => {
+        const sl = slideById(d.deck, d.currentSlideId);
+        if (!sl) return;
+        sl.elements.push(...els);
+        for (const el of sl.elements) {
+          // Only a title still hanging in the band moves; one dragged lower on a
+          // section slide is already clear of the eyebrow and stays put.
+          if (el.type === 'text' && isTitleRole(el.role)) {
+            el.rect.y = titleYUnderEyebrow(d.designSystem, el.rect.y);
+          }
+        }
+        d.selectedIds = els.map((el) => el.id);
+        // Both boxes are sized by `makeEyebrow`; nothing to shrink-wrap.
+        d.pendingFitId = null;
+        d.deck.updatedAt = new Date(0).toISOString();
+      });
+      // Straight into typing — the click that asks for an eyebrow is followed by
+      // the words, not by hunting for the box.
+      if (text) get().setEditing(text.id);
     },
 
     updateElement(id, patch, transient = false) {
@@ -1419,15 +1607,21 @@ export const useEditor = create<EditorState>()(
      * bodily to the edge, exactly as PowerPoint treats it. For a selection with
      * no groups in it this is the old element-wise behaviour unchanged.
      *
-     * ONE unit selected is the simple case, and it does the simple thing: the
-     * object lands ON the named guide in a single press — left/right guides,
-     * the bottom guide, the content-top guide below the title band for top, and
-     * the paper's own middle for the two centre modes. No walk, no escalation:
-     * with nothing to align TO, "align left" can only mean the left margin, and
-     * a chord that parked the object somewhere else first reads as a bug.
+     * ONE unit selected, the edge modes walk exactly as several do: the mode
+     * names a DIRECTION OF TRAVEL and each press takes the next line that way,
+     * so ⌘↑ on a body box mid-slide goes content-top guide → the title band's
+     * own top guide → the top of the slide, and stops there. Every guide on the
+     * way is a stop, including the top margin — a press never travels back
+     * against the arrow to reach the "canonical" guide for the mode, because
+     * ⌘↑ moving an object DOWN reads as a bug.
      *
-     * With SEVERAL units the edge modes ESCALATE: the mode names a DIRECTION OF
-     * TRAVEL, and each
+     * The ONE exception is having nothing that way at all, which is what an
+     * object overhanging the paper has: there the press lands it ON the guide
+     * the mode names — left/right guides, the bottom guide, the content-top
+     * guide below the title band for top — pulling it back onto the frame.
+     * The centre modes don't walk; with one unit they centre on the paper.
+     *
+     * With SEVERAL units, each
      * press slides the selection to the next line it meets going that way.
      *
      *   1. objects not yet flush → line them up on their own outermost edge
@@ -1457,27 +1651,15 @@ export const useEditor = create<EditorState>()(
       /** Half a point — under this two edges are the same edge to any eye. */
       const EPS = EMU_PER_POINT / 2;
 
-      // One unit: land it on the guide the button names, in one press.
-      if (boxes.length === 1) {
+      // One unit, centre mode: the selection's own span is the object itself, so
+      // "centre" can only mean the paper's middle.
+      if (boxes.length === 1 && (mode === 'hcenter' || mode === 'vcenter')) {
         const { ids, r } = boxes[0];
         const { w: sw, h: sh } = s.deck.slideSize;
-        const g = marginGuides(s.deck.slideSize);
-        const [left, right] = g.vertical;
-        // horizontal[1] is the content-top guide — the dotted line under the
-        // title band, which is where "align top" belongs: hanging body content
-        // off the paper's top margin would put it inside the title.
-        const [, contentTop, bottom] = g.horizontal;
-        const horizontal = mode === 'left' || mode === 'right' || mode === 'hcenter';
-        const d =
-          mode === 'left' ? left - r.x
-          : mode === 'right' ? right - (r.x + r.w)
-          : mode === 'hcenter' ? sw / 2 - r.w / 2 - r.x
-          : mode === 'top' ? contentTop - r.y
-          : mode === 'bottom' ? bottom - (r.y + r.h)
-          : sh / 2 - r.h / 2 - r.y; // vcenter
+        const d = mode === 'hcenter' ? sw / 2 - r.w / 2 - r.x : sh / 2 - r.h / 2 - r.y;
         if (Math.abs(d) <= EPS) return; // already there — no undo step for a no-op
         get().commit();
-        set(shiftUnits([horizontal ? { ids, dx: d, dy: 0 } : { ids, dx: 0, dy: d }]));
+        set(shiftUnits([mode === 'hcenter' ? { ids, dx: d, dy: 0 } : { ids, dx: 0, dy: d }]));
         return;
       }
 
@@ -1554,7 +1736,33 @@ export const useEditor = create<EditorState>()(
         if (!oversized && (lo + d < -EPS || hi + d > size + EPS)) continue;
         if (best === null || Math.abs(d) < Math.abs(best)) best = d;
       }
-      if (best === null) return; // nothing further that way — stay put
+      if (best === null) {
+        // Nothing further that way. With several units that is the end of the
+        // walk, and with one resting on the slide edge it is too — it stops dead
+        // rather than cycling back inward.
+        //
+        // The exception is a single object hanging OFF the paper on that side:
+        // there is no line out there to travel to, so the press pulls it back
+        // ONTO the guide the mode names instead of doing nothing.
+        if (boxes.length !== 1) return;
+        const overhangs = dir < 0 ? lo < -EPS : hi > size + EPS;
+        if (!overhangs) return;
+        const { ids, r } = boxes[0];
+        const [left, right] = guides.vertical;
+        // horizontal[1] is the content-top guide, the dotted line under the
+        // title band: that is where a body box belongs, since hanging it off the
+        // paper's top margin would put it inside the title.
+        const [, contentTop, bottom] = guides.horizontal;
+        const d =
+          mode === 'left' ? left - r.x
+          : mode === 'right' ? right - (r.x + r.w)
+          : mode === 'top' ? contentTop - r.y
+          : bottom - (r.y + r.h);
+        if (Math.abs(d) <= EPS) return; // already there — no undo step for a no-op
+        get().commit();
+        set(shiftUnits([horizontal ? { ids, dx: d, dy: 0 } : { ids, dx: 0, dy: d }]));
+        return;
+      }
 
       get().commit();
       set(shiftUnits(shift(best)));
