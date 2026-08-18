@@ -22,7 +22,7 @@ import {
 import { getFolder, listFolders, type DocFolder } from '@/docs/folders';
 import { FolderRail, type FolderScope } from './FolderRail';
 import { DocCard } from './DocCard';
-import { FolderTiles } from './FolderTiles';
+import { DocTable } from './DocTable';
 import { NewDocModal } from './NewDocModal';
 import { Reports } from './Reports';
 import { DeletedItems } from './DeletedItems';
@@ -439,7 +439,17 @@ export function Home() {
 
         {/* Hidden rather than unmounted, so a search/filter survives a trip
             through Reports and back. */}
-        <section className={tab === 'documents' ? 'flex items-start gap-6' : 'hidden'}>
+        {/* Two panes, the way a file explorer is laid out: folders on the left,
+            the documents in the selected one on the right, with a rule between
+            them so they read as separate halves rather than a sidebar floating
+            beside the content. `items-stretch` + a min height keep the divider
+            running the full pane rather than stopping at whichever column
+            happens to be shorter. */}
+        <section
+          className={
+            tab === 'documents' ? 'flex min-h-[70vh] items-stretch' : 'hidden'
+          }
+        >
           {/* The rail is a place, not a filter, so it stays put as you search —
               and it stays visible inside Deleted, which is one of its rows. */}
           <FolderRail
@@ -455,7 +465,7 @@ export function Home() {
             onFoldersChange={refreshDocs}
           />
 
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 pl-6">
           {/* Says where you are, as a path rather than a bare heading: inside a
               folder the first crumb is the way back out, which is the one
               control an explorer is expected to have and the rail alone doesn't
@@ -571,15 +581,6 @@ export function Home() {
           ) : (
             <>
 
-          {scope.kind === 'all' && !hasFilters ? (
-            <FolderTiles
-              folders={folders}
-              counts={folderCounts}
-              onOpen={(id) => setScope({ kind: 'folder', id })}
-              onFileDoc={fileDoc}
-            />
-          ) : null}
-
             {/* "All documents" keeps meaning ALL of them, folders included — the
                 tiles above are a way in, not a filter, and a root that hid
                 filed documents would contradict the rail row they're both named
@@ -604,22 +605,20 @@ export function Home() {
                   ? 'No documents yet.'
                   : 'This folder is empty. Drag a document onto it, or use “Move to folder”.'}
             </div>
-          ) : (
+          ) : showThumbs ? (
             // Now the grid is full-bleed, the column COUNT is what should grow
             // with the window, not the card width: auto-fill keeps every card
             // near 280px and just fits more of them across, at any width, with
             // no breakpoints to keep in sync.
             <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
               {filteredDocs.map((deck) => (
-                <DocCard
-                  key={deck.id}
-                  deck={deck}
-                  onChange={refreshDocs}
-                  folders={folders}
-                  showThumb={showThumbs}
-                />
+                <DocCard key={deck.id} deck={deck} onChange={refreshDocs} folders={folders} />
               ))}
             </div>
+          ) : (
+            // Previews off means the file-explorer list: same documents, same
+            // sort, one row each.
+            <DocTable docs={filteredDocs} folders={folders} onChange={refreshDocs} />
           )}
             </>
           )}
