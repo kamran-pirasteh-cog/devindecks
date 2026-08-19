@@ -70,3 +70,52 @@ export const runWeight = (run: { weight?: number; bold?: boolean }): number =>
 export const ALLOWED_FONTS = Object.keys(FONTS) as FontFamily[];
 
 export const isAllowedFont = (f: string): f is FontFamily => f in FONTS;
+
+/**
+ * What the font dropdowns offer: the families, plus the one named WEIGHT that
+ * earns its own entry — Geist Medium.
+ *
+ * A face and a family aren't the same thing, and the model is right to carry
+ * only families (weight is a run attribute, which is what survives the .pptx
+ * and Slides round-trip — see `TextRun.weight`). But Medium is the weight the
+ * deck's own type ladder actually uses, and it was only reachable from the text
+ * INSERTER: text already on a slide could be Regular or Bold and nothing in
+ * between. Listing it here means picking it is one choice, not "set the family,
+ * then find the weight".
+ *
+ * Note it exports as Regular in .pptx — OOXML carries no Medium — the same
+ * caveat that already applies to text inserted as Geist Medium.
+ */
+export interface FontChoice {
+  /** Stable value for a <select>; the family name for the plain entries. */
+  id: string;
+  label: string;
+  family: FontFamily;
+  weight: number;
+}
+
+export const FONT_CHOICES: FontChoice[] = [
+  { id: 'Geist', label: 'Geist', family: 'Geist', weight: 400 },
+  { id: 'Geist Medium', label: 'Geist Medium', family: 'Geist', weight: 500 },
+  { id: 'Geist Mono', label: 'Geist Mono', family: 'Geist Mono', weight: 400 },
+  { id: 'Source Serif 4', label: 'Source Serif 4', family: 'Source Serif 4', weight: 400 },
+];
+
+/**
+ * Which entry a run is sitting on. Bold is deliberately ignored: it's a
+ * separate toggle, so a bolded Geist run still reads as "Geist" rather than
+ * dropping the dropdown onto something the B button would have to fight.
+ */
+export function fontChoiceIdOf(run: { font?: string; weight?: number } | undefined, fallback: FontFamily): string {
+  const family = (run?.font ?? fallback) as FontFamily;
+  const match = FONT_CHOICES.find((c) => c.family === family && c.weight === (run?.weight ?? 400));
+  return match?.id ?? family;
+}
+
+/** The patch a dropdown selection makes — family AND weight, together. */
+export function fontChoicePatch(id: string): { font: FontFamily; weight: number } {
+  const choice = FONT_CHOICES.find((c) => c.id === id);
+  return choice
+    ? { font: choice.family, weight: choice.weight }
+    : { font: id as FontFamily, weight: 400 };
+}

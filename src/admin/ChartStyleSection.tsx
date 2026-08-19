@@ -53,7 +53,11 @@ export function ChartStyleSection({
     const size = { w: SLIDE_16x9.w, h: SLIDE_16x9.h };
     const half = Math.round(size.w / 2) - inchesToEmu(0.6);
     const build = (kind: 'column' | 'line', x: number) => {
-      const spec = defaultChartSpec(kind, 'stacked');
+      // Built from the style being edited, not from the house defaults: legend,
+      // data labels, gaps and number format are pinned onto a spec at creation
+      // and beat the design system afterwards, so a preview built without them
+      // can't show what those four controls do.
+      const spec = defaultChartSpec(kind, 'stacked', style);
       spec.title = kind === 'column' ? 'Stacked column' : 'Line';
       return compileChart(
         {
@@ -73,7 +77,7 @@ export function ChartStyleSection({
         ...build('line', Math.round(size.w / 2) + inchesToEmu(0.2)),
       ],
     };
-  }, [ds]);
+  }, [ds, style]);
 
   const setFormat = (which: keyof ChartStyle['numberFormats'], fn: (f: NumberFormat) => void) =>
     patch((s) => fn(s.numberFormats[which]));

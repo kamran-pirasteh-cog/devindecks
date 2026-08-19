@@ -4,7 +4,7 @@
  * Homepage / dashboard: your documents, plus a "New" button that opens the
  * picker (browse templates · start from a prior doc · blank).
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { type Deck } from '@/model';
 import {
@@ -37,8 +37,6 @@ import {
   type DocSort,
   type SortBy,
 } from './sortDocs';
-
-type Tab = 'documents' | 'reports';
 
 /** Sentinel for the "documents with no owner set" filter option. */
 const NO_OWNER = '\u0000none';
@@ -147,82 +145,18 @@ function ToolbarSelect({
 }
 
 /**
- * Header "New" button: one control, with the two things you can create behind
- * a dropdown. (It used to be two side-by-side buttons; a single verb reads
- * cleaner and leaves room for more document kinds later.)
+ * Header "New" button. It used to open a menu (deck · report); with reporting
+ * not yet built there is one thing to create, so the button just does it —
+ * a one-item dropdown is a click that asks a question with a single answer.
  */
-function NewMenu({ onNewDeck, onNewReport }: { onNewDeck: () => void; onNewReport: () => void }) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      // Stop here: the page-level Escape would otherwise clear the filters
-      // behind an open menu.
-      e.stopPropagation();
-      setOpen(false);
-    };
-    window.addEventListener('mousedown', onDown);
-    window.addEventListener('keydown', onKey, true);
-    return () => {
-      window.removeEventListener('mousedown', onDown);
-      window.removeEventListener('keydown', onKey, true);
-    };
-  }, [open]);
-
-  const choose = (run: () => void) => {
-    setOpen(false);
-    run();
-  };
-
+function NewButton({ onNewDeck }: { onNewDeck: () => void }) {
   return (
-    <div className="relative" ref={menuRef}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="flex items-center gap-1.5 rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
-      >
-        New
-        <svg viewBox="0 0 12 12" aria-hidden className="h-3 w-3">
-          <path
-            d="M3 4.75 6 7.75 9 4.75"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
-
-      {open ? (
-        <div
-          role="menu"
-          className="absolute right-0 top-9 z-20 w-40 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
-        >
-          <button
-            role="menuitem"
-            onClick={() => choose(onNewDeck)}
-            className="block w-full px-3 py-2 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-          >
-            New deck
-          </button>
-          <button
-            role="menuitem"
-            onClick={() => choose(onNewReport)}
-            className="block w-full px-3 py-2 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-          >
-            New report
-          </button>
-        </div>
-      ) : null}
-    </div>
+    <button
+      onClick={onNewDeck}
+      className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+    >
+      New
+    </button>
   );
 }
 
@@ -231,10 +165,8 @@ export function Home() {
   const [docs, setDocs] = useState<Deck[]>([]);
   const [folders, setFolders] = useState<DocFolder[]>([]);
   const [folderCounts, setFolderCounts] = useState<Record<string, number>>({});
-  // Documents/Reports are local state, but the query string seeds it so both
-  // the tab (`?tab=reports`, how Admin links back to Reports) and the folder
-  // (`?folder=`, how the editor's header crumb links back here) are
-  // addressable from another route.
+  // The folder (`?folder=`, how the editor's header crumb links back here) is
+  // seeded from the query string, so it's addressable from another route.
   const searchParams = useSearchParams();
   const [scope, setScope] = useState<FolderScope>({ kind: 'all' });
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -251,9 +183,6 @@ export function Home() {
   // seeding state from it directly would hydrate a different grid than the
   // markup says.
   const [showThumbs, setShowThumbs] = useState(true);
-  const [tab, setTab] = useState<Tab>(
-    searchParams.get('tab') === 'reports' ? 'reports' : 'documents',
-  );
   const [deleted, setDeleted] = useState<Deck[]>([]);
   // The rail's "Deleted" row swaps the grid for the recycle bin — it's one of
   // the places documents can be, so it lives with the folders rather than as a
@@ -358,7 +287,7 @@ export function Home() {
   // the search box. Skipped while the new-document modal or the bin is up, so
   // it doesn't fight whatever Escape means there.
   useEffect(() => {
-    if (modal || showTrash || tab !== 'documents' || !hasFilters) return;
+    if (modal || showTrash || !hasFilters) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       e.preventDefault();
@@ -366,7 +295,7 @@ export function Home() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [modal, showTrash, tab, hasFilters]);
+  }, [modal, showTrash, hasFilters]);
 
   const hasUnowned = docs.some((d) => !d.owner);
   const hasUntagged = docs.some((d) => !(d.tags ?? []).length);
@@ -411,67 +340,30 @@ export function Home() {
             />
             <span className="text-xl font-semibold tracking-tight">Decks</span>
           </div>
-          <div className="flex items-center gap-2">
-            <NewMenu
-              onNewDeck={() => setModal(true)}
-              onNewReport={() => {
-                // Leaving the bin behind: coming back to Documents should show
-                // documents, not whatever was in Deleted.
-                if (showTrash) setScope({ kind: 'all' });
-                setTab('reports');
-                window.history.replaceState(null, '', '/?tab=reports');
-              }}
-            />
+          <div className="flex items-center gap-3">
+            {/* Blue text, left of New: what's being built, one click away. */}
+            <ComingSoonLink />
+            <NewButton onNewDeck={() => setModal(true)} />
           </div>
         </div>
         <PrimaryTabs
-          active={tab}
-          onSelect={(t) => {
+          active="documents"
+          // Already here — so Documents is a way back out of the bin rather
+          // than a navigation.
+          onSelect={() => {
             if (showTrash) setScope({ kind: 'all' });
-            setTab(t);
-            // Keep the URL matching the visible tab so a reload (or a link
-            // copied out of the address bar) comes back to the same place.
-            // replaceState rather than a router push: switching tabs isn't a
-            // navigation, and it shouldn't stack up Back-button entries.
-            window.history.replaceState(null, '', t === 'reports' ? '/?tab=reports' : '/');
           }}
         />
       </header>
 
       <main className="px-8 py-6">
-        {/* Reports are still being built, and the preview of the layout now
-            lives in the "Coming soon" dialog with everything else that isn't
-            shipped — so the tab is a pointer at it rather than a second copy. */}
-        <div className={tab === 'reports' ? undefined : 'hidden'}>
-          <div className="mx-auto mt-16 max-w-md rounded-lg border border-blue-200 bg-blue-50 px-5 py-4 text-center dark:border-blue-500/30 dark:bg-blue-500/10">
-            <h2 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
-              Scheduled reporting is coming soon
-            </h2>
-            <p className="mt-1 text-[13px] text-blue-800/80 dark:text-blue-200/80">
-              A deck that re-sends itself on a schedule, with its numbers refreshed and an approval
-              step before it goes out.
-            </p>
-            <ComingSoonLink
-              label="See a preview of what's coming"
-              section="reporting"
-              className="mt-3 inline-block text-[13px]"
-            />
-          </div>
-        </div>
-
-        {/* Hidden rather than unmounted, so a search/filter survives a trip
-            through Reports and back. */}
         {/* Two panes, the way a file explorer is laid out: folders on the left,
             the documents in the selected one on the right, with a rule between
             them so they read as separate halves rather than a sidebar floating
             beside the content. `items-stretch` + a min height keep the divider
             running the full pane rather than stopping at whichever column
             happens to be shorter. */}
-        <section
-          className={
-            tab === 'documents' ? 'flex min-h-[70vh] items-stretch' : 'hidden'
-          }
-        >
+        <section className="flex min-h-[70vh] items-stretch">
           {/* The rail is a place, not a filter, so it stays put as you search —
               and it stays visible inside Deleted, which is one of its rows. */}
           <FolderRail

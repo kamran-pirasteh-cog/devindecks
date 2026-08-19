@@ -9,6 +9,7 @@ import {
   reidentifyCharts,
   type ChartRef,
   type ColumnBarSpec,
+  type LineSpec,
   type Deck,
   type ShapeElement,
   type Slide,
@@ -34,6 +35,7 @@ import {
   chartElementRects,
   deleteChartParts,
   resizeChartFrames,
+  runSizeOf,
   syncChartGeometry,
   translateChartFrames,
 } from './chartActions';
@@ -807,6 +809,36 @@ describe('applyChartTextFormat', () => {
     const spec = slide.charts![0].spec as ColumnBarSpec;
     expect(spec.axes.y.font?.sizePt).toBe(12);
     expect(spec.titleFont?.sizePt).toBe(12);
+  });
+
+  it("steps a line's series label, whose only home is the series", () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('line'), FRAME, DS);
+    // `end` is not one of the chart's categories, so a point override here
+    // would be written and then never read — the label would not move.
+    const end = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0' && e.chartRef.point === 'end',
+    )!;
+
+    applyChartTextFormat(slide, [end.id], DS, () => ({ sizePt: 20 }));
+    const spec = slide.charts![0].spec as LineSpec;
+    expect(spec.data.series[0].labels?.font?.sizePt).toBe(20);
+    expect(spec.data.series[0].pointOverrides?.end).toBeUndefined();
+    expect(sizeOf(slide, '::label.s0.end')).toBe(20);
+  });
+
+  it("steps one waterfall bar's label, leaving its neighbours alone", () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('waterfall'), FRAME, DS);
+    const labels = slide.elements.filter((e) => e.chartRef?.part === 'label');
+
+    applyChartTextFormat(slide, [labels[0]!.id], DS, () => ({ sizePt: 20 }));
+    const spec = slide.charts![0].spec as WaterfallSpec;
+    expect(spec.data.items[0].labels?.font?.sizePt).toBe(20);
+    expect(spec.decorations.labels.font?.sizePt).toBeUndefined();
+    const after = slide.elements.filter((e) => e.chartRef?.part === 'label').map(runSizeOf);
+    expect(after[0]).toBe(20);
+    expect(after.slice(1).every((s) => s !== 20)).toBe(true);
   });
 
   it('claims chart parts even where the spec has no home for the change', () => {

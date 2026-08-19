@@ -8,7 +8,9 @@
  * palette, which pins a raw hex — deliberate, visible, and last in the row.
  */
 import {
-  ALLOWED_FONTS,
+  FONT_CHOICES,
+  fontChoiceIdOf,
+  fontChoicePatch,
   emuToInches,
   emuToPoints,
   inchesToEmu,
@@ -17,7 +19,6 @@ import {
   token,
   type ColorRef,
   type ColorToken,
-  type FontFamily,
   type Rect,
   type SlideElement,
 } from '@/model';
@@ -221,13 +222,13 @@ export function Inspector() {
         <Section title="Text">
           <div className="flex flex-col gap-2">
             <select
-              value={firstRun?.font ?? ds.fonts.body}
-              onChange={(e) => store().patchRuns(selectedIds, { font: e.target.value as FontFamily })}
+              value={fontChoiceIdOf(firstRun, ds.fonts.body)}
+              onChange={(e) => store().patchRuns(selectedIds, fontChoicePatch(e.target.value))}
               className="rounded border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
             >
-              {ALLOWED_FONTS.map((f) => (
-                <option key={f} value={f}>
-                  {f}
+              {FONT_CHOICES.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label}
                 </option>
               ))}
             </select>

@@ -34,6 +34,7 @@ import {
   type StoredChartTemplate,
 } from '@/charts/repository';
 import { stampProvenance } from '@/charts/provenance';
+import { dsForChartTemplate } from '@/charts/style';
 import {
   CHART_LAYOUTS,
   LAYOUT_GROUPS,
@@ -147,8 +148,9 @@ export function ChartPopover({
   // behind, and a picker that re-read it per render would recompile the tiles.
   const [templates, setTemplates] = useState<StoredChartTemplate[]>([]);
   useEffect(() => {
-    seedChartTemplatesIfFirstRun();
+    seedChartTemplatesIfFirstRun(withChartStyleDefaults(ds.chart));
     setTemplates(listChartTemplates());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -207,7 +209,10 @@ export function ChartPopover({
           spec,
           slide: {
             id: `tpl-${t.id}-${orientation}`,
-            elements: compilePreview(spec, ds),
+            // Layered with the template's own style overrides, the same as
+            // Admin's grid — a tile that ignores them advertises a chart the
+            // insert doesn't produce.
+            elements: compilePreview(spec, dsForChartTemplate(ds, t.styleOverrides)),
           },
         };
       }),

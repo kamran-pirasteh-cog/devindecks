@@ -36,6 +36,7 @@ import {
   type StoredChartTemplate,
 } from '@/charts/repository';
 import { CHART_TEMPLATE_CATEGORIES, type ChartTemplateCategory } from '@/charts/registry';
+import { dsForChartTemplate } from '@/charts/style';
 import { buildDevinChartPrompt } from '@/devin/prompt';
 
 /**
@@ -89,7 +90,19 @@ export function ChartTemplateEditor({ id }: { id: string }) {
 
   const sheet = useMemo(() => (spec ? sheetFromSpec(spec) : null), [spec]);
 
-  if (!ds) return null;
+  /**
+   * The brand with this template's own deviations layered on.
+   *
+   * The preview has to compile through the same layering an inserted chart
+   * gets, or an author formats against one picture and their deck gets
+   * another.
+   */
+  const styledDs = useMemo(
+    () => (ds ? dsForChartTemplate(ds, template?.styleOverrides) : null),
+    [ds, template?.styleOverrides],
+  );
+
+  if (!ds || !styledDs) return null;
   if (!template || !spec || !sheet) {
     return (
       <div className="p-8 text-sm text-zinc-500">
@@ -154,7 +167,7 @@ export function ChartTemplateEditor({ id }: { id: string }) {
               component, same writes — see `ChartPartOptions`. */}
           <ChartPartOptions
             spec={spec}
-            ds={ds}
+            ds={styledDs}
             part={part}
             patch={patch}
             onClear={() => setPart(null)}
@@ -176,7 +189,7 @@ export function ChartTemplateEditor({ id }: { id: string }) {
           >
             <ChartPreview
               spec={spec}
-              ds={ds}
+              ds={styledDs}
               size={FRAME_SIZE}
               background={{ kind: 'solid', color: token('surface.base') }}
               part={part}
@@ -186,7 +199,7 @@ export function ChartTemplateEditor({ id }: { id: string }) {
             />
           </div>
           <div className="min-h-0 flex-1 border-t border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-            <SheetGrid sheet={sheet} ds={ds} onChange={applySheet} />
+            <SheetGrid sheet={sheet} ds={styledDs} onChange={applySheet} />
           </div>
         </div>
 

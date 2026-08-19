@@ -19,6 +19,7 @@ import {
   inchesToEmu,
   SLIDE_16x9,
   token,
+  withChartStyleDefaults,
   type ChartKind,
   type DesignSystem,
 } from '@/model';
@@ -34,6 +35,7 @@ import {
   type StoredChartTemplate,
 } from '@/charts/repository';
 import { CHART_TEMPLATE_CATEGORIES, type ChartTemplateCategory } from '@/charts/registry';
+import { dsForChartTemplate } from '@/charts/style';
 
 const SLIDE_SIZE = { w: SLIDE_16x9.w, h: SLIDE_16x9.h };
 
@@ -56,9 +58,15 @@ export function ChartTemplates({ ds }: { ds: DesignSystem }) {
 
   const refresh = () => setTemplates(listChartTemplates());
 
+  const style = useMemo(() => withChartStyleDefaults(ds.chart), [ds.chart]);
+
   useEffect(() => {
-    seedChartTemplatesIfFirstRun();
+    // Seeded against the brand: a template built from the house defaults would
+    // pin legend, labels and gaps that then beat Admin's own controls.
+    seedChartTemplatesIfFirstRun(withChartStyleDefaults(ds.chart));
     setTemplates(listChartTemplates());
+    // Seeding is first-run only, so it deliberately doesn't re-run per edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const byCategory = useMemo(() => {
@@ -80,10 +88,10 @@ export function ChartTemplates({ ds }: { ds: DesignSystem }) {
         </button>
         <button
           onClick={() => {
-            resetBuiltInChartTemplates();
+            resetBuiltInChartTemplates(style);
             refresh();
           }}
-          title="Restore the built-in templates to their shipped state. Your own templates are left alone."
+          title="Rebuild the built-in templates against the current chart style. Use this after changing legend, data labels, gaps or number format — a template pins those when it is built. Your own templates are left alone."
           className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
           Reset built-ins
@@ -98,7 +106,7 @@ export function ChartTemplates({ ds }: { ds: DesignSystem }) {
               onClick={() => {
                 const t = createChartTemplate({
                   name: `New ${label.toLowerCase()} template`,
-                  spec: defaultChartSpec(kind, 'stacked'),
+                  spec: defaultChartSpec(kind, 'stacked', style),
                 });
                 setAdding(false);
                 router.push(`/admin/charts/${t.id}`);
@@ -149,6 +157,13 @@ function ChartTemplateCard({
 
   // Through the real compiler, so a card can't advertise something the
   // template doesn't produce.
+  // The template's own deviations layered over the brand, so a card shows what
+  // the template actually produces rather than the unlayered house style.
+  const templateDs = useMemo(
+    () => dsForChartTemplate(ds, template.styleOverrides),
+    [ds, template.styleOverrides],
+  );
+
   const slide = useMemo(() => {
     const { elements } = compileChart(
       {
@@ -162,14 +177,14 @@ function ChartTemplateCard({
         },
         spec: template.spec,
       },
-      ds,
+      templateDs,
     );
     return {
       id: 'preview',
       background: { kind: 'solid' as const, color: token('surface.base') },
       elements,
     };
-  }, [template.spec, ds]);
+  }, [template.spec, templateDs]);
 
   return (
     <div className="group relative overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -178,7 +193,7 @@ function ChartTemplateCard({
         className="block w-full text-left"
       >
         <div className="border-b border-zinc-100 dark:border-zinc-800">
-          <FitSlideView slide={slide} slideSize={SLIDE_SIZE} designSystem={ds} />
+          <FitSlideView slide={slide} slideSize={SLIDE_SIZE} designSystem={templateDs} />
         </div>
       </button>
 

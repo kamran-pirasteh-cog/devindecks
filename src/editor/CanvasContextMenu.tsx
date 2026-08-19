@@ -16,6 +16,7 @@
 import { useEffect } from 'react';
 import { isCropped, type SlideElement } from '@/model';
 import { useEditor } from '@/store/editorStore';
+import { selectSimilarLabel, similarIds } from './selectSimilar';
 
 /** Rough per-item height, used only to keep the menu on screen. */
 const ITEM_H = 26;
@@ -30,6 +31,19 @@ export type MenuItem = { label: string; run: () => void };
 export function contextMenuItems(selected: SlideElement[]): MenuItem[] {
   const store = useEditor.getState;
   const items: MenuItem[] = [];
+
+  // Gathering the selection's kin is a command about where you are pointing —
+  // the same reason crop lives here — and it reads the whole slide, not just
+  // the selection, so it is derived from the store rather than the argument.
+  const slideEls = store().currentSlide()?.elements ?? [];
+  const selectedIds = selected.map((el) => el.id);
+  const similarLabel = selectSimilarLabel(slideEls, selectedIds);
+  if (similarLabel) {
+    items.push({
+      label: similarLabel,
+      run: () => store().select(similarIds(slideEls, selectedIds)),
+    });
+  }
 
   const pictures = selected.filter(
     (el): el is Extract<SlideElement, { type: 'picture' }> => el.type === 'picture',

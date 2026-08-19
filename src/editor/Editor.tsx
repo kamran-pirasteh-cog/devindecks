@@ -99,7 +99,6 @@ export function Editor({
   const router = useRouter();
   const title = useEditor((s) => s.deck.title);
   const folderId = useEditor((s) => s.deck.folderId);
-  const ds = useEditor((s) => s.designSystem);
   const ready = useEditor((s) => s.currentSlideId !== '');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Set when a save is refused (storage full) — the one failure the user must see. */
@@ -519,9 +518,6 @@ export function Editor({
               Not saved — {saveError}
             </span>
           ) : null}
-          <span className="text-[11px] text-zinc-400">
-            {ds.name} · v{ds.version}
-          </span>
           {/* Blue text, left of Export: what's being built, one click away. */}
           <ComingSoonLink />
           <ExportMenu />

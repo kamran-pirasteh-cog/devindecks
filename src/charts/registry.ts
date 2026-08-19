@@ -13,7 +13,6 @@
 import {
   defaultChartSpec,
   pointsToEmu,
-  token,
   type ChartSpec,
   type ColumnBarSpec,
   type DeepPartial,
@@ -40,7 +39,15 @@ export interface ChartTemplateDef {
   category: ChartTemplateCategory;
   /** Lower sorts first. */
   order?: number;
-  buildSpec: () => ChartSpec;
+  /**
+   * Built from the BRAND's chart style, not the house default.
+   *
+   * A template's spec pins legend, data labels, gaps and number format the
+   * moment it's built, and those pinned values beat the design system at
+   * compile time. Building without the style is what made Admin's chart
+   * controls look inert on the template grid.
+   */
+  buildSpec: (style: ChartStyle) => ChartSpec;
   styleOverrides?: DeepPartial<ChartStyle>;
   research?: ChartResearchHints;
 }
@@ -59,8 +66,8 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
         'Use reported segment revenue. The movements must sum to the closing figure; if the source only gives opening and closing totals, say so rather than inventing a split.',
       preferredSources: ['10-K', '10-Q', 'Annual report', 'Investor presentation'],
     },
-    buildSpec: () => {
-      const spec = defaultChartSpec('waterfall') as WaterfallSpec;
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('waterfall', 'clustered', style) as WaterfallSpec;
       spec.title = 'Revenue bridge';
       spec.axes.y.title = 'Revenue';
       spec.numberFormat = { style: 'currency', currency: 'USD', thousands: true, decimals: 0 };
@@ -79,8 +86,8 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
       guidance:
         'Shares must total 100% per period. Include an "Other" bucket rather than dropping the tail, and state the denominator (revenue, units, subscribers) explicitly.',
     },
-    buildSpec: () => {
-      const spec = defaultChartSpec('bar', 'stacked100') as ColumnBarSpec;
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('bar', 'stacked100', style) as ColumnBarSpec;
       spec.title = 'Share of market';
       spec.data.categories = cats(['FY23', 'FY24', 'FY25']);
       spec.data.series = [
@@ -103,8 +110,8 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
       guidance:
         'Use exit ARR for each quarter, not average. If the company reports ARR only annually, return nulls for the intermediate quarters rather than interpolating.',
     },
-    buildSpec: () => {
-      const spec = defaultChartSpec('line') as LineSpec;
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('line', 'clustered', style) as LineSpec;
       spec.title = 'ARR by quarter';
       spec.axes.y.title = 'ARR';
       spec.endLabels = true;
@@ -128,8 +135,8 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
       guidance:
         'Two numbers per segment: the total size (which sets the column width) and the split within it. State the units for both.',
     },
-    buildSpec: () => {
-      const spec = defaultChartSpec('mekko') as MekkoSpec;
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('mekko', 'clustered', style) as MekkoSpec;
       spec.title = 'Share by segment';
       spec.data.categories = cats(['Enterprise', 'Mid-Market', 'SMB']);
       spec.data.series = [
@@ -150,8 +157,8 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
       guidance:
         'Normalize for scale — per employee, per unit or as a percentage of revenue — and say which. Raw totals across differently sized companies are not comparable.',
     },
-    buildSpec: () => {
-      const spec = defaultChartSpec('bar', 'clustered') as ColumnBarSpec;
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('bar', 'clustered', style) as ColumnBarSpec;
       spec.title = 'Cost per unit vs peers';
       spec.data.categories = cats(['Us', 'Peer A', 'Peer B', 'Peer C', 'Peer median']);
       spec.data.series = [{ key: 's0', name: 'Cost per unit', values: [42, 51, 47, 58, 49] }];
@@ -170,8 +177,8 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
       guidance:
         'Effort and impact need a stated scale (for example 1-10, or estimated FTE-months and dollars). An unlabelled axis makes the chart unreadable.',
     },
-    buildSpec: () => {
-      const spec = defaultChartSpec('bubble') as BubbleSpec;
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('bubble', 'clustered', style) as BubbleSpec;
       spec.title = 'Initiatives by effort and impact';
       spec.axes.x.title = 'Effort';
       spec.axes.y.title = 'Impact';
@@ -186,8 +193,8 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
     description: 'Stacked columns with totals, for a revenue build over several years.',
     category: 'Financial',
     order: 70,
-    buildSpec: () => {
-      const spec = defaultChartSpec('column', 'stacked') as ColumnBarSpec;
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('column', 'stacked', style) as ColumnBarSpec;
       spec.title = 'Revenue by segment';
       spec.axes.y.title = 'Revenue';
       spec.decorations.totals = { show: true, content: { kind: 'value' }, placement: 'above' };
@@ -202,10 +209,9 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
     description: 'A 100% stacked area showing how a mix moved over time.',
     category: 'Trend',
     order: 80,
-    buildSpec: () => {
-      const spec = defaultChartSpec('area', 'stacked100');
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('area', 'stacked100', style);
       spec.title = 'Revenue mix';
-      spec.palette = [token('brand.accent'), token('ink.strong'), token('ink.muted')];
       return spec;
     },
   },
