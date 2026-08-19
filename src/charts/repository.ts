@@ -20,6 +20,8 @@ import {
 } from '@/model';
 import { CHART_TEMPLATES, type ChartTemplateCategory } from './registry';
 import type { ChartResearchHints } from './research';
+import { defineCollection } from '@/platform/collection';
+import { localStorageAdapter } from '@/platform/store';
 
 const KEY = 'devindesign.charts.v1';
 
@@ -42,19 +44,14 @@ export interface StoredChartTemplate {
 
 type TemplateMap = Record<string, StoredChartTemplate>;
 
-function read(): TemplateMap {
-  if (typeof window === 'undefined') return {};
-  try {
-    return JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as TemplateMap;
-  } catch {
-    return {};
-  }
-}
+const collection = defineCollection<StoredChartTemplate>(KEY, localStorageAdapter);
 
-function write(map: TemplateMap) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(KEY, JSON.stringify(map));
-}
+/** Hydrate from the adapter — only needed once that adapter is a remote one. */
+export const hydrateChartTemplates = () => collection.hydrate();
+export const subscribeChartTemplates = collection.subscribe;
+
+const read = (): TemplateMap => collection.snapshot();
+const write = (map: TemplateMap) => collection.replace(map);
 
 const now = () => new Date().toISOString();
 

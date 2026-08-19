@@ -299,7 +299,12 @@ export function listAllTags(): string[] {
   return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
 
-function newDeck(title: string, slides: Deck['slides'], templateId?: string): Deck {
+function newDeck(
+  title: string,
+  slides: Deck['slides'],
+  templateId?: string,
+  templateVersion?: number,
+): Deck {
   const ts = now();
   return {
     id: `doc-${nanoid(10)}`,
@@ -310,6 +315,7 @@ function newDeck(title: string, slides: Deck['slides'], templateId?: string): De
     designSystemId: 'ds.default',
     designSystemVersion: 1,
     deckTemplateId: templateId,
+    deckTemplateVersion: templateVersion,
     createdAt: ts,
     updatedAt: ts,
   };
@@ -341,7 +347,9 @@ function rekeySlide(s: Slide, elementIds?: Record<string, string>): Slide {
 export function createDoc(templateId = 'blank', title?: string): Deck {
   const tpl = getTemplateSlides(templateId) ?? getTemplateSlides('blank')!;
   const slides = structuredClone(tpl.slides).map((s) => rekeySlide(s));
-  const deck = newDeck(title ?? untitledName(tpl.name), slides, templateId);
+  // The template's version at creation time, so `templateDrift` can later tell
+  // this deck that the master it came from has moved on.
+  const deck = newDeck(title ?? untitledName(tpl.name), slides, templateId, tpl.version);
   saveDoc(deck);
   return deck;
 }

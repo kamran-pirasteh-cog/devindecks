@@ -15,6 +15,8 @@
  */
 import { nanoid } from 'nanoid';
 import { SEED_ARTIFACTS } from './seed';
+import { defineCollection } from '@/platform/collection';
+import { localStorageAdapter } from '@/platform/store';
 
 export type ArtifactFolderId =
   | 'cognition-logos'
@@ -73,15 +75,31 @@ export class ArtifactError extends Error {}
 
 type ArtifactMap = Record<string, StoredArtifact>;
 
+/**
+ * The last flush failure, waiting to be reported to whoever caused it.
+ *
+ * `Collection.flushed()` deliberately never rejects — one failed background
+ * write must not become an unhandled rejection that takes the app down — so a
+ * failure is recorded here and claimed by `confirmWrite` instead.
+ */
+let flushError: unknown = null;
+
+const collection = defineCollection<StoredArtifact>(KEY, localStorageAdapter, {
+  onFlushError: (err) => {
+    flushError = err;
+  },
+});
+
+/** Hydrate from the adapter — only needed once that adapter is a remote one. */
+export const hydrateArtifacts = () => collection.hydrate();
+export const subscribeArtifacts = collection.subscribe;
+
 function read(): ArtifactMap {
+  // The window guard used to live on the localStorage read this replaced.
+  // `seedOnce` still needs it: there is no storage on the server, and the
+  // seed marker it consults is not part of this collection.
   if (typeof window === 'undefined') return {};
-  let map: ArtifactMap;
-  try {
-    map = JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as ArtifactMap;
-  } catch {
-    map = {};
-  }
-  return seedOnce(map);
+  return seedOnce(collection.snapshot());
 }
 
 /**
@@ -96,28 +114,43 @@ function read(): ArtifactMap {
  */
 function seedOnce(map: ArtifactMap): ArtifactMap {
   if (window.localStorage.getItem(SEEDED_KEY)) return map;
+  const seeded = { ...map };
   for (const artifact of SEED_ARTIFACTS) {
-    if (!map[artifact.id]) map[artifact.id] = artifact;
+    if (!seeded[artifact.id]) seeded[artifact.id] = artifact;
   }
+  // Through the collection, not straight to storage: writing behind its back
+  // would leave the in-memory snapshot disagreeing with what's on disk until
+  // the next reload.
+  collection.replace(seeded);
   try {
-    window.localStorage.setItem(KEY, JSON.stringify(map));
     window.localStorage.setItem(SEEDED_KEY, '1');
   } catch {
     // Retried on the next read.
   }
-  return map;
+  return seeded;
 }
 
 function write(map: ArtifactMap) {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(KEY, JSON.stringify(map));
-  } catch {
-    // Quota is the only realistic failure here, and it matters: the caller
-    // must not report a successful upload that didn't persist.
-    throw new ArtifactError(
-      'The library is full. Delete some artifacts and try again.',
-    );
+  collection.replace(map);
+}
+
+/**
+ * Wait for the write to actually land, and turn a failure into the
+ * user-facing error.
+ *
+ * Quota is the only realistic failure, and it matters more here than anywhere
+ * else in the app: the library shares one ~5MB origin with everything else, so
+ * reporting a successful upload that didn't persist shows the user an asset
+ * that vanishes on reload. Writes are asynchronous now, so the error arrives
+ * through the flush rather than out of `write` — this is the only call site
+ * that has to care, and it's `async` already.
+ */
+async function confirmWrite(): Promise<void> {
+  flushError = null;
+  await collection.flushed();
+  if (flushError) {
+    flushError = null;
+    throw new ArtifactError('The library is full. Delete some artifacts and try again.');
   }
 }
 
@@ -204,6 +237,7 @@ export async function addArtifact(file: File, folderId: ArtifactFolderId): Promi
   const map = read();
   map[artifact.id] = artifact;
   write(map);
+  await confirmWrite();
   return artifact;
 }
 

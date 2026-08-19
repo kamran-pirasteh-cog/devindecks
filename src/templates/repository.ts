@@ -14,6 +14,8 @@
 import { nanoid } from 'nanoid';
 import { SLIDE_16x9, type Deck, type PictureElement, type Slide } from '@/model';
 import { getTemplate, TEMPLATES, type TemplateDef } from './registry';
+import { defineCollection } from '@/platform/collection';
+import { localStorageAdapter } from '@/platform/store';
 
 /**
  * Seeding only fills in ids that are MISSING, so a browser that has already
@@ -32,25 +34,34 @@ export interface StoredTemplate {
   /** Lower sorts first; carried over from the built-in def, if any. */
   order?: number;
   slides: Slide[];
+  /**
+   * Bumped when the SLIDES change, never for a rename or a recategorization —
+   * the same rule as `StoredLayout.version`, for the same reason. Decks carry
+   * the version they were built from in `Deck.deckTemplateVersion`.
+   */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
 
 type TemplateMap = Record<string, StoredTemplate>;
 
-function read(): TemplateMap {
-  if (typeof window === 'undefined') return {};
-  try {
-    return JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as TemplateMap;
-  } catch {
-    return {};
-  }
-}
+const collection = defineCollection<StoredTemplate>(KEY, localStorageAdapter, {
+  migrate: (map) => {
+    // Pre-versioning templates normalize to v1, matching the decks made from
+    // them (which have no `deckTemplateVersion` either). Same backfill as
+    // `layoutRepository`.
+    for (const t of Object.values(map)) if (typeof t.version !== 'number') t.version = 1;
+    return map;
+  },
+});
 
-function write(map: TemplateMap) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(KEY, JSON.stringify(map));
-}
+/** Hydrate from the adapter — only needed once that adapter is a remote one. */
+export const hydrateTemplates = () => collection.hydrate();
+export const subscribeTemplates = collection.subscribe;
+
+const read = (): TemplateMap => collection.snapshot();
+const write = (map: TemplateMap) => collection.replace(map);
 
 const now = () => new Date().toISOString();
 
@@ -69,6 +80,7 @@ export function seedIfFirstRun(): void {
       category: t.category,
       order: t.order,
       slides: t.buildSlides(),
+      version: 1,
       createdAt: ts,
       updatedAt: ts,
     };
@@ -87,12 +99,21 @@ export function getStoredTemplate(id: string): StoredTemplate | null {
   return read()[id] ?? null;
 }
 
-/** Resolve a template's slides for use elsewhere (new doc, previews). */
-export function getTemplateSlides(id: string): { name: string; slides: Slide[] } | null {
+/**
+ * Resolve a template's slides for use elsewhere (new doc, previews).
+ *
+ * `version` comes back too so the caller can stamp what it built from.
+ * A built-in resolved straight from the registry — which happens for 'blank',
+ * and before the store is seeded — reports v1: it hasn't been edited, so
+ * there's nothing for a deck to have drifted from.
+ */
+export function getTemplateSlides(
+  id: string,
+): { name: string; slides: Slide[]; version: number } | null {
   const stored = getStoredTemplate(id);
-  if (stored) return { name: stored.name, slides: stored.slides };
+  if (stored) return { name: stored.name, slides: stored.slides, version: stored.version };
   const builtin = getTemplate(id);
-  return builtin ? { name: builtin.name, slides: builtin.buildSlides() } : null;
+  return builtin ? { name: builtin.name, slides: builtin.buildSlides(), version: 1 } : null;
 }
 
 export function createTemplate(opts: {
@@ -109,6 +130,7 @@ export function createTemplate(opts: {
     description: opts.description ?? '',
     category: opts.category,
     slides: opts.slides ?? [{ id: `s-${nanoid(8)}`, elements: [] }],
+    version: 1,
     createdAt: ts,
     updatedAt: ts,
   };
@@ -127,11 +149,22 @@ export function updateTemplateMeta(
   write(map);
 }
 
-/** Persist slide + title edits made in the editor back onto a template. */
+/**
+ * Persist slide + title edits made in the editor back onto a template. Bumps
+ * `version`: the slides are the content, and decks built from this template
+ * are entitled to know it moved.
+ */
 export function saveTemplateFromDeck(id: string, deck: Deck): void {
   const map = read();
   if (!map[id]) return;
-  map[id] = { ...map[id], name: deck.title, slides: deck.slides, updatedAt: now() };
+  const prev = map[id];
+  map[id] = {
+    ...prev,
+    name: deck.title,
+    slides: deck.slides,
+    version: prev.version + 1,
+    updatedAt: now(),
+  };
   write(map);
 }
 
@@ -144,6 +177,8 @@ export function duplicateTemplate(id: string, name?: string): StoredTemplate | n
     ...clone,
     id: `tpl-${nanoid(8)}`,
     name: name?.trim() || `Copy of ${src.name}`,
+    // A fresh master with its own history — see `duplicateLayout`.
+    version: 1,
     slides: clone.slides.map((s) => ({
       ...s,
       id: `s-${nanoid(8)}`,
