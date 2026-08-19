@@ -29,6 +29,7 @@ import {
 } from '@/reports/types';
 import { createRun, listPendingRuns, type ReportRun } from '@/reports/runs';
 import { DEFAULT_OWNER } from '@/docs/repository';
+import { ComingSoonBadge } from '@/nav/PrimaryTabs';
 import { ReportCard } from './ReportCard';
 import { ReportEditor } from './ReportEditor';
 import { PendingApprovals } from './PendingApprovals';
@@ -315,203 +316,223 @@ export function Reports({
 
   return (
     <div>
-      <PendingApprovals runs={pending} decks={docs} onChange={refresh} />
+      {/*
+       * Reports aren't shipped yet, so this tab is a preview: the real layout is
+       * on show, greyed and inert, with the blue flag above it saying why. The
+       * notice sits OUTSIDE the dimmed wrapper — an explanation the reader has
+       * to squint at is worse than no explanation.
+       *
+       * `inert` is what makes the greying honest: opacity alone leaves every
+       * control clickable and keyboard-reachable, so someone could still
+       * schedule a send from a section that doesn't work yet.
+       */}
+      <div className="mb-4 flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200">
+        <ComingSoonBadge />
+        <span>
+          Scheduled reports are still in progress. This is a preview of the layout — nothing here is
+          live yet.
+        </span>
+      </div>
 
-      {toast ? (
-        <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
-          {toast}
-          <button
-            onClick={() => setToast(null)}
-            title="Dismiss"
-            className="shrink-0 rounded px-1 text-emerald-600 hover:text-emerald-900 dark:text-emerald-400"
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
+      <div inert className="pointer-events-none select-none opacity-40 grayscale">
+        <PendingApprovals runs={pending} decks={docs} onChange={refresh} />
 
-      <div className="flex items-start gap-6">
-        <nav aria-label="Report status" className="w-56 shrink-0">
-          <Row
-            label="All reports"
-            count={reports.length}
-            icon={<ClockIcon />}
-            selected={scope.kind === 'all'}
-            onSelect={() => setScope({ kind: 'all' })}
-          />
-          <div className="mt-4 mb-1 pl-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
-            Status
+        {toast ? (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+            {toast}
+            <button
+              onClick={() => setToast(null)}
+              title="Dismiss"
+              className="shrink-0 rounded px-1 text-emerald-600 hover:text-emerald-900 dark:text-emerald-400"
+            >
+              ×
+            </button>
           </div>
-          <div className="space-y-0.5">
-            {STATUSES.map((s) => (
-              <Row
-                key={s.value}
-                label={s.label}
-                count={counts[s.value]}
-                icon={<Dot status={s.value} />}
-                selected={scope.kind === 'status' && scope.status === s.value}
-                onSelect={() => setScope({ kind: 'status', status: s.value })}
-              />
-            ))}
-          </div>
-        </nav>
+        ) : null}
 
-        <div className="min-w-0 flex-1">
-          {scope.kind !== 'all' ? (
-            <h2 className="mb-3 text-sm font-medium capitalize text-zinc-700 dark:text-zinc-200">
-              {scope.status}
-            </h2>
-          ) : null}
-
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-            <div className="flex items-center gap-2">
-              <div className="relative w-72">
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search reports…"
-                  className="w-full rounded-md border border-zinc-200 bg-white px-3 py-1.5 pr-7 text-sm outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
-                />
-                {query ? (
-                  <button
-                    onClick={() => setQuery('')}
-                    title="Clear search"
-                    className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-                  >
-                    ×
-                  </button>
-                ) : null}
-              </div>
-              <ToolbarSelect
-                label="Filter by deck"
-                value={deckFilter}
-                onChange={setDeckFilter}
-                active={Boolean(deckFilter)}
-              >
-                <option value="">All decks</option>
-                {docs
-                  .filter((d) => usedDeckIds.has(d.id))
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.title}
-                    </option>
-                  ))}
-              </ToolbarSelect>
-              <ToolbarSelect
-                label="Filter by owner"
-                value={ownerFilter}
-                onChange={setOwnerFilter}
-                active={Boolean(ownerFilter)}
-              >
-                <option value="">All owners</option>
-                {allOwners.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-                {hasUnowned ? <option value={NO_OWNER}>Unassigned</option> : null}
-              </ToolbarSelect>
-              <ToolbarSelect
-                label="Filter by client"
-                value={clientFilter}
-                onChange={setClientFilter}
-                active={Boolean(clientFilter)}
-              >
-                <option value="">All clients</option>
-                {allClients.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-                {hasUntagged ? <option value={NO_CLIENT}>Untagged</option> : null}
-              </ToolbarSelect>
-              {hasFilters ? (
-                <button
-                  onClick={clearFilters}
-                  title="Clear filters (Esc)"
-                  className="shrink-0 rounded px-1 text-xs font-medium text-red-500 hover:text-red-600 hover:underline dark:text-red-400 dark:hover:text-red-300"
-                >
-                  Clear
-                </button>
-              ) : null}
+        <div className="flex items-start gap-6">
+          <nav aria-label="Report status" className="w-56 shrink-0">
+            <Row
+              label="All reports"
+              count={reports.length}
+              icon={<ClockIcon />}
+              selected={scope.kind === 'all'}
+              onSelect={() => setScope({ kind: 'all' })}
+            />
+            <div className="mt-4 mb-1 pl-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+              Status
             </div>
-
-            <label className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400">
-              Sort by
-              <ToolbarSelect
-                label="Sort by"
-                value={sortBy}
-                onChange={(v) => setSortBy(v as SortBy)}
-              >
-                {SORT_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </ToolbarSelect>
-            </label>
-          </div>
-
-          {visible.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center dark:border-zinc-700">
-              <p className="text-sm text-zinc-400">
-                {hasFilters
-                  ? 'No reports match your search.'
-                  : scope.kind === 'all'
-                    ? 'No reports yet. Create one to send a deck on a schedule.'
-                    : `Nothing ${scope.status} right now.`}
-              </p>
-              {!hasFilters && scope.kind === 'all' ? (
-                <button
-                  onClick={() => setEditing(draftReport(docs[0]?.id))}
-                  className="mt-3 rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-black"
-                >
-                  New report
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
-              {visible.map((r) => (
-                <ReportCard
-                  key={r.id}
-                  report={r}
-                  deck={r.deckId ? deckById.get(r.deckId) : undefined}
-                  onOpen={() => setEditing(r)}
-                  onToggleStatus={() => {
-                    setReportStatus(r.id, r.status === 'active' ? 'paused' : 'active');
-                    refresh();
-                  }}
-                  onDuplicate={() => {
-                    duplicateReport(r.id);
-                    refresh();
-                  }}
-                  onDelete={() => {
-                    deleteReport(r.id);
-                    refresh();
-                  }}
-                  onRunNow={() => raise(r, 'manual')}
-                  onSendTest={() => raise(r, 'test')}
+            <div className="space-y-0.5">
+              {STATUSES.map((s) => (
+                <Row
+                  key={s.value}
+                  label={s.label}
+                  count={counts[s.value]}
+                  icon={<Dot status={s.value} />}
+                  selected={scope.kind === 'status' && scope.status === s.value}
+                  onSelect={() => setScope({ kind: 'status', status: s.value })}
                 />
               ))}
             </div>
-          )}
-        </div>
-      </div>
+          </nav>
 
-      {editing ? (
-        <ReportEditor
-          report={editing}
-          decks={docs}
-          onClose={() => setEditing(null)}
-          onSave={(r) => {
-            saveReport(r);
-            setEditing(null);
-            refresh();
-          }}
-          onRunsChange={refresh}
-        />
-      ) : null}
+          <div className="min-w-0 flex-1">
+            {scope.kind !== 'all' ? (
+              <h2 className="mb-3 text-sm font-medium capitalize text-zinc-700 dark:text-zinc-200">
+                {scope.status}
+              </h2>
+            ) : null}
+
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+              <div className="flex items-center gap-2">
+                <div className="relative w-72">
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search reports…"
+                    className="w-full rounded-md border border-zinc-200 bg-white px-3 py-1.5 pr-7 text-sm outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
+                  />
+                  {query ? (
+                    <button
+                      onClick={() => setQuery('')}
+                      title="Clear search"
+                      className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+                <ToolbarSelect
+                  label="Filter by deck"
+                  value={deckFilter}
+                  onChange={setDeckFilter}
+                  active={Boolean(deckFilter)}
+                >
+                  <option value="">All decks</option>
+                  {docs
+                    .filter((d) => usedDeckIds.has(d.id))
+                    .map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.title}
+                      </option>
+                    ))}
+                </ToolbarSelect>
+                <ToolbarSelect
+                  label="Filter by owner"
+                  value={ownerFilter}
+                  onChange={setOwnerFilter}
+                  active={Boolean(ownerFilter)}
+                >
+                  <option value="">All owners</option>
+                  {allOwners.map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                  {hasUnowned ? <option value={NO_OWNER}>Unassigned</option> : null}
+                </ToolbarSelect>
+                <ToolbarSelect
+                  label="Filter by client"
+                  value={clientFilter}
+                  onChange={setClientFilter}
+                  active={Boolean(clientFilter)}
+                >
+                  <option value="">All clients</option>
+                  {allClients.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                  {hasUntagged ? <option value={NO_CLIENT}>Untagged</option> : null}
+                </ToolbarSelect>
+                {hasFilters ? (
+                  <button
+                    onClick={clearFilters}
+                    title="Clear filters (Esc)"
+                    className="shrink-0 rounded px-1 text-xs font-medium text-red-500 hover:text-red-600 hover:underline dark:text-red-400 dark:hover:text-red-300"
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+
+              <label className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400">
+                Sort by
+                <ToolbarSelect
+                  label="Sort by"
+                  value={sortBy}
+                  onChange={(v) => setSortBy(v as SortBy)}
+                >
+                  {SORT_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </ToolbarSelect>
+              </label>
+            </div>
+
+            {visible.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center dark:border-zinc-700">
+                <p className="text-sm text-zinc-400">
+                  {hasFilters
+                    ? 'No reports match your search.'
+                    : scope.kind === 'all'
+                      ? 'No reports yet. Create one to send a deck on a schedule.'
+                      : `Nothing ${scope.status} right now.`}
+                </p>
+                {!hasFilters && scope.kind === 'all' ? (
+                  <button
+                    onClick={() => setEditing(draftReport(docs[0]?.id))}
+                    className="mt-3 rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-black"
+                  >
+                    New report
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
+                {visible.map((r) => (
+                  <ReportCard
+                    key={r.id}
+                    report={r}
+                    deck={r.deckId ? deckById.get(r.deckId) : undefined}
+                    onOpen={() => setEditing(r)}
+                    onToggleStatus={() => {
+                      setReportStatus(r.id, r.status === 'active' ? 'paused' : 'active');
+                      refresh();
+                    }}
+                    onDuplicate={() => {
+                      duplicateReport(r.id);
+                      refresh();
+                    }}
+                    onDelete={() => {
+                      deleteReport(r.id);
+                      refresh();
+                    }}
+                    onRunNow={() => raise(r, 'manual')}
+                    onSendTest={() => raise(r, 'test')}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {editing ? (
+          <ReportEditor
+            report={editing}
+            decks={docs}
+            onClose={() => setEditing(null)}
+            onSave={(r) => {
+              saveReport(r);
+              setEditing(null);
+              refresh();
+            }}
+            onRunsChange={refresh}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }

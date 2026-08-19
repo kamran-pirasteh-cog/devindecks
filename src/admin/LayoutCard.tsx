@@ -5,15 +5,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { DesignSystem } from '@/model';
 import { FitSlideView } from '@/render/FitSlideView';
-import {
-  DECK_LABELS,
-  LAYOUT_SOURCES,
-  SLIDE_LAYOUT_CATEGORIES,
-  type SlideLayoutCategory,
-} from '@/templates/registry';
+import { DECK_LABELS, LAYOUT_SOURCES } from '@/templates/registry';
 import {
   deleteLayout,
   duplicateLayout,
+  listFolders,
   updateLayoutMeta,
   type StoredLayout,
 } from '@/templates/layoutRepository';
@@ -61,7 +57,7 @@ export function LayoutCard({
     onChange();
   };
 
-  const setCategory = (category: SlideLayoutCategory) => {
+  const setCategory = (category: string) => {
     updateLayoutMeta(layout.id, { category });
     setMenuOpen(false);
     onChange();
@@ -150,15 +146,17 @@ export function LayoutCard({
                 <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-zinc-400">
                   Move to
                 </div>
-                {SLIDE_LAYOUT_CATEGORIES.filter((c) => c !== layout.category).map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => setCategory(c)}
-                    className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                  >
-                    {c}
-                  </button>
-                ))}
+                {listFolders()
+                  .filter((c) => c !== layout.category)
+                  .map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => setCategory(c)}
+                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                    >
+                      {c}
+                    </button>
+                  ))}
                 <div className="my-1 border-t border-zinc-100 dark:border-zinc-700" />
                 <button
                   onClick={() => {

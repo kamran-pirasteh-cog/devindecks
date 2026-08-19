@@ -4,33 +4,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Deck } from '@/model';
-import {
-  addDocTag,
-  deleteDoc,
-  duplicateDoc,
-  isTitleAvailable,
-  removeDocTag,
-  renameDoc,
-  setDocFolder,
-  setDocOwner,
-  suggestCopyTitle,
-} from '@/docs/repository';
+import { renameDoc } from '@/docs/repository';
 import type { DocFolder } from '@/docs/folders';
 import { Thumb } from './Thumb';
-import { ConfirmDialog } from './ConfirmDialog';
-
-function timeAgo(iso: string): string {
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
-type MenuView = 'main' | 'tag' | 'owner' | 'duplicate' | 'folder';
+import { DocMenu } from './DocMenu';
+import { clientColor } from './clientColor';
+import { timeAgo } from './timeAgo';
 
 export function DocCard({
   deck,
@@ -44,33 +23,12 @@ export function DocCard({
 }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuView, setMenuView] = useState<MenuView>('main');
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [tagSignal, setTagSignal] = useState(0);
   const [renaming, setRenaming] = useState(false);
   const [title, setTitle] = useState(deck.title);
-  const [copied, setCopied] = useState(false);
-  const [tagInput, setTagInput] = useState('');
-  const [ownerInput, setOwnerInput] = useState(deck.owner ?? '');
-  const [dupName, setDupName] = useState('');
-  const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const tagInputRef = useRef<HTMLInputElement>(null);
-  const ownerInputRef = useRef<HTMLInputElement>(null);
-  const dupInputRef = useRef<HTMLInputElement>(null);
 
   const tags = deck.tags ?? [];
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-        setMenuView('main');
-      }
-    };
-    window.addEventListener('mousedown', onClick);
-    return () => window.removeEventListener('mousedown', onClick);
-  }, [menuOpen]);
 
   useEffect(() => {
     if (renaming) {
@@ -79,93 +37,11 @@ export function DocCard({
     }
   }, [renaming]);
 
-  useEffect(() => {
-    if (menuView === 'tag') tagInputRef.current?.focus();
-    if (menuView === 'owner') {
-      setOwnerInput(deck.owner ?? '');
-      requestAnimationFrame(() => {
-        ownerInputRef.current?.focus();
-        ownerInputRef.current?.select();
-      });
-    }
-    if (menuView === 'duplicate') {
-      setDupName(suggestCopyTitle(deck.title));
-      requestAnimationFrame(() => {
-        dupInputRef.current?.focus();
-        dupInputRef.current?.select();
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menuView]);
-
   const commitRename = () => {
     const trimmed = title.trim();
     if (trimmed && trimmed !== deck.title) renameDoc(deck.id, trimmed);
     else setTitle(deck.title);
     setRenaming(false);
-    onChange();
-  };
-
-  const copyLink = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const url = `${window.location.origin}/edit/${deck.id}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch {
-      // clipboard API unavailable — silently ignore
-    }
-    setMenuOpen(false);
-  };
-
-  const remove = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setMenuOpen(false);
-    setConfirmDelete(true);
-  };
-
-  const confirmRemove = () => {
-    deleteDoc(deck.id);
-    setConfirmDelete(false);
-    onChange();
-  };
-
-  const commitTag = () => {
-    if (tagInput.trim()) {
-      addDocTag(deck.id, tagInput);
-      setTagInput('');
-      onChange();
-    }
-  };
-
-  const commitOwner = () => {
-    setDocOwner(deck.id, ownerInput);
-    setMenuOpen(false);
-    setMenuView('main');
-    onChange();
-  };
-
-  const removeTag = (tag: string) => {
-    removeDocTag(deck.id, tag);
-    onChange();
-  };
-
-  const dupTrimmed = dupName.trim();
-  const dupAvailable = dupTrimmed.length > 0 && isTitleAvailable(dupTrimmed);
-
-  const commitDuplicate = () => {
-    if (!dupAvailable) return;
-    duplicateDoc(deck.id, dupTrimmed);
-    setMenuOpen(false);
-    setMenuView('main');
-    onChange();
-  };
-
-  const moveTo = (folderId: string | undefined) => {
-    setDocFolder(deck.id, folderId);
-    setMenuOpen(false);
-    setMenuView('main');
     onChange();
   };
 
@@ -190,10 +66,7 @@ export function DocCard({
         menuOpen ? 'z-20' : ''
       }`}
     >
-      <div className="overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-        <Thumb deck={deck} />
-      </div>
-      <div className="px-3 py-2">
+      <div className="border-b border-zinc-100 px-3 py-2 dark:border-zinc-800">
         <div className="flex items-center justify-between">
           <div className="min-w-0">
             {renaming ? (
@@ -222,13 +95,27 @@ export function DocCard({
                     {tags.map((t) => (
                       <span
                         key={t}
-                        className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                        className={`rounded-full px-2 py-0.5 text-[11px] ${clientColor(t).pill}`}
                       >
                         {t}
                       </span>
                     ))}
                   </span>
-                ) : null}
+                ) : (
+                  // Untagged decks get the pill's slot as an affordance rather
+                  // than nothing: tagging is the common next thing to do with a
+                  // new deck, and it shouldn't need a trip through the ••• menu.
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTagSignal((n) => n + 1);
+                    }}
+                    title="Tag with client"
+                    className="shrink-0 rounded-full border border-dashed border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-zinc-400 hover:text-zinc-600 dark:border-zinc-600 dark:hover:border-zinc-500 dark:hover:text-zinc-300"
+                  >
+                    Tag +
+                  </button>
+                )}
               </div>
             )}
             <div className="mt-0.5 text-xs text-zinc-400">
@@ -242,253 +129,22 @@ export function DocCard({
             </div>
           </div>
 
-          <div className="relative ml-2 shrink-0" ref={menuRef}>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen((v) => !v);
-                setMenuView('main');
-              }}
-              title="More"
-              className="flex h-6 w-6 items-center justify-center rounded text-zinc-400 opacity-0 hover:bg-zinc-100 group-hover:opacity-100 dark:hover:bg-zinc-800"
-            >
-              •••
-            </button>
-
-            {menuOpen ? (
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="absolute right-0 top-7 z-10 w-72 overflow-hidden rounded-md border border-zinc-200 bg-white py-1 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
-              >
-                {menuView === 'main' ? (
-                  <>
-                    <button
-                      onClick={() => {
-                        setMenuOpen(false);
-                        setRenaming(true);
-                      }}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                    >
-                      Rename
-                    </button>
-                    <button
-                      onClick={() => setMenuView('tag')}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                    >
-                      Tag{tags.length ? ` (${tags.length})` : ''}
-                    </button>
-                    <button
-                      onClick={() => setMenuView('owner')}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                    >
-                      Set owner
-                    </button>
-                    <button
-                      onClick={() => setMenuView('folder')}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                    >
-                      Move to folder
-                    </button>
-                    <button
-                      onClick={() => setMenuView('duplicate')}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                    >
-                      Duplicate
-                    </button>
-                    <button
-                      onClick={copyLink}
-                      className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                    >
-                      {copied ? 'Link copied!' : 'Copy link'}
-                    </button>
-                    <div className="my-1 border-t border-zinc-100 dark:border-zinc-700" />
-                    <button
-                      onClick={remove}
-                      className="block w-full px-3 py-1.5 text-left text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40"
-                    >
-                      Delete
-                    </button>
-                  </>
-                ) : menuView === 'tag' ? (
-                  <div className="px-3 py-2">
-                    <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
-                      <button
-                        onClick={() => setMenuView('main')}
-                        className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                        title="Back"
-                      >
-                        ←
-                      </button>
-                      Tag with client
-                    </div>
-                    {tags.length ? (
-                      <div className="mb-2 flex flex-wrap gap-1">
-                        {tags.map((t) => (
-                          <span
-                            key={t}
-                            className="flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
-                          >
-                            {t}
-                            <button
-                              onClick={() => removeTag(t)}
-                              className="text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-100"
-                            >
-                              ×
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                    <input
-                      ref={tagInputRef}
-                      value={tagInput}
-                      onChange={(e) => setTagInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          commitTag();
-                        }
-                      }}
-                      placeholder="Type a client name…"
-                      className="w-full rounded border border-zinc-200 bg-white px-2 py-1 text-xs outline-none focus:border-indigo-300 dark:border-zinc-600 dark:bg-zinc-900"
-                    />
-                  </div>
-                ) : menuView === 'owner' ? (
-                  <div className="px-3 py-2">
-                    <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
-                      <button
-                        onClick={() => setMenuView('main')}
-                        className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                        title="Back"
-                      >
-                        ←
-                      </button>
-                      Owner
-                    </div>
-                    <input
-                      ref={ownerInputRef}
-                      value={ownerInput}
-                      onChange={(e) => setOwnerInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          commitOwner();
-                        }
-                      }}
-                      placeholder="Who owns this document?"
-                      className="w-full rounded border border-zinc-200 bg-white px-2 py-1 text-xs outline-none focus:border-indigo-300 dark:border-zinc-600 dark:bg-zinc-900"
-                    />
-                    <button
-                      onClick={commitOwner}
-                      className="mt-2 w-full rounded bg-black px-2 py-1 text-xs font-medium text-white dark:bg-white dark:text-black"
-                    >
-                      Save owner
-                    </button>
-                    <div className="mt-1 text-[10px] text-zinc-400">
-                      Leave blank to clear the owner.
-                    </div>
-                  </div>
-                ) : menuView === 'duplicate' ? (
-                  <div className="px-3 py-2">
-                    <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
-                      <button
-                        onClick={() => setMenuView('main')}
-                        className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                        title="Back"
-                      >
-                        ←
-                      </button>
-                      Duplicate as
-                    </div>
-                    <input
-                      ref={dupInputRef}
-                      value={dupName}
-                      onChange={(e) => setDupName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          commitDuplicate();
-                        }
-                      }}
-                      placeholder="New document name…"
-                      className={`w-full rounded border bg-white px-2 py-1 text-xs outline-none dark:bg-zinc-900 ${
-                        dupTrimmed && !dupAvailable
-                          ? 'border-red-300 focus:border-red-400'
-                          : 'border-zinc-200 focus:border-indigo-300 dark:border-zinc-600'
-                      }`}
-                    />
-                    {dupTrimmed && !dupAvailable ? (
-                      <div className="mt-1 text-[10px] text-red-500">
-                        A document with this name already exists.
-                      </div>
-                    ) : null}
-                    <button
-                      onClick={commitDuplicate}
-                      disabled={!dupAvailable}
-                      className="mt-2 w-full rounded bg-black px-2 py-1 text-xs font-medium text-white disabled:opacity-40 dark:bg-white dark:text-black"
-                    >
-                      Create duplicate
-                    </button>
-                  </div>
-                ) : (
-                  <div className="px-3 py-2">
-                    <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
-                      <button
-                        onClick={() => setMenuView('main')}
-                        className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                        title="Back"
-                      >
-                        ←
-                      </button>
-                      Move to folder
-                    </div>
-                    <div className="-mx-1 max-h-52 overflow-y-auto">
-                      <button
-                        onClick={() => moveTo(undefined)}
-                        className={`flex w-full items-center justify-between rounded px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700 ${
-                          deck.folderId ? '' : 'font-medium text-indigo-600 dark:text-indigo-300'
-                        }`}
-                      >
-                        No folder
-                        {deck.folderId ? null : <span aria-hidden>✓</span>}
-                      </button>
-                      {folders.map((f) => (
-                        <button
-                          key={f.id}
-                          onClick={() => moveTo(f.id)}
-                          className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700 ${
-                            deck.folderId === f.id
-                              ? 'font-medium text-indigo-600 dark:text-indigo-300'
-                              : ''
-                          }`}
-                        >
-                          <span className="truncate">{f.name}</span>
-                          {deck.folderId === f.id ? <span aria-hidden>✓</span> : null}
-                        </button>
-                      ))}
-                    </div>
-                    {folders.length ? null : (
-                      <div className="mt-1 text-[10px] text-zinc-400">
-                        No folders yet — add one in the rail on the left.
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : null}
-          </div>
+          <DocMenu
+            deck={deck}
+            onChange={onChange}
+            onStartRename={() => setRenaming(true)}
+            folders={folders}
+            buttonClassName="opacity-0 group-hover:opacity-100"
+            onOpenChange={setMenuOpen}
+            tagSignal={tagSignal}
+          />
         </div>
       </div>
 
-      {confirmDelete ? (
-        <ConfirmDialog
-          title="Delete this document?"
-          message={`“${deck.title}” will move to Deleted items. You can restore it from there, or delete it for good.`}
-          confirmLabel="Delete"
-          onConfirm={confirmRemove}
-          onCancel={() => setConfirmDelete(false)}
-        />
-      ) : null}
+      <div className="overflow-hidden rounded-b-lg [&>div]:!w-full">
+        <Thumb deck={deck} />
+      </div>
+
     </div>
   );
 }

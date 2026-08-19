@@ -22,6 +22,7 @@ import {
 import { getFolder, listFolders, type DocFolder } from '@/docs/folders';
 import { FolderRail, type FolderScope } from './FolderRail';
 import { DocCard } from './DocCard';
+import { DocTable } from './DocTable';
 import { NewDocModal } from './NewDocModal';
 import { Reports } from './Reports';
 import { DeletedItems } from './DeletedItems';
@@ -43,6 +44,53 @@ const NO_OWNER = '\u0000none';
 
 /** Sentinel for the "documents with no client tag" filter option. */
 const NO_CLIENT = '\u0000untagged';
+
+/** Where the Thumbnails switch remembers itself. Unset means on. */
+const THUMBS_KEY = 'devindesign.docthumbs.v1';
+
+/**
+ * The section header above the document grid: what you're looking at on the
+ * left, the Thumbnails switch on the right. A real switch rather than a
+ * checkbox — it flips a view, it doesn't submit anything — and it sits here
+ * rather than in the toolbar because it belongs to the grid it changes, not to
+ * the search and filters that decide what's in it.
+ */
+function SectionHeader({
+  label,
+  showThumbs,
+  onToggleThumbs,
+}: {
+  label: string;
+  showThumbs: boolean;
+  onToggleThumbs: () => void;
+}) {
+  return (
+    <div className="mb-2 flex items-center justify-between gap-3">
+      <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">{label}</span>
+      <button
+        role="switch"
+        aria-checked={showThumbs}
+        onClick={onToggleThumbs}
+        title={showThumbs ? 'Hide slide previews' : 'Show slide previews'}
+        className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+      >
+        Thumbnails
+        <span
+          aria-hidden
+          className={`relative h-3.5 w-6 rounded-full transition-colors ${
+            showThumbs ? 'bg-indigo-500' : 'bg-zinc-300 dark:bg-zinc-600'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-[left] ${
+              showThumbs ? 'left-3' : 'left-0.5'
+            }`}
+          />
+        </span>
+      </button>
+    </div>
+  );
+}
 
 function firstClient(deck: Deck): string {
   return (deck.tags ?? [])[0]?.toLowerCase() ?? '';
@@ -198,6 +246,11 @@ export function Home() {
   const [clientFilter, setClientFilter] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('updated');
+  // Thumbnails on/off. Persisted, and read in an effect rather than in the
+  // initializer: localStorage doesn't exist during the server render, and
+  // seeding state from it directly would hydrate a different grid than the
+  // markup says.
+  const [showThumbs, setShowThumbs] = useState(true);
   const [tab, setTab] = useState<Tab>(
     searchParams.get('tab') === 'reports' ? 'reports' : 'documents',
   );
@@ -223,6 +276,7 @@ export function Home() {
   useEffect(() => {
     seedIfFirstRun();
     refreshDocs();
+    if (window.localStorage.getItem(THUMBS_KEY) === '0') setShowThumbs(false);
     // Opening a folder from elsewhere (the editor's header crumb). Applied
     // after the seed so a first-run folder is already on disk, and only for an
     // id that still exists — a stale link lands on All documents rather than
@@ -233,6 +287,12 @@ export function Home() {
     // would yank you back to the folder in the URL after every navigation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const toggleThumbs = () => {
+    const next = !showThumbs;
+    setShowThumbs(next);
+    window.localStorage.setItem(THUMBS_KEY, next ? '1' : '0');
+  };
 
   /** Drop-onto-a-folder, and the card menu's "Move to folder", land here. */
   const fileDoc = (docId: string, folderId: string | undefined) => {
@@ -379,7 +439,17 @@ export function Home() {
 
         {/* Hidden rather than unmounted, so a search/filter survives a trip
             through Reports and back. */}
-        <section className={tab === 'documents' ? 'flex items-start gap-6' : 'hidden'}>
+        {/* Two panes, the way a file explorer is laid out: folders on the left,
+            the documents in the selected one on the right, with a rule between
+            them so they read as separate halves rather than a sidebar floating
+            beside the content. `items-stretch` + a min height keep the divider
+            running the full pane rather than stopping at whichever column
+            happens to be shorter. */}
+        <section
+          className={
+            tab === 'documents' ? 'flex min-h-[70vh] items-stretch' : 'hidden'
+          }
+        >
           {/* The rail is a place, not a filter, so it stays put as you search —
               and it stays visible inside Deleted, which is one of its rows. */}
           <FolderRail
@@ -395,15 +465,34 @@ export function Home() {
             onFoldersChange={refreshDocs}
           />
 
-          <div className="min-w-0 flex-1">
-          {/* Says where you are. Skipped on "All documents", where the tab strip
-              above already reads "Documents". */}
+          <div className="min-w-0 flex-1 pl-6">
+          {/* Says where you are, as a path rather than a bare heading: inside a
+              folder the first crumb is the way back out, which is the one
+              control an explorer is expected to have and the rail alone doesn't
+              advertise. Skipped on "All documents", where the tab strip above
+              already reads "Documents". */}
           {scope.kind !== 'all' ? (
-            <h2 className="mb-3 text-sm font-medium text-zinc-700 dark:text-zinc-200">
-              {scope.kind === 'deleted'
-                ? 'Deleted'
-                : (folders.find((f) => f.id === scope.id)?.name ?? 'Folder')}
-            </h2>
+            <div className="mb-3 flex items-center gap-1.5 text-sm">
+              <button
+                onClick={() => setScope({ kind: 'all' })}
+                className="text-zinc-500 hover:text-zinc-800 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+              >
+                All documents
+              </button>
+              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+                /
+              </span>
+              <span className="font-medium text-zinc-800 dark:text-zinc-100">
+                {scope.kind === 'deleted'
+                  ? 'Deleted'
+                  : (folders.find((f) => f.id === scope.id)?.name ?? 'Folder')}
+              </span>
+              {scope.kind === 'folder' ? (
+                <span className="text-[11px] tabular-nums text-zinc-400">
+                  {folderCounts[scope.id] ?? 0}
+                </span>
+              ) : null}
+            </div>
           ) : null}
           {/* One toolbar row: search + filters on the left, sort on the right,
               all sharing a baseline. The whole row is gone inside Deleted,
@@ -492,6 +581,22 @@ export function Home() {
           ) : (
             <>
 
+            {/* "All documents" keeps meaning ALL of them, folders included — the
+                tiles above are a way in, not a filter, and a root that hid
+                filed documents would contradict the rail row they're both named
+                after. */}
+            <SectionHeader
+              label={
+                scope.kind === 'folder'
+                  ? (folders.find((f) => f.id === scope.id)?.name ?? 'Folder')
+                  : hasFilters
+                    ? 'Results'
+                    : 'All documents'
+              }
+              showThumbs={showThumbs}
+              onToggleThumbs={toggleThumbs}
+            />
+
           {filteredDocs.length === 0 ? (
             <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
               {hasFilters
@@ -500,21 +605,20 @@ export function Home() {
                   ? 'No documents yet.'
                   : 'This folder is empty. Drag a document onto it, or use “Move to folder”.'}
             </div>
-          ) : (
+          ) : showThumbs ? (
             // Now the grid is full-bleed, the column COUNT is what should grow
             // with the window, not the card width: auto-fill keeps every card
             // near 280px and just fits more of them across, at any width, with
             // no breakpoints to keep in sync.
             <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
               {filteredDocs.map((deck) => (
-                <DocCard
-                  key={deck.id}
-                  deck={deck}
-                  onChange={refreshDocs}
-                  folders={folders}
-                />
+                <DocCard key={deck.id} deck={deck} onChange={refreshDocs} folders={folders} />
               ))}
             </div>
+          ) : (
+            // Previews off means the file-explorer list: same documents, same
+            // sort, one row each.
+            <DocTable docs={filteredDocs} folders={folders} onChange={refreshDocs} />
           )}
             </>
           )}

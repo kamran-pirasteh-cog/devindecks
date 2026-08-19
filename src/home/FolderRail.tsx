@@ -329,7 +329,10 @@ export function FolderRail({
   );
 
   return (
-    <nav aria-label="Folders" className="w-56 shrink-0">
+    <nav
+      aria-label="Folders"
+      className="w-56 shrink-0 border-r border-zinc-200 pr-4 dark:border-zinc-800"
+    >
       <Row
         label="All documents"
         count={total}

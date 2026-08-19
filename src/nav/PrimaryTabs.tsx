@@ -13,14 +13,33 @@ import Link from 'next/link';
 
 export type PrimaryTab = 'documents' | 'reports' | 'admin';
 
-const ROUTE_TABS: { value: PrimaryTab; label: string; href: string }[] = [
+const ROUTE_TABS: {
+  value: PrimaryTab;
+  label: string;
+  href: string;
+  /** Marks a tab whose section is previewable but not built yet. */
+  comingSoon?: boolean;
+}[] = [
   { value: 'documents', label: 'Documents', href: '/' },
-  { value: 'reports', label: 'Reports', href: '/?tab=reports' },
+  { value: 'reports', label: 'Reports', href: '/?tab=reports', comingSoon: true },
   { value: 'admin', label: 'Admin', href: '/admin' },
 ];
 
+/**
+ * The "Coming soon" flag, in blue rather than the muted grey the disabled
+ * content uses — the tab is still reachable, so the label has to read as
+ * information about what's inside, not as one more greyed-out thing.
+ */
+export function ComingSoonBadge() {
+  return (
+    <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
+      Coming soon
+    </span>
+  );
+}
+
 const tabClass = (active: boolean) =>
-  `-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium ${
+  `-mb-px inline-flex items-center gap-1.5 border-b-2 px-3.5 py-2.5 text-sm font-medium ${
     active
       ? 'border-indigo-500 text-zinc-900 dark:text-white'
       : 'border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
@@ -43,10 +62,12 @@ export function PrimaryTabs({
             className={tabClass(active === t.value)}
           >
             {t.label}
+            {t.comingSoon ? <ComingSoonBadge /> : null}
           </button>
         ) : (
           <Link key={t.value} href={t.href} className={tabClass(active === t.value)}>
             {t.label}
+            {t.comingSoon ? <ComingSoonBadge /> : null}
           </Link>
         ),
       )}

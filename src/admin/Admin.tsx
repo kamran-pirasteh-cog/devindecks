@@ -30,14 +30,12 @@ import {
   type TypeRole,
 } from '@/model';
 import { FitSlideView } from '@/render/FitSlideView';
+import { CATEGORY_BLURBS, type SlideLayoutCategory } from '@/templates/registry';
 import {
-  CATEGORY_BLURBS,
-  SLIDE_LAYOUT_CATEGORIES,
-  type SlideLayoutCategory,
-} from '@/templates/registry';
-import {
+  addCustomFolder,
   createLayout,
   createLayoutFromImage,
+  listFolders,
   listLayouts,
   seedLayoutsIfFirstRun,
   type StoredLayout,
@@ -88,8 +86,15 @@ export function Admin() {
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [layouts, setLayouts] = useState<StoredLayout[]>([]);
-  // null = album shelf; otherwise we're inside one slide-type album.
-  const [album, setAlbum] = useState<SlideLayoutCategory | null>(null);
+  const [folders, setFolders] = useState<string[]>([]);
+  // null = album shelf; otherwise we're inside one album.
+  const [album, setAlbum] = useState<string | null>(null);
+  // Non-empty search takes over the shelf: albums first, then single layouts.
+  const [layoutQuery, setLayoutQuery] = useState('');
+  // A new layout has to land somewhere, so both entry points ask for a folder
+  // first; the file dialog only opens once "upload" has one.
+  const [pendingNew, setPendingNew] = useState<'build' | 'upload' | null>(null);
+  const [uploadFolder, setUploadFolder] = useState<string | null>(null);
   // Palette drag-to-reorder. `armed` gates `draggable` on the row so the name
   // and hex inputs keep normal text selection until the grip is pressed.
   const [colorDragArmed, setColorDragArmed] = useState<number | null>(null);
@@ -100,26 +105,48 @@ export function Admin() {
   useEffect(() => {
     seedLayoutsIfFirstRun();
     setLayouts(listLayouts());
+    setFolders(listFolders());
   }, []);
 
-  const refreshLayouts = () => setLayouts(listLayouts());
+  const refreshLayouts = () => {
+    setLayouts(listLayouts());
+    setFolders(listFolders());
+  };
 
-  const buildLayout = (category: SlideLayoutCategory) => {
-    const l = createLayout({ name: 'Untitled layout', category });
-    router.push(`/admin/layouts/${l.id}`);
+  /** Folder chosen in the picker: build opens the editor, upload the file dialog. */
+  const startInFolder = (category: string) => {
+    const action = pendingNew;
+    setPendingNew(null);
+    if (action === 'build') {
+      const l = createLayout({ name: 'Untitled layout', category });
+      router.push(`/admin/layouts/${l.id}`);
+    } else if (action === 'upload') {
+      setUploadFolder(category);
+      fileInputRef.current?.click();
+    }
   };
 
   const uploadLayout = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
+    const category = uploadFolder;
+    setUploadFolder(null);
+    if (!file || !category) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const l = createLayoutFromImage(reader.result as string, stripExt(file.name));
+      const l = createLayoutFromImage(reader.result as string, stripExt(file.name), category);
       router.push(`/admin/layouts/${l.id}`);
     };
     reader.readAsDataURL(file);
   };
+
+  // Search spans the whole library, so it overrides whichever album is open.
+  const q = layoutQuery.trim().toLowerCase();
+  const searching = q.length > 0;
+  const matchedFolders = searching ? folders.filter((f) => f.toLowerCase().includes(q)) : [];
+  const matchedLayouts = searching
+    ? layouts.filter((l) => l.name.toLowerCase().includes(q))
+    : [];
 
   const patch = (next: Partial<DesignSystem>) => {
     setDs((cur) => ({ ...cur, ...next }));
@@ -385,25 +412,31 @@ export function Admin() {
           </div>
         ) : tab === 'templates' ? (
           <div>
-            <div className="mb-4 flex items-center justify-between gap-4">
-              {album ? (
-                <div className="min-w-0">
-                  <button
-                    onClick={() => setAlbum(null)}
-                    className="text-xs text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-                  >
-                    ← All albums
-                  </button>
-                  <h2 className="mt-1 text-sm font-semibold">
-                    {album}{' '}
-                    <span className="font-normal text-zinc-400">
-                      · {layouts.filter((l) => l.category === album).length}
-                    </span>
-                  </h2>
-                </div>
-              ) : (
-                <div />
-              )}
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <input
+                  value={layoutQuery}
+                  onChange={(e) => setLayoutQuery(e.target.value)}
+                  placeholder="Search albums and layouts"
+                  className="w-full max-w-sm rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs outline-none placeholder:text-zinc-400 focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900"
+                />
+                {album && !searching ? (
+                  <div className="mt-2">
+                    <button
+                      onClick={() => setAlbum(null)}
+                      className="text-xs text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                    >
+                      ← All albums
+                    </button>
+                    <h2 className="mt-1 text-sm font-semibold">
+                      {album}{' '}
+                      <span className="font-normal text-zinc-400">
+                        · {layouts.filter((l) => l.category === album).length}
+                      </span>
+                    </h2>
+                  </div>
+                ) : null}
+              </div>
               <div className="flex shrink-0 gap-2">
                 <input
                   ref={fileInputRef}
@@ -413,20 +446,68 @@ export function Admin() {
                   className="hidden"
                 />
                 <button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => setPendingNew('upload')}
                   className="rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   Upload to create layout
                 </button>
                 <button
-                  onClick={() => buildLayout(album ?? 'Blank')}
+                  onClick={() => setPendingNew('build')}
                   className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
                 >
                   + Build layout
                 </button>
               </div>
             </div>
-            {album ? (
+            {searching ? (
+              /* Albums first, then the individual layouts, so a family match
+                 never gets buried under the layouts inside it. */
+              <div className="space-y-6">
+                {matchedFolders.length ? (
+                  <section>
+                    <h3 className="mb-2 text-[11px] uppercase tracking-wide text-zinc-400">
+                      Albums · {matchedFolders.length}
+                    </h3>
+                    <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-4">
+                      {matchedFolders.map((category) => (
+                        <AlbumCard
+                          key={category}
+                          category={category}
+                          layouts={layouts.filter((l) => l.category === category)}
+                          designSystem={ds}
+                          onOpen={() => {
+                            setLayoutQuery('');
+                            setAlbum(category);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {matchedLayouts.length ? (
+                  <section>
+                    <h3 className="mb-2 text-[11px] uppercase tracking-wide text-zinc-400">
+                      Layouts · {matchedLayouts.length}
+                    </h3>
+                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                      {matchedLayouts.map((l) => (
+                        <LayoutCard
+                          key={l.id}
+                          layout={l}
+                          designSystem={ds}
+                          onChange={refreshLayouts}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {!matchedFolders.length && !matchedLayouts.length ? (
+                  <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
+                    Nothing matches “{layoutQuery.trim()}”.
+                  </div>
+                ) : null}
+              </div>
+            ) : album ? (
               layouts.filter((l) => l.category === album).length === 0 ? (
                 <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
                   No layouts in this album yet.
@@ -442,7 +523,7 @@ export function Admin() {
               )
             ) : (
               <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-4">
-                {SLIDE_LAYOUT_CATEGORIES.map((category) => (
+                {folders.map((category) => (
                   <AlbumCard
                     key={category}
                     category={category}
@@ -453,6 +534,21 @@ export function Admin() {
                 ))}
               </div>
             )}
+            {pendingNew ? (
+              <FolderPickerModal
+                title={pendingNew === 'build' ? 'Build layout in…' : 'Upload layout into…'}
+                folders={folders}
+                counts={layouts}
+                initial={album}
+                onCancel={() => setPendingNew(null)}
+                onPick={startInFolder}
+                onCreate={(name) => {
+                  const created = addCustomFolder(name);
+                  if (created) setFolders(listFolders());
+                  return created;
+                }}
+              />
+            ) : null}
           </div>
         ) : (
           <Artifacts />
@@ -788,9 +884,9 @@ function PageNumberPreview({
 }
 
 /**
- * One slide-type album on the Layouts shelf. The cover is the album's first
- * layout with two stacked "cards" peeking out behind it, so a full album reads
- * as a stack at a glance; empty albums show a dashed placeholder instead.
+ * One slide-type album on the Layouts shelf. The cover is a 2x2 mosaic of the
+ * album's first four layouts — the remaining cells stay grey, so how full an
+ * album is reads at a glance; an entirely empty album is four grey cells.
  */
 function AlbumCard({
   category,
@@ -798,43 +894,155 @@ function AlbumCard({
   designSystem,
   onOpen,
 }: {
-  category: SlideLayoutCategory;
+  category: string;
   layouts: StoredLayout[];
   designSystem: DesignSystem;
   onOpen: () => void;
 }) {
-  const cover = layouts[0];
+  const blurb = CATEGORY_BLURBS[category as SlideLayoutCategory];
+  // Four cells of slide aspect in a 2x2 grid keep the card's overall shape the
+  // same as a single slide, so the shelf stays on one rhythm.
+  const cells = [0, 1, 2, 3].map((i) => layouts[i]);
   return (
     <button onClick={onOpen} className="group block w-full text-left">
-      <div className="relative pt-2">
-        {layouts.length > 2 ? (
-          <div className="absolute inset-x-4 top-0 h-3 rounded-t-md border border-b-0 border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900" />
-        ) : null}
-        {layouts.length > 1 ? (
-          <div className="absolute inset-x-2 top-1 h-3 rounded-t-md border border-b-0 border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900" />
-        ) : null}
-        <div className="relative overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm transition group-hover:-translate-y-0.5 group-hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900">
-          {cover ? (
-            <FitSlideView slide={cover.slide} slideSize={SLIDE_SIZE} designSystem={designSystem} />
-          ) : (
+      <div className="relative">
+        <div className="grid grid-cols-2 gap-1 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 p-1 shadow-sm transition group-hover:-translate-y-0.5 group-hover:shadow-md dark:border-zinc-800 dark:bg-zinc-800">
+          {cells.map((cell, i) => (
             <div
-              className="flex items-center justify-center text-xs text-zinc-300 dark:text-zinc-600"
-              style={{ aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}` }}
+              key={i}
+              className="overflow-hidden rounded-sm bg-white dark:bg-zinc-900"
+              style={cell ? undefined : { aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}` }}
             >
-              Empty
+              {cell ? (
+                <FitSlideView slide={cell.slide} slideSize={SLIDE_SIZE} designSystem={designSystem} />
+              ) : (
+                <div className="h-full w-full bg-zinc-200 dark:bg-zinc-700" />
+              )}
             </div>
-          )}
+          ))}
         </div>
       </div>
       <div className="mt-2 px-0.5">
         <div className="truncate text-sm font-medium">{category}</div>
         {/* What belongs in this family, not just how full it is — the shelf is
-            browsed by the shape of the idea, the way SmartArt is. */}
-        <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{CATEGORY_BLURBS[category]}</div>
+            browsed by the shape of the idea, the way SmartArt is. Folders Admin
+            created have no authored blurb, so they simply don't get a line. */}
+        {blurb ? (
+          <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{blurb}</div>
+        ) : null}
         <div className="text-[11px] text-zinc-400 dark:text-zinc-500">
           {layouts.length} {layouts.length === 1 ? 'layout' : 'layouts'}
         </div>
       </div>
     </button>
+  );
+}
+
+/**
+ * Asked before a layout exists, by both Build and Upload: a layout with no
+ * folder would land in whatever bucket the code happened to default to, and
+ * then have to be found and moved. Creating a folder is part of the same step,
+ * so "it doesn't belong anywhere yet" isn't a dead end.
+ */
+function FolderPickerModal({
+  title,
+  folders,
+  counts,
+  initial,
+  onPick,
+  onCreate,
+  onCancel,
+}: {
+  title: string;
+  folders: string[];
+  counts: StoredLayout[];
+  initial: string | null;
+  onPick: (folder: string) => void;
+  /** Returns the canonical folder name, or null if the name was empty. */
+  onCreate: (name: string) => string | null;
+  onCancel: () => void;
+}) {
+  const [selected, setSelected] = useState<string | null>(initial);
+  const [newFolder, setNewFolder] = useState('');
+
+  const create = () => {
+    const created = onCreate(newFolder);
+    if (!created) return;
+    setNewFolder('');
+    setSelected(created);
+  };
+
+  return (
+    <div
+      onClick={onCancel}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+      >
+        <div className="border-b border-zinc-100 px-4 py-3 text-sm font-semibold dark:border-zinc-800">
+          {title}
+        </div>
+        <div className="max-h-64 overflow-y-auto p-2">
+          {folders.map((f) => (
+            <button
+              key={f}
+              // A folder created from the field below can be out of view in a
+              // long list; scrolling it in is the only confirmation it worked.
+              ref={(el) => {
+                if (selected === f) el?.scrollIntoView({ block: 'nearest' });
+              }}
+              onClick={() => setSelected(f)}
+              onDoubleClick={() => onPick(f)}
+              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs ${
+                selected === f
+                  ? 'bg-zinc-900 text-white dark:bg-white dark:text-black'
+                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              <span className="shrink-0 opacity-60">🗀</span>
+              <span className="min-w-0 flex-1 truncate font-medium">{f}</span>
+              <span className="shrink-0 opacity-60">
+                {counts.filter((l) => l.category === f).length}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
+          <input
+            value={newFolder}
+            onChange={(e) => setNewFolder(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') create();
+            }}
+            placeholder="New folder name"
+            className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs outline-none placeholder:text-zinc-400 focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <button
+            onClick={create}
+            disabled={!newFolder.trim()}
+            className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            Create
+          </button>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
+          <button
+            onClick={onCancel}
+            className="rounded-md px-2.5 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => selected && onPick(selected)}
+            disabled={!selected}
+            className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black"
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

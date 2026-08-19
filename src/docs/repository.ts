@@ -175,10 +175,16 @@ export function renameDoc(id: string, title: string): void {
   }
 }
 
+/**
+ * Tagging isn't editing, so `updatedAt` is left alone — the same reasoning as
+ * `setDocFolder`. It also keeps the card still: under the default "recently
+ * updated" sort, stamping the time here jumped the deck to the front of the
+ * grid the moment you tagged it.
+ */
 export function setDocTags(id: string, tags: string[]): void {
   const map = read();
   if (map[id]) {
-    map[id] = { ...map[id], tags, updatedAt: now() };
+    map[id] = { ...map[id], tags };
     write(map);
   }
 }
@@ -349,6 +355,11 @@ export function duplicateDoc(id: string, title?: string): Deck | null {
     id: `doc-${nanoid(10)}`,
     title: title?.trim() || suggestCopyTitle(src.title),
     owner: DEFAULT_OWNER,
+    // Client tags do NOT carry over. A copy is almost always the start of work
+    // for someone else — reusing last quarter's deck for the next client — and
+    // an inherited tag files it under the wrong client until someone notices,
+    // which is worse than an untagged deck the user has to tag.
+    tags: undefined,
     createdAt: now(),
     updatedAt: now(),
     slides: clone.slides.map((s) => {
