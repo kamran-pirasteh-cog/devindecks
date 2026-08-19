@@ -53,6 +53,7 @@ import {
 } from '@/model';
 import { compileChart } from '@/chart/compile';
 import { snapQuarterTurn } from '@/chart/turn';
+import { nextRotation, normalizeDeg } from '@/editor/rotateStep';
 import {
   applyChartFormat,
   applyChartTextFormat,
@@ -83,6 +84,14 @@ import {
   makeEyebrow,
   titleYUnderEyebrow,
 } from '@/editor/eyebrow';
+import {
+  makeSticky,
+  stickyGrowth,
+  stickyNoteOf,
+  stickyOrigin,
+  syncStickyGeometry,
+  STICKY_TEXT_ROLE,
+} from '@/editor/sticky';
 
 export type AlignMode =
   | 'left'
@@ -236,6 +245,15 @@ interface EditorState {
   toggleSelect: (id: string) => void;
   clearSelection: () => void;
   setEditing: (id: string | null) => void;
+  /**
+   * Open `id` for editing with `text` already typed into it — the keystroke that
+   * asked for the editor, which would otherwise be eaten by the mount.
+   *
+   * The character goes into the MODEL rather than into the editable: the editor
+   * paints its DOM from the model on mount (twice, under StrictMode), so
+   * anything inserted into the DOM around that mount is painted over.
+   */
+  beginEditWith: (id: string, text: string) => void;
   setCurrentSlide: (id: string) => void;
   stepSlide: (delta: number) => void;
   setTitle: (title: string) => void;
@@ -256,6 +274,19 @@ interface EditorState {
    * title's new position arrive and undo together.
    */
   insertEyebrow: () => void;
+  /**
+   * Drop a sticky note on the current slide and leave the caret in it. One step,
+   * for the same reason the eyebrow is one: the paper, the tape and the type
+   * arrive and undo together.
+   */
+  insertSticky: () => void;
+  /**
+   * Resize the sticky that owns this text box so `textHeightEmu` of type fits —
+   * the model half of "the note grows as you type". A no-op for any text box
+   * that isn't a sticky's, and for a height the note already has, so it can be
+   * called on every keystroke.
+   */
+  growSticky: (textId: string, textHeightEmu: EMU, transient?: boolean) => void;
   updateElement: (id: string, patch: Partial<SlideElement>, transient?: boolean) => void;
   setRect: (id: string, rect: Rect, transient?: boolean) => void;
   /** Commit several boxes at once (a group transform) as ONE history step. */
@@ -267,8 +298,22 @@ interface EditorState {
   /**
    * Grow or shrink each box by the same amount, top-left pinned — the keyboard
    * counterpart to dragging the bottom-right handle.
+   *
+   * Pictures keep their aspect ratio unless `stretch` says otherwise: see
+   * `keepRatioFactor`.
    */
-  resizeBy: (ids: string[], dw: EMU, dh: EMU, transient?: boolean) => void;
+  resizeBy: (
+    ids: string[],
+    dw: EMU,
+    dh: EMU,
+    opts?: { transient?: boolean; stretch?: boolean },
+  ) => void;
+  /**
+   * Turn each box one step about its own centre — the keyboard counterpart to
+   * the rotation handle. `dir` is 1 for clockwise, -1 for anticlockwise; the
+   * angle it lands on is the next stop on the 22.5° grid (see `nextRotation`).
+   */
+  rotateBy: (ids: string[], dir: 1 | -1) => void;
   duplicateBy: (ids: string[], dx: EMU, dy: EMU) => void;
   setFill: (ids: string[], fill: Fill) => void;
   /**
@@ -447,6 +492,19 @@ function pushPast(s: { past: Deck[]; future: Deck[] }, entry: Deck): void {
 const MIN_SIZE: EMU = EMU_PER_POINT * 3.6;
 
 /**
+ * The single scale a keep-ratio resize applies, taken from whichever axis the
+ * arrow drove.
+ *
+ * The floor is computed on the FACTOR rather than on each side: clamping w and
+ * h separately is exactly what distorts a picture as it reaches the minimum —
+ * the narrow side stops while the long one keeps shrinking.
+ */
+function keepRatioFactor(rect: Rect, dw: EMU, dh: EMU): number {
+  const raw = dw !== 0 ? (rect.w + dw) / rect.w : (rect.h + dh) / rect.h;
+  return Math.max(raw, MIN_SIZE / rect.w, MIN_SIZE / rect.h);
+}
+
+/**
  * Run a mutation that relayouts charts, and carry the selection across it.
  *
  * Every recompile can change which of a chart's elements exist, and the canvas
@@ -553,8 +611,34 @@ const shiftUnits =
     }
   };
 
+type ImmerSet = (updater: (draft: EditorState) => void) => void;
+type Initializer = (set: ImmerSet, get: () => EditorState) => EditorState;
+
+/**
+ * Every write in the store goes out through the `set` this hands the actions, and
+ * every write ends with the current slide's stickies put back together — see
+ * `syncStickyGeometry`.
+ *
+ * A sticky is one object made of three primitives, and the alternative is
+ * chasing its tape through every gesture that can move geometry (drag, group
+ * resize at an angle, rotate, nudge, align, match-size, undo…) — which is how
+ * the tape comes unstuck in the first place. Cheap enough to do unconditionally:
+ * it walks one slide's elements and touches nothing on a slide with no stickies.
+ */
+const withStickySync =
+  (init: Initializer): Initializer =>
+  (set, get) =>
+    init((updater) => {
+      set((s) => {
+        updater(s);
+        const slide = slideById(s.deck, s.currentSlideId);
+        if (slide) syncStickyGeometry(slide.elements);
+      });
+    }, get);
+
 export const useEditor = create<EditorState>()(
-  immer((set, get) => ({
+  immer(
+    withStickySync((set, get) => ({
     deck: emptyDeck(),
     designSystem: DEFAULT_DESIGN_SYSTEM,
     currentSlideId: '',
@@ -657,6 +741,28 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         s.editingId = id;
         if (id && !s.selectedIds.includes(id)) s.selectedIds = [id];
+      });
+    },
+
+    beginEditWith(id, text) {
+      // One step: the character and the open belong to the same keystroke, and
+      // ⌘Z takes the note back to what it said before it was typed on.
+      get().commit();
+      set((s) => {
+        const slide = slideById(s.deck, s.currentSlideId);
+        const el = slide?.elements.find((e) => e.id === id);
+        const body = el && 'body' in el ? el.body : undefined;
+        if (body) {
+          // Appended to the last run, which is where the caret lands — the
+          // editor collapses its selection to the end of the last paragraph.
+          const para = body.paragraphs[body.paragraphs.length - 1];
+          if (!para) body.paragraphs.push({ runs: [{ text }] });
+          else if (!para.runs.length) para.runs.push({ text });
+          else para.runs[para.runs.length - 1].text += text;
+          s.deck.updatedAt = new Date(0).toISOString();
+        }
+        s.editingId = id;
+        if (!s.selectedIds.includes(id)) s.selectedIds = [id];
       });
     },
 
@@ -1094,6 +1200,36 @@ export const useEditor = create<EditorState>()(
       if (text) get().setEditing(text.id);
     },
 
+    /**
+     * The sticky command. `makeSticky` builds all three boxes, so this is only
+     * about where the note lands and that the caret follows it in.
+     */
+    insertSticky() {
+      const s = get();
+      const slide = slideById(s.deck, s.currentSlideId);
+      if (!slide) return;
+      const els = makeSticky(stickyOrigin(slide.elements, s.deck.slideSize));
+      const text = els.find((el) => el.role === STICKY_TEXT_ROLE);
+      get().addElements(els);
+      // Straight into typing, exactly as an eyebrow does — a blank note is a
+      // question, not a deliverable.
+      if (text) get().setEditing(text.id);
+    },
+
+    growSticky(textId, textHeightEmu, transient = false) {
+      const s = get();
+      const slide = slideById(s.deck, s.currentSlideId);
+      if (!slide) return;
+      const note = stickyNoteOf(slide.elements, textId);
+      if (!note) return;
+      const rect = stickyGrowth(note.rect, textHeightEmu, note.rotation ?? 0);
+      // Called on every keystroke, and most of them don't add a line: a write
+      // that changes nothing would still open a transient burst. Only the NOTE
+      // is written — the text box follows it out of `syncStickyGeometry`.
+      if (rect.h === note.rect.h) return;
+      get().setRects([{ id: note.id, rect }], transient);
+    },
+
     updateElement(id, patch, transient = false) {
       get().beginChange(transient);
       set((s) => {
@@ -1163,7 +1299,8 @@ export const useEditor = create<EditorState>()(
       });
     },
 
-    resizeBy(ids, dw, dh, transient = false) {
+    resizeBy(ids, dw, dh, opts = {}) {
+      const { transient = false, stretch = false } = opts;
       get().beginChange(transient);
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
@@ -1180,12 +1317,74 @@ export const useEditor = create<EditorState>()(
         for (const el of slide.elements) {
           if (!ids.includes(el.id)) continue;
           if (el.chartRef && chartIds.has(el.chartRef.chartId)) continue;
+          // A picture is the one thing a one-axis resize visibly ruins. Its
+          // source is fitted to the rect — cover when uncropped, stretched onto
+          // the crop plane when not — so widening the box alone widens the face
+          // in it. Both axes scale together instead, from whichever arrow was
+          // pressed, which is what PowerPoint's "lock aspect ratio" (on by
+          // default for pictures) does. ⌥ asks for the old stretch.
+          // One axis driving, which is all the keyboard ever sends.
+          const oneAxis = (dw !== 0) !== (dh !== 0);
+          const keepRatio =
+            el.type === 'picture' && !stretch && oneAxis && el.rect.w > 0 && el.rect.h > 0;
+          if (keepRatio) {
+            const factor = keepRatioFactor(el.rect, dw, dh);
+            el.rect.w = Math.round(el.rect.w * factor);
+            el.rect.h = Math.round(el.rect.h * factor);
+            continue;
+          }
           el.rect.w = Math.max(MIN_SIZE, el.rect.w + dw);
           el.rect.h = Math.max(MIN_SIZE, el.rect.h + dh);
         }
 
         resizeChartFrames(slide, ids, dw, dh, s.designSystem, MIN_SIZE);
         s.selectedIds = repairChartSelection(slide, owned, s.selectedIds);
+      });
+    },
+
+    rotateBy(ids, dir) {
+      const slide = slideById(get().deck, get().currentSlideId);
+      // A chart part is laid out inside its frame and replaced on the next
+      // recompile, so spinning one on its own would only skew a label off its
+      // bar. A chart turns as a whole object, in quarter turns, through
+      // `setChartRotation` — free rotation stops at its edge.
+      const targets = (slide?.elements ?? []).filter((el) => ids.includes(el.id) && !el.chartRef);
+      if (!targets.length) return;
+      // One delta for the whole selection, taken from the first box: several
+      // boxes turn TOGETHER, so they have to share an angle even when they
+      // started at different ones.
+      const from = targets[0].rotation ?? 0;
+      const delta = nextRotation(from, dir) - from;
+      // The selection turns about its own centre, so each member both spins and
+      // orbits — the same thing the rotation handle does to a group, and the
+      // only version that keeps a sticky's note, tape and text together.
+      const box = unionRect(
+        targets,
+        targets.map((t) => t.id),
+      )!;
+      const cx = box.x + box.w / 2;
+      const cy = box.y + box.h / 2;
+      const rad = (delta * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const ids_ = new Set(targets.map((t) => t.id));
+
+      get().commit();
+      set((s) => {
+        const sl = slideById(s.deck, s.currentSlideId);
+        if (!sl) return;
+        for (const el of sl.elements) {
+          if (!ids_.has(el.id)) continue;
+          const deg = normalizeDeg((el.rotation ?? 0) + delta);
+          // Upright is the absence of an angle, so a turn back to it leaves the
+          // element as it was found rather than carrying a 0 around.
+          el.rotation = deg || undefined;
+          if (targets.length < 2) continue;
+          const ex = el.rect.x + el.rect.w / 2 - cx;
+          const ey = el.rect.y + el.rect.h / 2 - cy;
+          el.rect.x = Math.round(cx + ex * cos - ey * sin - el.rect.w / 2);
+          el.rect.y = Math.round(cy + ex * sin + ey * cos - el.rect.h / 2);
+        }
       });
     },
 
@@ -2047,7 +2246,8 @@ export const useEditor = create<EditorState>()(
         landOn(s, next);
       });
     },
-  })),
+    })),
+  ),
 );
 
 function emptyDeck(): Deck {

@@ -7,7 +7,13 @@
  * Playground database + blob store without touching the UI.
  */
 import { nanoid } from 'nanoid';
-import { reidentifyCharts, SLIDE_16x9, type Deck, type Slide } from '@/model';
+import {
+  reidentifyCharts,
+  SLIDE_16x9,
+  type Deck,
+  type DeckBrief,
+  type Slide,
+} from '@/model';
 import { getTemplate, RETIRED_TEMPLATE_IDS, TEMPLATES } from '@/templates/registry';
 import { getTemplateSlides } from '@/templates/repository';
 import { copyThreads, purgeThreads } from '@/comments/repository';
@@ -187,6 +193,30 @@ export function setDocTags(id: string, tags: string[]): void {
     map[id] = { ...map[id], tags };
     write(map);
   }
+}
+
+/**
+ * Record (or clear) the meeting brief. Like tagging, this isn't editing the
+ * deck, so `updatedAt` is left alone — a deck shouldn't jump to the front of
+ * the "recently updated" sort because someone filled in the client name.
+ *
+ * Empty strings and empty attendee lists are dropped rather than stored, so a
+ * skipped field reads as absent everywhere downstream instead of as `''`.
+ */
+export function setDocBrief(id: string, brief: DeckBrief): void {
+  const map = read();
+  if (!map[id]) return;
+  const client = brief.client?.trim();
+  const meetingDate = brief.meetingDate?.trim();
+  const attendees = brief.attendees?.map((a) => a.trim()).filter(Boolean);
+  const cleaned: DeckBrief = {
+    ...(client ? { client } : {}),
+    ...(meetingDate ? { meetingDate } : {}),
+    ...(attendees?.length ? { attendees } : {}),
+  };
+  const { brief: _brief, ...rest } = map[id];
+  map[id] = Object.keys(cleaned).length ? { ...rest, brief: cleaned } : rest;
+  write(map);
 }
 
 export function setDocOwner(id: string, owner: string): void {

@@ -285,6 +285,21 @@ export interface Slide {
   chart?: SlideChartConfig;
 }
 
+/**
+ * What a deck is *for*, captured once in the new-deck flow: the client, the
+ * meeting it's being taken into, and who's presenting it. Every field is
+ * optional — the creation step can be skipped through — and it's provenance,
+ * not content: nothing here renders onto a slide.
+ */
+export interface DeckBrief {
+  /** The client or account this deck is for. */
+  client?: string;
+  /** Date of the meeting, as `YYYY-MM-DD` (a calendar day, not an instant). */
+  meetingDate?: string;
+  /** Who's attending from the Cognition side. */
+  attendees?: string[];
+}
+
 export interface Deck {
   id: string;
   title: string;
@@ -317,6 +332,14 @@ export interface Deck {
   tags?: string[];
   /** Who owns this document (free text until there's real auth). */
   owner?: string;
+  /**
+   * The meeting brief collected when the document was created. Kept beside
+   * `tags` rather than folded into them: the client is also written out as a
+   * tag so it files and filters with everything else, but the date and the
+   * attendee list are answers to specific questions and would be lost as
+   * free-text labels.
+   */
+  brief?: DeckBrief;
   /**
    * Which dashboard folder this document filed under, or unset for "Unfiled".
    * A document lives in at most one folder — folders are the single-home

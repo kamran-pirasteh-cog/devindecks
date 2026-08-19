@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Reports tab — the same shape as Documents: a rail on the left, a search /
+ * Reports preview — the same shape as Documents: a rail on the left, a search /
  * filter / sort toolbar, and a grid of cards. A report is a recurring delivery
  * of a deck, so each card shows the deck's own thumbnail; what's different is
  * the caption and the rail, which slices by schedule status rather than folder.
@@ -29,7 +29,6 @@ import {
 } from '@/reports/types';
 import { createRun, listPendingRuns, type ReportRun } from '@/reports/runs';
 import { DEFAULT_OWNER } from '@/docs/repository';
-import { ComingSoonBadge } from '@/nav/PrimaryTabs';
 import { ReportCard } from './ReportCard';
 import { ReportEditor } from './ReportEditor';
 import { PendingApprovals } from './PendingApprovals';
@@ -317,23 +316,15 @@ export function Reports({
   return (
     <div>
       {/*
-       * Reports aren't shipped yet, so this tab is a preview: the real layout is
-       * on show, greyed and inert, with the blue flag above it saying why. The
-       * notice sits OUTSIDE the dimmed wrapper — an explanation the reader has
-       * to squint at is worse than no explanation.
+       * Reports aren't shipped yet, so this is a preview: the real layout is on
+       * show, greyed and inert. It renders inside the "Coming soon" dialog,
+       * which supplies the heading and the explanation — so there's no notice
+       * of its own here.
        *
        * `inert` is what makes the greying honest: opacity alone leaves every
        * control clickable and keyboard-reachable, so someone could still
        * schedule a send from a section that doesn't work yet.
        */}
-      <div className="mb-4 flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200">
-        <ComingSoonBadge />
-        <span>
-          Scheduled reports are still in progress. This is a preview of the layout — nothing here is
-          live yet.
-        </span>
-      </div>
-
       <div inert className="pointer-events-none select-none opacity-40 grayscale">
         <PendingApprovals runs={pending} decks={docs} onChange={refresh} />
 

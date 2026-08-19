@@ -148,9 +148,16 @@ const runsFromNodes = (
 export function TextEditor({
   el,
   scale,
+  onInput,
 }: {
   el: TextElement | ShapeElement;
   scale: number;
+  /**
+   * Fired with the live editable on mount and after every keystroke, for the box
+   * whose SIZE follows its text as it's typed (a sticky note's). The text itself
+   * lives in the DOM until commit — this is a measurement hook, not a write.
+   */
+  onInput?: (node: HTMLElement) => void;
 }) {
   const ds = useEditor((s) => s.designSystem);
   const store = useEditor.getState;
@@ -384,6 +391,11 @@ export function TextEditor({
     const sel = window.getSelection();
     sel?.removeAllRanges();
     sel?.addRange(range);
+    // Whatever this box's size follows from its text (a sticky note's paper)
+    // sizes itself once here too: the editor can open on text the model has
+    // never measured — a note typed on straight from the keyboard, or one whose
+    // words arrived from anywhere but this editable.
+    if (node) onInput?.(node);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -586,7 +598,10 @@ export function TextEditor({
       onBlur={commit}
       // Typing can add, remove or reorder blocks (Enter, a paste, deleting a
       // line), and every one of those changes the numbering below it.
-      onInput={syncMarkers}
+      onInput={(e) => {
+        syncMarkers();
+        onInput?.(e.currentTarget);
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -600,7 +615,11 @@ export function TextEditor({
         if (painter) {
           e.preventDefault();
           applyPainter(painter);
-        } else if (mod && key === 'enter') {
+        } else if (key === 'enter' && !e.shiftKey) {
+          // Enter finishes the edit, the way clicking away does — the common
+          // case is a one-line label, and typing past the box was never the
+          // point. Shift+Enter is the way to add a line, which the browser's
+          // own <br> handles and `runsFromNodes` reads back as a paragraph.
           e.preventDefault();
           commit();
         } else if (e.key === 'Tab') {

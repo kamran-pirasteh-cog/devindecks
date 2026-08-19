@@ -1,7 +1,9 @@
 /**
  * Arrow-key selection, PowerPoint style.
  *
- * ⌥ + arrow walks the selection to the next object in that direction. The walk
+ * ⌥ + ↑/↓ walks the selection to the next object in that direction — and ⌥ +
+ * ←/→ too, but only with nothing selected, since a selection makes those two
+ * rotate instead (see `rotateStep.ts`). The walk
  * is SPATIAL, not z-order: what you get is the thing your eye would jump to,
  * which is why a candidate is scored by how far it is along the pressed axis
  * plus a penalty for how far it strays off it.

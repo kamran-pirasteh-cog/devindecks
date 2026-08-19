@@ -20,24 +20,25 @@ import {
   setDocFolder,
 } from '@/docs/repository';
 import { getFolder, listFolders, type DocFolder } from '@/docs/folders';
+import { useToast } from '@/ui/Toast';
 import { FolderRail, type FolderScope } from './FolderRail';
 import { DocCard } from './DocCard';
 import { DocTable } from './DocTable';
 import { NewDocModal } from './NewDocModal';
-import { Reports } from './Reports';
+import { ComingSoonLink } from '@/ui/ComingSoon';
 import { DeletedItems } from './DeletedItems';
 import { PrimaryTabs } from '@/nav/PrimaryTabs';
+import {
+  DEFAULT_DOC_SORT,
+  SORT_OPTIONS,
+  SORT_DEFAULT_DIR,
+  nextSort,
+  sortDocs,
+  type DocSort,
+  type SortBy,
+} from './sortDocs';
 
 type Tab = 'documents' | 'reports';
-
-type SortBy = 'updated' | 'created' | 'client' | 'owner';
-
-const SORT_OPTIONS: { value: SortBy; label: string }[] = [
-  { value: 'updated', label: 'Last updated' },
-  { value: 'created', label: 'Date created' },
-  { value: 'client', label: 'Client' },
-  { value: 'owner', label: 'Owner' },
-];
 
 /** Sentinel for the "documents with no owner set" filter option. */
 const NO_OWNER = '\u0000none';
@@ -90,10 +91,6 @@ function SectionHeader({
       </button>
     </div>
   );
-}
-
-function firstClient(deck: Deck): string {
-  return (deck.tags ?? [])[0]?.toLowerCase() ?? '';
 }
 
 /**
@@ -230,6 +227,7 @@ function NewMenu({ onNewDeck, onNewReport }: { onNewDeck: () => void; onNewRepor
 }
 
 export function Home() {
+  const toast = useToast();
   const [docs, setDocs] = useState<Deck[]>([]);
   const [folders, setFolders] = useState<DocFolder[]>([]);
   const [folderCounts, setFolderCounts] = useState<Record<string, number>>({});
@@ -245,7 +243,9 @@ export function Home() {
   const [query, setQuery] = useState('');
   const [clientFilter, setClientFilter] = useState('');
   const [ownerFilter, setOwnerFilter] = useState('');
-  const [sortBy, setSortBy] = useState<SortBy>('updated');
+  // Key AND direction together: the column headers reverse the order in place,
+  // which a bare key can't express.
+  const [sort, setSort] = useState<DocSort>(DEFAULT_DOC_SORT);
   // Thumbnails on/off. Persisted, and read in an effect rather than in the
   // initializer: localStorage doesn't exist during the server render, and
   // seeding state from it directly would hydrate a different grid than the
@@ -255,10 +255,6 @@ export function Home() {
     searchParams.get('tab') === 'reports' ? 'reports' : 'documents',
   );
   const [deleted, setDeleted] = useState<Deck[]>([]);
-  // A counter, not a boolean: the sheet lives inside `Reports`, and each press
-  // of "New report" has to reach it again — including while the tab is already
-  // showing, where a boolean would already be true and change nothing.
-  const [newReportSignal, setNewReportSignal] = useState(0);
   // The rail's "Deleted" row swaps the grid for the recycle bin — it's one of
   // the places documents can be, so it lives with the folders rather than as a
   // button off in the toolbar.
@@ -294,28 +290,58 @@ export function Home() {
     window.localStorage.setItem(THUMBS_KEY, next ? '1' : '0');
   };
 
-  /** Drop-onto-a-folder, and the card menu's "Move to folder", land here. */
+  /** Drop-onto-a-folder from the rail. (The card menu files documents itself,
+      and raises its own toast, because it knows which folders it offered.) */
   const fileDoc = (docId: string, folderId: string | undefined) => {
+    const doc = docs.find((d) => d.id === docId);
+    const from = doc?.folderId;
     setDocFolder(docId, folderId);
     refreshDocs();
+    if (!doc || from === folderId) return;
+    const name = folders.find((f) => f.id === folderId)?.name;
+    toast(name ? `Moved “${doc.title}” to ${name}.` : `Removed “${doc.title}” from its folder.`, {
+      action: {
+        label: 'Undo',
+        run: () => {
+          setDocFolder(docId, from);
+          refreshDocs();
+        },
+      },
+    });
   };
 
   /** Dropped onto the rail's Deleted row: recoverable, same as the card menu. */
   const trashDoc = (docId: string) => {
+    const doc = docs.find((d) => d.id === docId);
     deleteDoc(docId);
     refreshDocs();
+    toast(doc ? `“${doc.title}” moved to Deleted.` : 'Document moved to Deleted.', {
+      action: {
+        label: 'Undo',
+        run: () => {
+          restoreDoc(docId);
+          refreshDocs();
+        },
+      },
+    });
   };
 
   /** The rail's Deleted menu — the bin view's own two controls, reachable
       without going into the bin first. */
   const restoreAllDeleted = () => {
+    const n = deleted.length;
     deleted.forEach((deck) => restoreDoc(deck.id));
     refreshDocs();
+    toast(`Restored ${n} document${n === 1 ? '' : 's'}.`);
   };
 
   const emptyDeleted = () => {
+    const n = deleted.length;
     purgeAllDeleted();
     refreshDocs();
+    // No undo here, and the tone says as much: this is the one path that
+    // destroys documents.
+    toast(`${n} document${n === 1 ? '' : 's'} deleted for good.`, { tone: 'danger' });
   };
 
   // The search box counts as a filter here: it narrows the same grid, so
@@ -345,8 +371,8 @@ export function Home() {
   const hasUnowned = docs.some((d) => !d.owner);
   const hasUntagged = docs.some((d) => !(d.tags ?? []).length);
 
-  const filteredDocs = docs
-    .filter((deck) => {
+  const filteredDocs = sortDocs(
+    docs.filter((deck) => {
       // Folder scope first: it's a location, not a filter — "Clear" and Escape
       // leave it alone, and the empty state below reads differently inside a
       // folder than it does under a search that matched nothing.
@@ -366,25 +392,9 @@ export function Home() {
         if (deck.owner) return false;
       } else if (ownerFilter && deck.owner !== ownerFilter) return false;
       return true;
-    })
-    .sort((a, b) => {
-      if (sortBy === 'created') return b.createdAt.localeCompare(a.createdAt);
-      if (sortBy === 'owner') {
-        const oa = (a.owner ?? '').toLowerCase();
-        const ob = (b.owner ?? '').toLowerCase();
-        if (!oa && ob) return 1;
-        if (oa && !ob) return -1;
-        return oa.localeCompare(ob) || a.title.localeCompare(b.title);
-      }
-      if (sortBy === 'client') {
-        const ca = firstClient(a);
-        const cb = firstClient(b);
-        if (!ca && cb) return 1;
-        if (ca && !cb) return -1;
-        return ca.localeCompare(cb) || a.title.localeCompare(b.title);
-      }
-      return b.updatedAt.localeCompare(a.updatedAt);
-    });
+    }),
+    sort,
+  );
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -410,7 +420,6 @@ export function Home() {
                 if (showTrash) setScope({ kind: 'all' });
                 setTab('reports');
                 window.history.replaceState(null, '', '/?tab=reports');
-                setNewReportSignal((n) => n + 1);
               }}
             />
           </div>
@@ -430,11 +439,24 @@ export function Home() {
       </header>
 
       <main className="px-8 py-6">
-        {/* Hidden rather than unmounted, for the same reason as the grid below:
-            a search, a rail selection or a half-filled report sheet survives a
-            trip through Documents and back. */}
+        {/* Reports are still being built, and the preview of the layout now
+            lives in the "Coming soon" dialog with everything else that isn't
+            shipped — so the tab is a pointer at it rather than a second copy. */}
         <div className={tab === 'reports' ? undefined : 'hidden'}>
-          <Reports docs={docs} newSignal={newReportSignal} />
+          <div className="mx-auto mt-16 max-w-md rounded-lg border border-blue-200 bg-blue-50 px-5 py-4 text-center dark:border-blue-500/30 dark:bg-blue-500/10">
+            <h2 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+              Scheduled reporting is coming soon
+            </h2>
+            <p className="mt-1 text-[13px] text-blue-800/80 dark:text-blue-200/80">
+              A deck that re-sends itself on a schedule, with its numbers refreshed and an approval
+              step before it goes out.
+            </p>
+            <ComingSoonLink
+              label="See a preview of what's coming"
+              section="reporting"
+              className="mt-3 inline-block text-[13px]"
+            />
+          </div>
         </div>
 
         {/* Hidden rather than unmounted, so a search/filter survives a trip
@@ -563,8 +585,12 @@ export function Home() {
               Sort by
               <ToolbarSelect
                 label="Sort by"
-                value={sortBy}
-                onChange={(v) => setSortBy(v as SortBy)}
+                value={sort.by}
+                // Picking a key from here takes that key's own direction — the
+                // headers are where you reverse one.
+                onChange={(v) =>
+                  setSort({ by: v as SortBy, dir: SORT_DEFAULT_DIR[v as SortBy] })
+                }
               >
                 {SORT_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>
@@ -618,7 +644,13 @@ export function Home() {
           ) : (
             // Previews off means the file-explorer list: same documents, same
             // sort, one row each.
-            <DocTable docs={filteredDocs} folders={folders} onChange={refreshDocs} />
+            <DocTable
+              docs={filteredDocs}
+              folders={folders}
+              onChange={refreshDocs}
+              sort={sort}
+              onSort={(by) => setSort((s) => nextSort(s, by))}
+            />
           )}
             </>
           )}
