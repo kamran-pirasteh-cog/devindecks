@@ -11,6 +11,7 @@
  */
 import { useEffect } from 'react';
 import { MODAL_Z } from './layers';
+import { FLAGS } from '@/flags';
 
 interface Shortcut {
   keys: string[];
@@ -50,13 +51,17 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: ['Esc'], label: 'Clear selection', note: 'exits text editing first' },
       { keys: ['Double-click'], label: 'Edit text in place' },
       { keys: ['⇧', 'Click'], label: 'Add or remove from selection' },
-      { keys: ['⌥', 'Arrow'], label: 'Select the next object that way', note: 'nothing selected? starts at the top-left' },
+      { keys: ['⌥', '↑', '↓'], label: 'Select the next object that way', note: 'nothing selected? starts at the top-left — ⌥←/→ work that way too' },
       { keys: ['Click'], label: 'Select only what you clicked', note: 'empty space clears' },
       { keys: [MOD, 'Scroll'], label: 'Zoom the slide in or out' },
       { keys: [MOD, '⌥', 'C'], label: 'Copy formatting', note: `whole object, or the text you highlighted — also ${MOD}⇧C` },
       { keys: [MOD, '⌥', 'V'], label: 'Paste formatting', note: `onto the highlighted text only, if any — also ${MOD}⇧V` },
-      { keys: [MOD, '⌥', 'M'], label: 'Comment', note: 'on the selection, or the slide' },
-      { keys: [MOD, '↵'], label: 'Post comment or reply', note: 'in the comments panel' },
+      ...(FLAGS.comments
+        ? [
+            { keys: [MOD, '⌥', 'M'], label: 'Comment', note: 'on the selection, or the slide' },
+            { keys: [MOD, '↵'], label: 'Post comment or reply', note: 'in the comments panel' },
+          ]
+        : []),
     ],
   },
   {
@@ -78,7 +83,8 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: [MOD, '⇧', '7'], label: 'Numbered list', note: 'while editing text' },
       { keys: ['Tab'], label: 'Indent list item', note: 'while editing text' },
       { keys: ['⇧', 'Tab'], label: 'Outdent list item', note: 'while editing text' },
-      { keys: [MOD, '↵'], label: 'Finish editing', note: 'while editing text' },
+      { keys: ['↵'], label: 'Finish editing', note: `while editing text — also ${MOD}↵` },
+      { keys: ['⇧', '↵'], label: 'New line', note: 'stays in the text box' },
     ],
   },
   {
@@ -86,6 +92,16 @@ const buildGroups = (MOD: string): Group[] => [
     items: [
       { keys: ['↑', '↓', '←', '→'], label: 'Nudge' },
       { keys: ['⇧', 'Arrow'], label: 'Resize', note: '→ ↓ grow, ← ↑ shrink' },
+      {
+        keys: ['⌥', '⇧', 'Arrow'],
+        label: 'Stretch one side',
+        note: 'pictures keep their proportions without ⌥',
+      },
+      {
+        keys: ['⌥', '←', '→'],
+        label: 'Rotate',
+        note: '22.5° a press — an object dragged off the grid snaps back onto it',
+      },
       { keys: [MOD, 'D'], label: 'Duplicate selection' },
       { keys: [MOD, 'G'], label: 'Group', note: '2+ objects' },
       { keys: [MOD, '⌥', 'G'], label: 'Ungroup', note: 'one level at a time' },

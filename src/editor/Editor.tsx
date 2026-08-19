@@ -22,6 +22,7 @@ import {
 } from '@/templates/repository';
 import { getStoredLayout, layoutAsDeck, saveLayoutFromSlide } from '@/templates/layoutRepository';
 import { getActiveDesignSystem } from '@/design/repository';
+import { FLAGS } from '@/flags';
 import { useComments } from '@/store/commentStore';
 import { ChatColumn } from './ChatColumn';
 import { CommentsPanel } from './CommentsPanel';
@@ -36,8 +37,10 @@ import { clipboardAction } from './clipboardShortcut';
 import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
 import { reorderDirection } from './reorderShortcut';
 import { NAV_KEYS, nextInDirection } from './spatialNav';
+import { stickyTextTarget } from './sticky';
 import { TemplateDrawer } from './TemplateDrawer';
 import { ExportMenu } from './ExportMenu';
+import { ComingSoonLink } from '@/ui/ComingSoon';
 
 /**
  * Alignment rides the arrow keys: the direction you press is the edge things
@@ -219,6 +222,15 @@ export function Editor({
         e.target instanceof HTMLElement && !!e.target.closest('[data-slide-strip]');
 
       const slide = s.currentSlide();
+      /**
+       * The sticky to write on when a bare printable key is pressed: clicking a
+       * note and typing is the whole gesture, with no double-click and no
+       * hunting for which of the note's three parts holds the words.
+       */
+      const stickySeed =
+        !mod && !e.altKey && e.key.length === 1
+          ? stickyTextTarget(slide.elements, s.selectedIds)
+          : undefined;
       // Every selected box the character shortcuts can act on. A group arrives
       // here as its members (`select` expands it), so a click on an imported
       // table selects a dozen of these at once.
@@ -280,7 +292,7 @@ export function Editor({
         } else {
           s.setAnchor(s.selectedIds, nextAnchor(textEdge, primaryBody.anchor));
         }
-      } else if (isCommentShortcut(e)) {
+      } else if (FLAGS.comments && isCommentShortcut(e)) {
         // Google Slides' insert-comment chord. With something selected the
         // thread pins to it — to whichever selected object carries the text the
         // commenter was reading; otherwise it's a comment on the slide itself.
@@ -336,21 +348,41 @@ export function Editor({
         // The same four moves on ⌘[ / ⌘] — see `reorderShortcut.ts`.
         e.preventDefault();
         s.reorder(restack);
-      } else if (e.altKey && !mod && NAV_KEYS[e.key]) {
+      } else if (
+        e.altKey &&
+        !mod &&
+        !e.shiftKey &&
+        (e.key === 'ArrowLeft' || e.key === 'ArrowRight') &&
+        s.selectedIds.length
+      ) {
+        // PowerPoint's ⌥ + ←/→: the selection turns one step about its own
+        // centre, snapping to the 22.5° grid. Ahead of the ⌥ walk below, which
+        // keeps ↑/↓ (and both horizontals with nothing selected, so ⌥→ on an
+        // empty slide still picks the first object).
+        e.preventDefault();
+        s.rotateBy(s.selectedIds, e.key === 'ArrowRight' ? 1 : -1);
+      } else if (e.altKey && !mod && !e.shiftKey && NAV_KEYS[e.key]) {
         // ⌥ + arrow walks the selection between objects instead of moving one,
-        // the way arrows alone do in PowerPoint. Matched ahead of both the
-        // nudge and the page-the-deck branches, which take bare arrows.
+        // the way arrows alone do in PowerPoint. ←/→ only reach here with
+        // nothing selected — with a selection they rotate, above. Matched ahead
+        // of both the nudge and the page-the-deck branches, which take bare
+        // arrows. ⇧ is excluded so ⌥⇧ + arrow can reach the free resize below.
         e.preventDefault();
         const next = nextInDirection(slide.elements, s.selectedIds, NAV_KEYS[e.key]!);
         if (next) s.select(next);
-      } else if (e.shiftKey && !mod && !e.altKey && ARROWS[e.key] && s.selectedIds.length) {
+      } else if (e.shiftKey && !mod && ARROWS[e.key] && s.selectedIds.length) {
         // PowerPoint's ⇧ + arrow: the selection grows and shrinks instead of
         // moving, top-left pinned, so → widens and ← narrows from the right
-        // edge (↓ / ↑ likewise for height). Reached only with no other
-        // modifier — the restack and align chords carry ⇧ too and match above.
+        // edge (↓ / ↑ likewise for height). Reached without ⌘ — the restack and
+        // align chords carry ⇧ too and match above.
+        //
+        // A picture scales both sides together here (see `resizeBy`), because a
+        // one-axis resize stretches the image inside it rather than reframing
+        // it. Adding ⌥ asks for that stretch anyway, which is the only way to
+        // change a picture's proportions from the keyboard.
         e.preventDefault();
         const [ax, ay] = ARROWS[e.key]!;
-        s.resizeBy(s.selectedIds, ax * RESIZE_STEP, ay * RESIZE_STEP);
+        s.resizeBy(s.selectedIds, ax * RESIZE_STEP, ay * RESIZE_STEP, { stretch: e.altKey });
       } else if (ARROWS[e.key] && s.selectedIds.length) {
         e.preventDefault();
         const [ax, ay] = ARROWS[e.key]!;
@@ -410,10 +442,17 @@ export function Editor({
         // browser's save-page dialog never lands on top of the editor.
         e.preventDefault();
       } else if (mod && !e.altKey && !e.shiftKey && (e.code === 'KeyM' || key === 'm')) {
-        // PowerPoint's new-slide chord. ⌘⌥M (comment) is matched further up, so
-        // by here Alt is already ruled out.
+        // PowerPoint's new-slide chord. Alt is ruled out here rather than
+        // upstream, so the chord stays exclusive whether or not ⌘⌥M (comment)
+        // is matched further up.
         e.preventDefault();
         s.addSlide();
+      } else if (stickySeed) {
+        // LAST, so every chord above still wins. The keystroke opens the editor
+        // AND is the first character typed into it — `beginEditWith` carries it
+        // across the mount.
+        e.preventDefault();
+        s.beginEditWith(stickySeed, e.key);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -483,6 +522,8 @@ export function Editor({
           <span className="text-[11px] text-zinc-400">
             {ds.name} · v{ds.version}
           </span>
+          {/* Blue text, left of Export: what's being built, one click away. */}
+          <ComingSoonLink />
           <ExportMenu />
         </div>
       </header>
@@ -494,7 +535,7 @@ export function Editor({
           <Toolbar />
           <EditorCanvas />
         </div>
-        <CommentsPanel />
+        {FLAGS.comments ? <CommentsPanel /> : null}
         <TemplateDrawer />
       </div>
     </div>

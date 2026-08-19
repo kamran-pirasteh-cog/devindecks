@@ -42,7 +42,7 @@ export interface PageNumberStyle {
 
 export const DEFAULT_PAGE_NUMBERS: PageNumberStyle = {
   font: 'Source Serif 4',
-  sizePt: 8,
+  sizePt: 10,
   position: 'bottom-right',
   marginXEmu: inchesToEmu(0.45),
   marginYEmu: inchesToEmu(0.25),

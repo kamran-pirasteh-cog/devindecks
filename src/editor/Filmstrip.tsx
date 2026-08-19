@@ -7,6 +7,7 @@ import { showsPageNumbers } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { useComments } from '@/store/commentStore';
 import { unresolvedCounts } from '@/comments/types';
+import { FLAGS } from '@/flags';
 import { useResizableWidth } from './useResizableWidth';
 import { useContentWidth } from './useContentWidth';
 import { ResizeHandle } from './ResizeHandle';
@@ -187,7 +188,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                 {/* Open threads on this slide — the same signal Google Slides
                     puts on a thumbnail, so a comment on slide 14 is findable
                     without paging through the deck. */}
-                {commentCounts[slide.id] ? (
+                {FLAGS.comments && commentCounts[slide.id] ? (
                   <span
                     title={`${commentCounts[slide.id]} open ${
                       commentCounts[slide.id] === 1 ? 'comment' : 'comments'

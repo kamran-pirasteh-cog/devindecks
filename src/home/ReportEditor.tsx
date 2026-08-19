@@ -18,6 +18,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { Deck } from '@/model';
+import { FLAGS } from '@/flags';
 import {
   CHANNELS,
   DAY_NAMES,
@@ -416,12 +417,14 @@ export function ReportEditor({
                     label="Skip if the deck hasn't changed"
                     hint="No edits since the last send means no send — keeps a quiet week quiet."
                   />
-                  <Toggle
-                    checked={Boolean(report.includeComments)}
-                    onChange={(v) => patch({ includeComments: v })}
-                    label="Include open comments"
-                    hint="Attaches the deck's unresolved threads so recipients see what's still in flight."
-                  />
+                  {FLAGS.comments ? (
+                    <Toggle
+                      checked={Boolean(report.includeComments)}
+                      onChange={(v) => patch({ includeComments: v })}
+                      label="Include open comments"
+                      hint="Attaches the deck's unresolved threads so recipients see what's still in flight."
+                    />
+                  ) : null}
                 </div>
               </Field>
             </>

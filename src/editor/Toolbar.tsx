@@ -8,6 +8,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { useEditor } from '@/store/editorStore';
 import { useComments } from '@/store/commentStore';
+import { FLAGS } from '@/flags';
 import { makeArrow, makeShape } from './factories';
 import { LinePopover } from './LinePopover';
 import { TextPopover } from './TextPopover';
@@ -67,6 +68,7 @@ export function Toolbar() {
   const toggleGuides = useEditor((s) => s.toggleGuides);
   const pageNumbers = useEditor((s) => showsPageNumbers(s.deck));
   const togglePageNumbers = useEditor((s) => s.togglePageNumbers);
+  const insertSticky = useEditor((s) => s.insertSticky);
   const togglePanel = useComments((s) => s.togglePanel);
   const panelOpen = useComments((s) => s.panelOpen);
   const openThreads = useComments((s) => s.threads.filter((t) => !t.resolved).length);
@@ -193,20 +195,38 @@ export function Toolbar() {
       </div>
       <Divider />
       <button
-        onClick={togglePanel}
-        title={panelOpen ? 'Hide comments' : 'Show comments'}
-        aria-pressed={panelOpen}
-        className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
-          panelOpen ? 'text-indigo-600 dark:text-indigo-400' : 'text-zinc-600 dark:text-zinc-300'
-        }`}
+        onClick={insertSticky}
+        title="Add a sticky note (it grows as you type)"
+        className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
       >
-        Comments
-        {openThreads > 0 ? (
-          <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-300 px-1 text-[10px] font-semibold text-amber-900">
-            {openThreads}
-          </span>
-        ) : null}
+        {/* The object itself, in miniature: tilted yellow paper under a strip of
+            tape. */}
+        <span className="relative flex h-3.5 w-3.5 items-center justify-center">
+          <span className="absolute inset-0 rotate-[6deg] rounded-[1px] bg-[#F4E79F] ring-1 ring-black/10" />
+          <span className="absolute -top-0.5 left-1/2 h-1 w-2 -translate-x-1/2 rotate-[6deg] bg-zinc-400/70" />
+        </span>
+        Stickies
       </button>
+      {FLAGS.comments ? (
+        <>
+          <Divider />
+          <button
+            onClick={togglePanel}
+            title={panelOpen ? 'Hide comments' : 'Show comments'}
+            aria-pressed={panelOpen}
+            className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+              panelOpen ? 'text-indigo-600 dark:text-indigo-400' : 'text-zinc-600 dark:text-zinc-300'
+            }`}
+          >
+            Comments
+            {openThreads > 0 ? (
+              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-300 px-1 text-[10px] font-semibold text-amber-900">
+                {openThreads}
+              </span>
+            ) : null}
+          </button>
+        </>
+      ) : null}
       <Divider />
       <button
         onClick={() => setShowShortcuts(true)}

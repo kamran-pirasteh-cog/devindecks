@@ -57,3 +57,39 @@ export function measureTextFitPx(
     clone.remove();
   }
 }
+
+/**
+ * The height the OPEN text editor's content wants, in px at the node's own
+ * scale — the measurement behind a sticky note growing as it's typed into.
+ *
+ * The live editable is `inset: 0` on a fixed-height box, so its own geometry
+ * says nothing about how much type is in it; a clone at the same width with
+ * `height: auto` does. The clone carries the editor's inline styles and its
+ * per-run spans, which is the same reason `measureTextFitPx` clones the
+ * renderer's body rather than rebuilding it.
+ */
+export function measureEditableHeightPx(node: HTMLElement): number | null {
+  const clone = node.cloneNode(true) as HTMLElement;
+  clone.removeAttribute('contenteditable');
+  clone.style.position = 'fixed';
+  clone.style.inset = 'auto';
+  clone.style.left = '-100000px';
+  clone.style.top = '0px';
+  clone.style.width = `${node.offsetWidth}px`;
+  clone.style.height = 'auto';
+  clone.style.maxHeight = 'none';
+  clone.style.visibility = 'hidden';
+  clone.style.pointerEvents = 'none';
+  // The editor anchors its type with `justify-content`; on an auto-height clone
+  // that would stretch nothing and measure nothing extra, but a bottom-anchored
+  // box still reads clearer measured from the top.
+  clone.style.justifyContent = 'flex-start';
+  clone.style.outline = 'none';
+  document.body.appendChild(clone);
+  try {
+    const h = Math.ceil(clone.getBoundingClientRect().height);
+    return h || null;
+  } finally {
+    clone.remove();
+  }
+}

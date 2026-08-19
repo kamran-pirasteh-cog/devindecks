@@ -19,6 +19,7 @@ import {
 } from '@/docs/folders';
 import { unfileFolder } from '@/docs/repository';
 import { ConfirmDialog } from './ConfirmDialog';
+import { useToast } from '@/ui/Toast';
 
 /** Which slice of the dashboard the rail is asking for. */
 export type FolderScope =
@@ -255,6 +256,7 @@ export function FolderRail({
   onEmptyDeleted: () => void;
   onFoldersChange: () => void;
 }) {
+  const toast = useToast();
   // Two pieces of state, not one object: the focus effect below has to fire when
   // edit mode OPENS and not on every keystroke. Keying it on the row (a string,
   // or null for the new-folder row) does that; keying it on a `{id, name}`
@@ -294,6 +296,7 @@ export function FolderRail({
         // first half of "and put things in it".
         const folder = createFolder(name);
         onSelect({ kind: 'folder', id: folder.id });
+        toast(`Folder “${folder.name}” created.`);
       }
       onFoldersChange();
     }
@@ -303,11 +306,20 @@ export function FolderRail({
   const removeFolder = (folder: DocFolder) => {
     // Documents come first: if the folder went away with a document still
     // pointing at it, that document would be filed under nothing visible.
+    const held = counts[folder.id] ?? 0;
     unfileFolder(folder.id);
     deleteFolder(folder.id);
     if (scope.kind === 'folder' && scope.id === folder.id) onSelect({ kind: 'all' });
     setConfirmDelete(null);
     onFoldersChange();
+    // The documents survive, which is the part worth saying: the folder row just
+    // vanished from the rail along with its badge, and nothing else reports that
+    // what was in it is now in Unfiled rather than gone.
+    toast(
+      held
+        ? `Folder “${folder.name}” deleted — ${held} document${held === 1 ? '' : 's'} moved to Unfiled.`
+        : `Folder “${folder.name}” deleted.`,
+    );
   };
 
   const nameField = (
@@ -343,9 +355,10 @@ export function FolderRail({
         onDropDoc={(docId) => onFileDoc(docId, undefined)}
       />
 
-      {/* pr-1, matching the rows' menu slot, so the button's right edge lines up
-          with the row menus rather than a couple of pixels off them. */}
-      <div className="mt-4 mb-1 flex items-center justify-between pl-2 pr-1">
+      {/* No right padding: a folder row's shaded box spans the rail's full
+          content width (its own padding is INSIDE the shading), so this is what
+          lines the button's right edge up with the edge of that box. */}
+      <div className="mt-4 mb-1 flex items-center justify-between pl-2">
         <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">
           Folders
         </span>

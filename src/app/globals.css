@@ -27,3 +27,21 @@ body {
      own UI in a face the design system doesn't contain. */
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
+
+/* Toasts slide up into the corner. A CSS animation rather than a React
+   transition between two states: the card is only ever mounted for a few
+   seconds, and animating on mount doesn't need a render to start it. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast-in {
+  animation: toast-in 180ms ease-out both;
+}

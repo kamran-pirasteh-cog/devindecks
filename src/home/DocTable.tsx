@@ -22,6 +22,7 @@ import type { DocFolder } from '@/docs/folders';
 import { DocMenu } from './DocMenu';
 import { clientColor } from './clientColor';
 import { timeAgo } from './timeAgo';
+import type { DocSort, SortBy } from './sortDocs';
 
 function SlidesIcon() {
   return (
@@ -55,6 +56,8 @@ function Row({
   const [title, setTitle] = useState(deck.title);
   const [tagSignal, setTagSignal] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  /** Where the last right-click landed, and how many there have been. */
+  const [ctx, setCtx] = useState({ x: 0, y: 0, n: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
 
   const tags = deck.tags ?? [];
@@ -83,6 +86,14 @@ function Row({
       onDragStart={(e) => {
         e.dataTransfer.setData('text/devindesign-doc', deck.id);
         e.dataTransfer.effectAllowed = 'move';
+      }}
+      // Right-clicking a file offers the ••• menu at the pointer, which is what
+      // a list of files is expected to do. Left alone while renaming: the
+      // browser's own menu belongs to the input, with cut/paste in it.
+      onContextMenu={(e) => {
+        if (renaming) return;
+        e.preventDefault();
+        setCtx((c) => ({ x: e.clientX, y: e.clientY, n: c.n + 1 }));
       }}
       className={`group cursor-pointer border-b border-zinc-100 last:border-0 dark:border-zinc-800/70 ${
         menuOpen ? 'bg-zinc-50 dark:bg-zinc-800/40' : 'hover:bg-zinc-50 dark:hover:bg-zinc-800/40'
@@ -115,7 +126,22 @@ function Row({
         </div>
       </td>
 
-      <td className="py-2 pr-3">
+      {/* Centred, with the same symmetric padding as the headings above them. */}
+      <td className="py-2 px-3 text-center text-xs whitespace-nowrap">
+        <span className={deck.owner ? 'text-zinc-500 dark:text-zinc-300' : 'italic text-zinc-400'}>
+          {deck.owner ?? 'Unassigned'}
+        </span>
+      </td>
+
+      <td className="py-2 px-3 text-center text-xs tabular-nums whitespace-nowrap text-zinc-400">
+        {deck.slides.length}
+      </td>
+
+      <td className="py-2 px-3 text-center text-xs whitespace-nowrap text-zinc-400">
+        {timeAgo(deck.updatedAt)}
+      </td>
+
+      <td className="py-2 pr-3 whitespace-nowrap">
         {tags.length ? (
           <span className="flex flex-wrap gap-1">
             {tags.map((t) => (
@@ -143,20 +169,6 @@ function Row({
         )}
       </td>
 
-      <td className="py-2 pr-3 text-xs whitespace-nowrap">
-        <span className={deck.owner ? 'text-zinc-500 dark:text-zinc-300' : 'italic text-zinc-400'}>
-          {deck.owner ?? 'Unassigned'}
-        </span>
-      </td>
-
-      <td className="py-2 pr-3 text-right text-xs tabular-nums whitespace-nowrap text-zinc-400">
-        {deck.slides.length}
-      </td>
-
-      <td className="py-2 pr-3 text-xs whitespace-nowrap text-zinc-400">
-        {timeAgo(deck.updatedAt)}
-      </td>
-
       {/* The menu's dropdown is absolutely positioned inside a row that has no
           stacking context of its own, so the cell provides one — otherwise later
           rows paint over the open menu. */}
@@ -169,6 +181,7 @@ function Row({
             folders={folders}
             buttonClassName="opacity-0 group-hover:opacity-100"
             onOpenChange={setMenuOpen}
+            openAt={ctx}
             tagSignal={tagSignal}
           />
         </div>
@@ -177,14 +190,80 @@ function Row({
   );
 }
 
+/**
+ * The columns, in order, and which sort key each one names.
+ *
+ * Name carries the long, ragged value and stays left. The short ones are CENTRED
+ * under their own headings — padding is symmetric (`px-3`, not `pr-3`) so the
+ * heading and the values below it land on the same axis.
+ */
+const COLUMNS: { key: SortBy; label: string; className: string; center?: boolean }[] = [
+  { key: 'name', label: 'Name', className: 'w-full py-1.5 pl-3 pr-3' },
+  { key: 'owner', label: 'Owner', className: 'py-1.5 px-3', center: true },
+  { key: 'slides', label: 'Slides', className: 'py-1.5 px-3', center: true },
+  { key: 'updated', label: 'Last updated', className: 'py-1.5 px-3', center: true },
+  { key: 'client', label: 'Client', className: 'py-1.5 pr-3' },
+];
+
+/**
+ * A column heading that sorts. The caret shows only on the column in force —
+ * five carets would say nothing about which one is doing the ordering — and the
+ * inactive ones surface theirs on hover, so the header reads as clickable before
+ * it's clicked.
+ */
+function SortHeader({
+  column,
+  sort,
+  onSort,
+}: {
+  column: (typeof COLUMNS)[number];
+  sort: DocSort;
+  onSort: (by: SortBy) => void;
+}) {
+  const active = sort.by === column.key;
+  const caret = active ? (sort.dir === 'asc' ? '↑' : '↓') : '↓';
+  return (
+    <th
+      className={`${column.className} font-medium`}
+      // What a screen reader (and a keyboard) needs to know about a sortable
+      // column: which one is in force, and which way it points.
+      aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        onClick={() => onSort(column.key)}
+        title={`Sort by ${column.label.toLowerCase()}`}
+        className={`group/sort flex w-full items-center gap-1 uppercase tracking-wide ${
+          column.center ? 'justify-center' : ''
+        } ${active ? 'text-zinc-600 dark:text-zinc-200' : 'hover:text-zinc-600 dark:hover:text-zinc-200'}`}
+      >
+        {column.label}
+        <span
+          aria-hidden
+          className={`text-[10px] leading-none ${
+            active ? '' : 'opacity-0 group-hover/sort:opacity-60'
+          }`}
+        >
+          {caret}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 export function DocTable({
   docs,
   folders,
   onChange,
+  sort,
+  onSort,
 }: {
   docs: Deck[];
   folders: DocFolder[];
   onChange: () => void;
+  /** The order in force, for the header carets. */
+  sort: DocSort;
+  /** A column heading was pressed — see `nextSort`. */
+  onSort: (by: SortBy) => void;
 }) {
   // The wrapper is NOT a scroll container: `overflow` of any kind clips the row
   // menus, which hang below their row and outside the table box. The table
@@ -193,15 +272,13 @@ export function DocTable({
   // own corners are rounded to sit inside the border, which is the one thing
   // `overflow-hidden` had been doing for us.
   return (
-    <div className="rounded-lg border border-zinc-200 dark:border-zinc-800">
+    <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <table className="w-full border-collapse text-left">
         <thead>
-          <tr className="border-b border-zinc-200 bg-zinc-50 [&>th:first-child]:rounded-tl-lg [&>th:last-child]:rounded-tr-lg text-[11px] font-medium whitespace-nowrap uppercase tracking-wide text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900/60">
-            <th className="w-full py-1.5 pl-3 pr-3 font-medium">Name</th>
-            <th className="py-1.5 pr-3 font-medium">Client</th>
-            <th className="py-1.5 pr-3 font-medium">Owner</th>
-            <th className="py-1.5 pr-3 text-right font-medium">Slides</th>
-            <th className="py-1.5 pr-3 font-medium">Last updated</th>
+          <tr className="border-b border-zinc-200 [&>th:first-child]:rounded-tl-lg [&>th:last-child]:rounded-tr-lg text-[11px] font-medium whitespace-nowrap uppercase tracking-wide text-zinc-400 dark:border-zinc-800">
+            {COLUMNS.map((c) => (
+              <SortHeader key={c.key} column={c} sort={sort} onSort={onSort} />
+            ))}
             <th className="w-8 pr-2" />
           </tr>
         </thead>

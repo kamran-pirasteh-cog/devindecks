@@ -10,6 +10,7 @@ import type { Deck } from '@/model';
 import { purgeAllDeleted, purgeDoc, restoreDoc } from '@/docs/repository';
 import { Thumb } from './Thumb';
 import { ConfirmDialog } from './ConfirmDialog';
+import { useToast } from '@/ui/Toast';
 
 function deletedAgo(iso: string): string {
   const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -23,6 +24,7 @@ function deletedAgo(iso: string): string {
 }
 
 export function DeletedItems({ docs, onChange }: { docs: Deck[]; onChange: () => void }) {
+  const toast = useToast();
   // Which permanent deletion is awaiting confirmation: one document, or all.
   const [purging, setPurging] = useState<Deck | null>(null);
   const [purgingAll, setPurgingAll] = useState(false);
@@ -74,6 +76,9 @@ export function DeletedItems({ docs, onChange }: { docs: Deck[]; onChange: () =>
                   onClick={() => {
                     restoreDoc(deck.id);
                     onChange();
+                    // The restored document leaves the bin for the shelf behind
+                    // it, so the bin alone can't confirm where it went.
+                    toast(`“${deck.title}” restored to All documents.`);
                   }}
                   className="rounded border border-zinc-200 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
                 >
@@ -100,6 +105,7 @@ export function DeletedItems({ docs, onChange }: { docs: Deck[]; onChange: () =>
             purgeDoc(purging.id);
             setPurging(null);
             onChange();
+            toast(`“${purging.title}” deleted for good.`, { tone: 'danger' });
           }}
           onCancel={() => setPurging(null)}
         />
@@ -113,9 +119,11 @@ export function DeletedItems({ docs, onChange }: { docs: Deck[]; onChange: () =>
           } will be destroyed permanently. This can't be undone.`}
           confirmLabel="Empty"
           onConfirm={() => {
+            const n = docs.length;
             purgeAllDeleted();
             setPurgingAll(false);
             onChange();
+            toast(`${n} document${n === 1 ? '' : 's'} deleted for good.`, { tone: 'danger' });
           }}
           onCancel={() => setPurgingAll(false)}
         />

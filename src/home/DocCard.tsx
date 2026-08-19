@@ -24,6 +24,8 @@ export function DocCard({
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [tagSignal, setTagSignal] = useState(0);
+  /** Where the last right-click landed, and how many there have been. */
+  const [ctx, setCtx] = useState({ x: 0, y: 0, n: 0 });
   const [renaming, setRenaming] = useState(false);
   const [title, setTitle] = useState(deck.title);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -55,6 +57,14 @@ export function DocCard({
       onDragStart={(e) => {
         e.dataTransfer.setData('text/devindesign-doc', deck.id);
         e.dataTransfer.effectAllowed = 'move';
+      }}
+      // Right-clicking the card offers the same ••• menu at the pointer, so the
+      // gesture works the same in either view. Left alone while renaming, where
+      // the browser's own menu belongs to the input.
+      onContextMenu={(e) => {
+        if (renaming) return;
+        e.preventDefault();
+        setCtx((c) => ({ x: e.clientX, y: e.clientY, n: c.n + 1 }));
       }}
       // `z-20` while the menu is open, on the CARD and not just the menu: the
       // hover lift is a transform, which makes the hovered card a stacking
@@ -136,6 +146,7 @@ export function DocCard({
             folders={folders}
             buttonClassName="opacity-0 group-hover:opacity-100"
             onOpenChange={setMenuOpen}
+            openAt={ctx}
             tagSignal={tagSignal}
           />
         </div>

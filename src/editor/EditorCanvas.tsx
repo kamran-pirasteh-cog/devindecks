@@ -53,11 +53,13 @@ import {
   type LegendSide,
 } from './chart/ChartPartOverlay';
 import { CommentPins } from './CommentPins';
+import { FLAGS } from '@/flags';
 import { makeTitle } from './factories';
 import { inRect, titleBandPx, titleElement, titleSlotAction } from './titleSlot';
 import { MOVEABLE_Z, OVERLAY_Z } from './layers';
-import { measureTextFitPx } from './fitToText';
+import { measureEditableHeightPx, measureTextFitPx } from './fitToText';
 import { resizeFactor } from './groupResize';
+import { isStickyPart, STICKY_TEXT_ROLE, stickyTextTarget } from './sticky';
 import { layoutFrame, turnRect, snapQuarterTurn } from '@/chart/turn';
 
 const CANVAS_PAD = 48;
@@ -747,6 +749,43 @@ export function EditorCanvas() {
     window.addEventListener('mouseup', finalize);
   };
 
+  /**
+   * Hand a press on a not-yet-selected object to Moveable, once Moveable exists
+   * to take it.
+   *
+   * Moveable is gated on there being a selection, so the press that MAKES one
+   * happens before it mounts and it never sees the mousedown — without a replay
+   * the object only starts moving on a second press. Selecto has a replay of its
+   * own, but a press that lands on an object is claimed before it ever reaches
+   * Selecto, so this one runs from `resolveMouseDown` where the press actually
+   * arrives.
+   *
+   * Retried over a few frames rather than replayed into the next one: a press on
+   * a GROUP — which a sticky always is — takes Moveable more than one commit to
+   * be ready for, and a single frame's wait can land on nothing. Stops on the
+   * first attempt that takes, on mouseup, or after a handful of frames, so a
+   * press Moveable was never going to accept costs nothing.
+   */
+  const replayPress = (inp: MouseEvent) => {
+    let frames = 0;
+    let live = true;
+    const stop = () => {
+      live = false;
+      window.removeEventListener('mouseup', stop);
+    };
+    window.addEventListener('mouseup', stop);
+    const attempt = () => {
+      if (!live) return;
+      moveableRef.current?.dragStart(inp);
+      if (moveableRef.current?.isDragging() || ++frames > 6) {
+        stop();
+        return;
+      }
+      requestAnimationFrame(attempt);
+    };
+    requestAnimationFrame(attempt);
+  };
+
   const attachDragModifiers = (inputEvent: any) => {
     dragModifierCleanupRef.current?.();
     // ⌘ (Ctrl off Apple platforms) rather than Ctrl everywhere: Ctrl-drag on a
@@ -818,6 +857,21 @@ export function EditorCanvas() {
     };
     if (rect.w === el.rect.w && rect.h === el.rect.h) return;
     store().setRect(id, rect, transient);
+  };
+
+  /**
+   * A sticky note growing under the caret: measure what the open editor holds
+   * and hand the store the height, which resizes the paper the type is on.
+   *
+   * Transient — the growth belongs to the keystroke that caused it, so it lands
+   * in the same undo step as the text itself (the commit at the end of the edit
+   * closes the burst).
+   */
+  const growStickyToText = (textId: string, node: HTMLElement) => {
+    const h = measureEditableHeightPx(node);
+    if (h === null) return;
+    store().growSticky(textId, pxToEmu(h, scale), true);
+    moveableRef.current?.updateRect();
   };
 
   const fitSelectionToText = () => {
@@ -1194,12 +1248,28 @@ export function EditorCanvas() {
     const els = slide?.elements ?? [];
     const unit = selectionUnit(els, id);
     const inGroup = unit.length > 1;
+    /*
+     * A sticky is ONE object made of three primitives, so the ways into a group
+     * are closed for it: every press picks the whole note, paper, tape and type
+     * together, however many times you click.
+     *
+     * Reaching inside one would only look like it worked. The tape and the text
+     * box are derived from the note (see `syncStickyGeometry`), so a member
+     * dragged off is snapped back by the very write that commits the drag — and
+     * the canvas, seeing an unchanged rect, never repaints the transform the
+     * drag painted. The part stays where the pointer left it until the next
+     * unrelated render, then jumps home. Double-click is still the way in, and
+     * it opens the note's text — the only inside a sticky has.
+     */
+    const pressed = els.find((x) => x.id === id);
+    const isSticky = !!pressed && isStickyPart(pressed);
     const wholeGroupSelected =
       inGroup && selectedIds.length === unit.length && unit.every((x) => selectedIds.includes(x));
     // Already reached inside this group (one member selected)? Then clicking a
     // sibling picks that sibling, rather than bouncing back out to the group.
     const drilledInHere =
       inGroup &&
+      !isSticky &&
       selectedIds.length === 1 &&
       selectedIds[0] !== id &&
       unit.includes(selectedIds[0]) &&
@@ -1249,12 +1319,19 @@ export function EditorCanvas() {
     // defer the selection change to mouseup and drop it if a drag begins.
     if (selectedIds.includes(id)) {
       if (e.shiftKey) deferSelect(id, 'toggle');
-      else if (wholeGroupSelected) deferSelect(id, 'member');
+      else if (wholeGroupSelected && !isSticky) deferSelect(id, 'member');
       else if (selectedIds.length > 1) deferSelect(id, 'only');
     } else if (e.shiftKey) {
       store().toggleSelect(id);
     } else {
       store().select([id]);
+      // Moveable is gated on there being a selection, so on the press that
+      // MAKES one it doesn't exist yet and never sees the mousedown. Hand it
+      // this one as soon as it mounts, or the object only moves on a second
+      // press — which is how dragging a sticky felt: click, let go, click
+      // again, then drag. (Selecto has a replay of its own, but a press that
+      // lands on an object never reaches it.)
+      replayPress(e.nativeEvent);
     }
   };
 
@@ -1506,6 +1583,16 @@ export function EditorCanvas() {
                   setOpenChartId(el.chartRef.chartId);
                   return;
                 }
+                // A sticky is paper, tape and type. Double-clicking any of the
+                // three means "write on it" — the tape and the paper carry no
+                // text of their own, and reaching past them to the text box
+                // would be the user's problem to solve otherwise.
+                if (isStickyPart(el)) {
+                  e.stopPropagation();
+                  const textId = stickyTextTarget(slide.elements, [el.id]);
+                  if (textId) store().setEditing(textId);
+                  return;
+                }
                 if (el.type === 'text' || (el.type === 'shape' && el.body)) {
                   e.stopPropagation();
                   store().setEditing(el.id);
@@ -1527,7 +1614,15 @@ export function EditorCanvas() {
                 sizeOverridePx={live ? { w: live.w, h: live.h } : undefined}
               />
               {isEditing && (el.type === 'text' || el.type === 'shape') ? (
-                <TextEditor el={el} scale={scale} />
+                <TextEditor
+                  el={el}
+                  scale={scale}
+                  onInput={
+                    el.role === STICKY_TEXT_ROLE
+                      ? (node) => growStickyToText(el.id, node)
+                      : undefined
+                  }
+                />
               ) : null}
             </div>
           );
@@ -1569,7 +1664,7 @@ export function EditorCanvas() {
         ) : null}
 
         {/* Comment markers for this slide, above the elements they annotate. */}
-        <CommentPins slide={slide} scale={scale} />
+        {FLAGS.comments ? <CommentPins slide={slide} scale={scale} /> : null}
 
         {/* What the pointer is about to hit inside the selected chart, and what
             it already hit. Above Moveable's control box, which for a chart part
@@ -2140,7 +2235,7 @@ export function EditorCanvas() {
               // again. Deferred by a frame because the selection state has to
               // commit (and Moveable mount) first.
               if (hitId && !selectedIds.includes(hitId) && hitId !== editingId) {
-                requestAnimationFrame(() => moveableRef.current?.dragStart(inp));
+                replayPress(inp);
               }
             }}
             onSelectEnd={(e) => {
