@@ -1029,10 +1029,26 @@ function writeChartFont(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): boole
 }
 
 /**
- * Data labels, scoped the way `applyChartFormat` scopes colour: every point of
- * a series selected means the SERIES changed, anything narrower is a per-point
- * override. Without the series case, restyling a whole series would leave one
- * override per bar and adding a category later would come back unstyled.
+ * Data labels, scoped the way the label PANEL scopes everything else about a
+ * label — through `labelHomeFor`, so a size stepped from the keyboard lands on
+ * the same spec node the panel would write.
+ *
+ * Grouping by series and calling anything that isn't a full sweep of the
+ * categories a per-point override was close, but wrong in the two places where
+ * a point key isn't a category:
+ *
+ * - A line chart's series label is `point: 'end'`, which is not one of the
+ *   chart's categories and has no home but the SERIES. The override went to
+ *   `pointOverrides.end`, which no placer reads, so ⌘⇧> on a series label did
+ *   nothing at all — the change was written and then never drawn.
+ * - A waterfall has items rather than series, so every selection fell through
+ *   to the chart-wide node: bumping ONE bar's number bumped all of them.
+ *
+ * `labelHomeFor` already knows both rules — see it for the scopes — so this
+ * asks it rather than guessing again. Each label keeps its OWN font, since
+ * ⌘⇧> steps every part from the size it is drawn at; only a home that covers
+ * several labels at once (a series, the chart) has to settle on one, and there
+ * the sizes agree because they all came from the same node.
  */
 function writeLabelFonts(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): boolean {
   const labels = [...fonts].filter(
@@ -1041,15 +1057,8 @@ function writeLabelFonts(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): bool
   );
   if (!labels.length) return false;
 
-  // A shape with no series array (a waterfall, a pie) keeps its label type on
-  // the chart-wide node — there is nothing narrower to write to.
-  if (!isGridSpec(spec)) {
-    for (const [, font] of labels) {
-      spec.decorations.labels.font = mergeFont(spec.decorations.labels.font, font);
-    }
-    return true;
-  }
-
+  // `labelHomeFor` answers for one series at a time — it returns null for a
+  // selection spanning several, which is exactly a group boundary here.
   const bySeries = new Map<string, [Extract<ChartRef, { part: 'label' }>, LabelFont][]>();
   for (const entry of labels) {
     const group = bySeries.get(entry[0].series) ?? [];
@@ -1057,34 +1066,35 @@ function writeLabelFonts(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): bool
     bySeries.set(entry[0].series, group);
   }
 
-  let wrote = false;
-  const allPoints = spec.data.categories.map((c) => c.key);
-  for (const [seriesKey, group] of bySeries) {
-    const series = spec.data.series.find((s) => s.key === seriesKey);
-    if (!series) continue;
-    const whole =
-      allPoints.length > 0 && allPoints.every((k) => group.some(([ref]) => ref.point === k));
+  /** Merge onto whatever font is in force AT the home, so a step compounds. */
+  const writeFont = (home: LabelHome, font: LabelFont): boolean =>
+    patchLabelAt(spec, home, { font: mergeFont(labelSpecAt(spec, home).font, font) });
 
-    if (whole) {
-      const base = series.labels ?? spec.decorations.labels;
-      series.labels = { ...base, font: mergeFont(base.font, group[0]![1]) };
-      // A per-point type would now shadow the series style just set.
-      for (const key of Object.keys(series.pointOverrides ?? {})) {
-        const label = series.pointOverrides![key]!.label;
-        if (label?.font) delete label.font;
-      }
-    } else {
-      series.pointOverrides ??= {};
+  let wrote = false;
+  for (const group of bySeries.values()) {
+    const home = labelHomeFor(
+      spec,
+      group.map(([ref]) => ref),
+    );
+    if (!home) continue;
+
+    if (home.scope === 'point') {
+      // Narrowed back to one point each: the labels of a partial selection are
+      // separate nodes and may be stepping from different sizes.
       for (const [ref, font] of group) {
-        const prior = series.pointOverrides[ref.point] ?? {};
-        const base = prior.label ?? series.labels ?? spec.decorations.labels;
-        series.pointOverrides[ref.point] = {
-          ...prior,
-          label: { ...base, font: mergeFont(base.font, font) },
-        };
+        if (!home.points.includes(ref.point)) continue;
+        if (writeFont({ scope: 'point', seriesKey: home.seriesKey, points: [ref.point] }, font)) {
+          wrote = true;
+        }
       }
+    } else if (home.scope === 'item') {
+      for (const [ref, font] of group) {
+        if (!home.items.includes(ref.point)) continue;
+        if (writeFont({ scope: 'item', items: [ref.point] }, font)) wrote = true;
+      }
+    } else if (writeFont(home, group[0]![1])) {
+      wrote = true;
     }
-    wrote = true;
   }
   return wrote;
 }

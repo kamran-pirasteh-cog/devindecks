@@ -40,7 +40,13 @@ import {
   seedLayoutsIfFirstRun,
   type StoredLayout,
 } from '@/templates/layoutRepository';
-import { getActiveDesignSystem, resetDesignSystem, saveDesignSystem } from '@/design/repository';
+import {
+  getDraftDesignSystem,
+  hasDesignDraft,
+  publishDesignSystem,
+  resetDesignSystem,
+  saveDesignDraft,
+} from '@/design/repository';
 import { PrimaryTabs, SubTabs } from '@/nav/PrimaryTabs';
 import { ChartStyleSection } from './ChartStyleSection';
 import { ChartTemplates } from './ChartTemplates';
@@ -82,9 +88,12 @@ function stripExt(filename: string): string {
 export function Admin() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('design');
-  const [ds, setDs] = useState<DesignSystem>(() => getActiveDesignSystem());
+  // Admin edits the DRAFT; the rest of the app renders the published copy.
+  const [ds, setDs] = useState<DesignSystem>(() => getDraftDesignSystem());
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  /** Saved but not yet live — the state the publish step exists to make visible. */
+  const [unpublished, setUnpublished] = useState(false);
   const [layouts, setLayouts] = useState<StoredLayout[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
   // null = album shelf; otherwise we're inside one album.
@@ -182,11 +191,26 @@ export function Admin() {
   const setPageNumbers = (next: Partial<PageNumberStyle>) =>
     patch({ pageNumbers: { ...ds.pageNumbers, ...next } });
 
+  /** Save the draft. Bumps nothing: no deck can see a draft, so none has drifted. */
   const save = () => {
-    const next = saveDesignSystem(ds);
+    const next = saveDesignDraft(ds);
     setDs(next);
     setDirty(false);
     setSavedAt(next.updatedAt);
+    setUnpublished(true);
+  };
+
+  /**
+   * Make the draft the brand. This is the one action that bumps `version` and
+   * so marks every deck built on the previous one as stale — which is why it's
+   * a separate, deliberate button rather than a side effect of typing.
+   */
+  const publish = () => {
+    const next = publishDesignSystem(dirty ? saveDesignDraft(ds) : undefined);
+    setDs(next);
+    setDirty(false);
+    setSavedAt(next.updatedAt);
+    setUnpublished(false);
   };
 
   const reset = () => {
@@ -194,6 +218,7 @@ export function Admin() {
     setDs(def);
     setDirty(false);
     setSavedAt(null);
+    setUnpublished(false);
   };
 
   return (
@@ -215,6 +240,11 @@ export function Admin() {
           <div className="flex shrink-0 items-center gap-2 text-[11px] text-zinc-400">
             <span className="whitespace-nowrap">
               {ds.name} · v{ds.version}
+              {unpublished || hasDesignDraft() ? (
+                <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+                  Draft
+                </span>
+              ) : null}
             </span>
             <button
               onClick={reset}
@@ -232,7 +262,17 @@ export function Admin() {
                 SAVEABLE_TABS.includes(tab) ? '' : 'invisible'
               }`}
             >
-              {dirty ? 'Save changes' : savedAt ? 'Saved' : 'Saved'}
+              {dirty ? 'Save draft' : savedAt ? 'Saved' : 'Saved'}
+            </button>
+            <button
+              onClick={publish}
+              disabled={(!dirty && !unpublished) || !SAVEABLE_TABS.includes(tab)}
+              title="Make this the live brand for every deck"
+              className={`rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40 ${
+                SAVEABLE_TABS.includes(tab) ? '' : 'invisible'
+              }`}
+            >
+              Publish
             </button>
           </div>
         </div>

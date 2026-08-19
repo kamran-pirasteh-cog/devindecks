@@ -1,42 +1,22 @@
 'use client';
 
 /**
- * The app's top-level tab strip — Documents · Reports · Admin — shared by the
- * dashboard and /admin so moving between them never rearranges the navigation.
+ * The app's top-level tab strip — Documents · Admin — shared by the dashboard
+ * and /admin so moving between them never rearranges the navigation.
  *
- * Documents and Reports are two views of the dashboard route, so they're state
- * there and links back here from /admin; Admin is always its own route. Pass
- * `onSelect` when the caller owns that state (the dashboard), and leave it out
- * to get plain links (anywhere else).
+ * Documents is the dashboard route; Admin is always its own route. Pass
+ * `onSelect` when the caller is already on the dashboard and wants the click
+ * handled in place (it resets the view), and leave it out to get plain links
+ * (anywhere else).
  */
 import Link from 'next/link';
 
-export type PrimaryTab = 'documents' | 'reports' | 'admin';
+export type PrimaryTab = 'documents' | 'admin';
 
-const ROUTE_TABS: {
-  value: PrimaryTab;
-  label: string;
-  href: string;
-  /** Marks a tab whose section is previewable but not built yet. */
-  comingSoon?: boolean;
-}[] = [
+const ROUTE_TABS: { value: PrimaryTab; label: string; href: string }[] = [
   { value: 'documents', label: 'Documents', href: '/' },
-  { value: 'reports', label: 'Reports', href: '/?tab=reports', comingSoon: true },
   { value: 'admin', label: 'Admin', href: '/admin' },
 ];
-
-/**
- * The "Coming soon" flag, in blue rather than the muted grey the disabled
- * content uses — the tab is still reachable, so the label has to read as
- * information about what's inside, not as one more greyed-out thing.
- */
-export function ComingSoonBadge() {
-  return (
-    <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
-      Coming soon
-    </span>
-  );
-}
 
 const tabClass = (active: boolean) =>
   `-mb-px inline-flex items-center gap-1.5 border-b-2 px-3.5 py-2.5 text-sm font-medium ${
@@ -50,24 +30,18 @@ export function PrimaryTabs({
   onSelect,
 }: {
   active: PrimaryTab;
-  onSelect?: (tab: 'documents' | 'reports') => void;
+  onSelect?: () => void;
 }) {
   return (
     <div className="flex gap-1 px-7">
       {ROUTE_TABS.map((t) =>
         onSelect && t.value !== 'admin' ? (
-          <button
-            key={t.value}
-            onClick={() => onSelect(t.value as 'documents' | 'reports')}
-            className={tabClass(active === t.value)}
-          >
+          <button key={t.value} onClick={onSelect} className={tabClass(active === t.value)}>
             {t.label}
-            {t.comingSoon ? <ComingSoonBadge /> : null}
           </button>
         ) : (
           <Link key={t.value} href={t.href} className={tabClass(active === t.value)}>
             {t.label}
-            {t.comingSoon ? <ComingSoonBadge /> : null}
           </Link>
         ),
       )}

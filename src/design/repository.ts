@@ -3,11 +3,27 @@
 /**
  * Design-system repository. The design system is the single source of brand
  * truth and it's IN FLUX, so the app reads the *active* system from here rather
- * than a hardcoded constant. Editing it in Admin bumps the version and reflows
- * every deck, because elements reference colors by token, not raw hex.
+ * than a hardcoded constant. Publishing it in Admin bumps the version and
+ * reflows every deck, because elements reference colors by token, not raw hex.
  *
- * localStorage today; swaps for the Playground DB in Phase 5.
+ * **Two copies, deliberately: a PUBLISHED one and a DRAFT.**
+ *
+ * That split doesn't matter while the store is one person's browser, which is
+ * why it didn't exist before — every save bumped `version` and only that
+ * browser noticed. It matters enormously once the store is shared and one
+ * copy is the whole company's brand: an admin nudging a colour would otherwise
+ * mark every deck in the org stale on each keystroke-save, and the staleness
+ * badge people are supposed to act on becomes noise they learn to ignore.
+ *
+ * So: editing writes the draft and bumps nothing. `publishDesignSystem` is the
+ * single deliberate act that bumps `version`, and decks only ever render
+ * against the published copy.
+ *
+ * Storage runs through `platform/collection`, so the localStorage backing here
+ * becomes a Playground-backed adapter without this file changing.
  */
+import { defineCollection } from '@/platform/collection';
+import { localStorageAdapter } from '@/platform/store';
 import {
   DEFAULT_DESIGN_SYSTEM,
   DEFAULT_PAGE_NUMBERS,
@@ -53,30 +69,93 @@ function withDefaults(ds: DesignSystem): DesignSystem {
   };
 }
 
+/**
+ * The two copies live under the original key so an existing browser keeps its
+ * brand — see `migrate` for the shape change that made that non-trivial.
+ */
+type DesignSlot = 'published' | 'draft';
+
+const collection = defineCollection<DesignSystem>(KEY, localStorageAdapter, {
+  migrate: (map) => {
+    // Before drafts, this key held a bare DesignSystem rather than a
+    // slot map. Reading one of those as a slot map yields nonsense keys
+    // ('colors', 'fonts', ...) and a lost brand, so detect and wrap it.
+    const legacy = map as unknown as Partial<DesignSystem>;
+    if (legacy.colors && legacy.type) {
+      return { published: legacy as DesignSystem };
+    }
+    return map;
+  },
+});
+
+const read = (slot: DesignSlot): DesignSystem | null => {
+  const stored = collection.snapshot()[slot];
+  return stored ? withDefaults(stored) : null;
+};
+
+const put = (slot: DesignSlot, ds: DesignSystem | undefined) =>
+  collection.mutate((map) => {
+    if (ds) map[slot] = ds;
+    else delete map[slot];
+  });
+
+/** Hydrate from the adapter. Only needed once the adapter is a remote one. */
+export const hydrateDesignSystem = () => collection.hydrate();
+
+/**
+ * What every deck renders against. Never the draft — an admin mid-edit must
+ * not be able to restyle a deck someone else is presenting.
+ */
 export function getActiveDesignSystem(): DesignSystem {
-  if (typeof window === 'undefined') return DEFAULT_DESIGN_SYSTEM;
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    return raw ? withDefaults(JSON.parse(raw) as DesignSystem) : DEFAULT_DESIGN_SYSTEM;
-  } catch {
-    return DEFAULT_DESIGN_SYSTEM;
-  }
+  return read('published') ?? DEFAULT_DESIGN_SYSTEM;
 }
 
-/** Persist an edited design system, bumping version + timestamp. */
-export function saveDesignSystem(ds: DesignSystem): DesignSystem {
-  const next: DesignSystem = {
-    ...ds,
-    version: ds.version + 1,
-    updatedAt: new Date().toISOString(),
-  };
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(KEY, JSON.stringify(next));
-  }
+/** What Admin edits: the draft if one is open, otherwise today's published copy. */
+export function getDraftDesignSystem(): DesignSystem {
+  return read('draft') ?? getActiveDesignSystem();
+}
+
+/** Is there unpublished work? Drives the "draft" badge and the publish button. */
+export function hasDesignDraft(): boolean {
+  return collection.snapshot().draft !== undefined;
+}
+
+/**
+ * Persist an in-progress edit. Deliberately does NOT bump `version`: nothing
+ * outside Admin can see a draft, so nothing has drifted from anything.
+ */
+export function saveDesignDraft(ds: DesignSystem): DesignSystem {
+  const next: DesignSystem = { ...ds, updatedAt: new Date().toISOString() };
+  put('draft', next);
   return next;
 }
 
+/**
+ * Promote the draft to the live brand. The one operation that bumps `version`,
+ * which is what makes every deck built on the previous one report as stale.
+ */
+export function publishDesignSystem(ds?: DesignSystem): DesignSystem {
+  const source = ds ?? getDraftDesignSystem();
+  const next: DesignSystem = {
+    ...source,
+    version: getActiveDesignSystem().version + 1,
+    updatedAt: new Date().toISOString(),
+  };
+  collection.mutate((map) => {
+    map.published = next;
+    delete map.draft;
+  });
+  return next;
+}
+
+/** Throw the draft away and go back to what's live. */
+export function discardDesignDraft(): DesignSystem {
+  put('draft', undefined);
+  return getActiveDesignSystem();
+}
+
+/** Back to the house brand, draft and all. */
 export function resetDesignSystem(): DesignSystem {
-  if (typeof window !== 'undefined') window.localStorage.removeItem(KEY);
+  collection.replace({});
   return DEFAULT_DESIGN_SYSTEM;
 }

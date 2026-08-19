@@ -17,6 +17,9 @@ import {
   SLIDE_LAYOUTS,
   SLIDE_LAYOUT_CATEGORIES,
 } from './registry';
+import { stampLayoutProvenance } from './provenance';
+import { defineCollection } from '@/platform/collection';
+import { localStorageAdapter } from '@/platform/store';
 
 const KEY = 'devindesign.layouts.v1';
 const SEED_KEY = 'devindesign.layouts.seeded.v1';
@@ -41,25 +44,37 @@ export interface StoredLayout {
   name: string;
   category: LayoutFolder;
   slide: Slide;
+  /**
+   * Bumped whenever the SLIDE changes, and never for a rename or a move
+   * between folders. Slides made from this layout compare against it to spot
+   * that their master has moved (`templates/provenance.ts`), and being
+   * told a deck is out of date because someone fixed a typo in a layout's
+   * name would train everyone to ignore the signal.
+   */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
 
 type LayoutMap = Record<string, StoredLayout>;
 
-function read(): LayoutMap {
-  if (typeof window === 'undefined') return {};
-  try {
-    return JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as LayoutMap;
-  } catch {
-    return {};
-  }
-}
+const collection = defineCollection<StoredLayout>(KEY, localStorageAdapter, {
+  migrate: (map) => {
+    // Layouts stored before versioning have no `version`. Treat them as v1
+    // rather than NaN-comparing forever: a slide made from one also has no
+    // `layoutVersion`, so both sides normalize to the same answer and nothing
+    // reads as spuriously stale.
+    for (const l of Object.values(map)) if (typeof l.version !== 'number') l.version = 1;
+    return map;
+  },
+});
 
-function write(map: LayoutMap) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(KEY, JSON.stringify(map));
-}
+/** Hydrate from the adapter — only needed once that adapter is a remote one. */
+export const hydrateLayouts = () => collection.hydrate();
+export const subscribeLayouts = collection.subscribe;
+
+const read = (): LayoutMap => collection.snapshot();
+const write = (map: LayoutMap) => collection.replace(map);
 
 const now = () => new Date().toISOString();
 
@@ -144,6 +159,10 @@ export function seedLayoutsIfFirstRun(): void {
       name: l.name,
       category: l.layout,
       slide: l.buildSlide(),
+      // A reseed rewrites the slide, so it IS a content change and has to
+      // bump — otherwise decks holding the old copy would never learn the
+      // built-in they came from was restyled underneath them.
+      version: (map[l.id]?.version ?? 0) + 1,
       createdAt: map[l.id]?.createdAt ?? ts,
       updatedAt: ts,
     };
@@ -168,10 +187,13 @@ export function getStoredLayout(id: string): StoredLayout | null {
   return read()[id] ?? null;
 }
 
-/** Resolve a layout's slide for insertion, with fresh element ids each time. */
+/**
+ * Resolve a layout's slide for insertion, with fresh element ids each time and
+ * provenance stamped on so the copy can be traced back to this master later.
+ */
 export function getLayoutSlide(id: string): Slide | null {
   const l = getStoredLayout(id);
-  return l ? freshIds(l.slide) : null;
+  return l ? stampLayoutProvenance(freshIds(l.slide), l, l.slide) : null;
 }
 
 export function createLayout(opts: { name: string; category: LayoutFolder; slide?: Slide }): StoredLayout {
@@ -182,6 +204,7 @@ export function createLayout(opts: { name: string; category: LayoutFolder; slide
     name: opts.name,
     category: opts.category,
     slide: opts.slide ?? { id: `s-${nanoid(8)}`, elements: [] },
+    version: 1,
     createdAt: ts,
     updatedAt: ts,
   };
@@ -200,11 +223,23 @@ export function updateLayoutMeta(
   write(map);
 }
 
-/** Persist slide edits made in the editor back onto a layout. */
+/**
+ * Persist slide edits made in the editor back onto a layout.
+ *
+ * The one write that bumps `version`: this is the master's content changing,
+ * which is exactly what every slide made from it needs to hear about.
+ */
 export function saveLayoutFromSlide(id: string, slide: Slide, name?: string): void {
   const map = read();
   if (!map[id]) return;
-  map[id] = { ...map[id], slide, name: name ?? map[id].name, updatedAt: now() };
+  const prev = map[id];
+  map[id] = {
+    ...prev,
+    slide,
+    name: name ?? prev.name,
+    version: prev.version + 1,
+    updatedAt: now(),
+  };
   write(map);
 }
 
@@ -217,6 +252,9 @@ export function duplicateLayout(id: string, name?: string): StoredLayout | null 
     id: `lay-${nanoid(8)}`,
     name: name?.trim() || `Copy of ${src.name}`,
     slide: freshIds(src.slide),
+    // A copy is a new master with its own history, not a continuation of the
+    // original's — slides made from the source must not read as made from it.
+    version: 1,
     createdAt: ts,
     updatedAt: ts,
   };

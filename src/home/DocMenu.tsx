@@ -2,9 +2,9 @@
 
 /**
  * The "..." menu shared by both views of a document — the card grid and the
- * table. Everything reachable from it (tag, move to folder, duplicate, copy
- * link, delete) plus the delete confirmation lives here, so the two views can't
- * drift into offering different actions on the same deck.
+ * table. Everything reachable from it (tag, move to folder, duplicate, export,
+ * copy link, delete) plus the delete confirmation lives here, so the two views
+ * can't drift into offering different actions on the same deck.
  *
  * Renaming is the one action it doesn't own: each view edits the title in place
  * in its own layout, so the menu reports the request through `onStartRename` and
@@ -28,18 +28,20 @@ import {
   suggestCopyTitle,
 } from '@/docs/repository';
 import type { DocFolder } from '@/docs/folders';
+import { getActiveDesignSystem } from '@/design/repository';
+import { EXPORT_FORMATS, runExport, type ExportKind } from '@/export/formats';
 import { ConfirmDialog } from './ConfirmDialog';
 import { clientColor } from './clientColor';
 import { useToast } from '@/ui/Toast';
 
-type MenuView = 'main' | 'tag' | 'duplicate' | 'folder';
+type MenuView = 'main' | 'tag' | 'duplicate' | 'folder' | 'export';
 
 /**
  * The panel's own size, for keeping a right-click-opened menu on screen: `w-72`
- * exactly, and the tallest the main view gets (six items and a rule).
+ * exactly, and the tallest the main view gets (seven items and a rule).
  */
 const MENU_W = 288;
-const MENU_H = 230;
+const MENU_H = 256;
 
 export function DocMenu({
   deck,
@@ -184,6 +186,24 @@ export function DocMenu({
       // clipboard API unavailable — silently ignore
     }
     setMenuOpen(false);
+  };
+
+  /**
+   * Export straight from the shelf, without opening the deck first — the same
+   * three formats the editor header offers, run against the stored document
+   * and the active design system.
+   */
+  const exportAs = async (kind: ExportKind, label: string) => {
+    setMenuOpen(false);
+    setMenuView('main');
+    await runExport(kind, deck, getActiveDesignSystem());
+    // PDF hands off to the browser's print dialog rather than downloading, so
+    // it gets its own wording — "Exported" would be a lie until someone saves.
+    toast(
+      kind === 'pdf'
+        ? `Opening the print dialog for “${deck.title}”.`
+        : `Exported “${deck.title}” as ${label}.`,
+    );
   };
 
   const remove = (e: React.MouseEvent) => {
@@ -336,6 +356,12 @@ export function DocMenu({
                 Duplicate
               </button>
               <button
+                onClick={() => setMenuView('export')}
+                className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              >
+                Export
+              </button>
+              <button
                 onClick={copyLink}
                 className="block w-full px-3 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
               >
@@ -436,6 +462,34 @@ export function DocMenu({
               >
                 Create duplicate
               </button>
+            </div>
+          ) : menuView === 'export' ? (
+            <div className="px-3 py-2">
+              <div className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-zinc-500">
+                <button
+                  onClick={() => setMenuView('main')}
+                  className="rounded hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                  title="Back"
+                >
+                  ←
+                </button>
+                Export as
+              </div>
+              <div className="-mx-1">
+                {EXPORT_FORMATS.map((f) => (
+                  <button
+                    key={f.key}
+                    onClick={() => exportAs(f.key, f.label)}
+                    className="block w-full rounded px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-1.5 text-[10px] text-zinc-400">
+                {deck.slides.length} slide{deck.slides.length === 1 ? '' : 's'} · PDF opens your
+                print dialog.
+              </div>
             </div>
           ) : (
             <div className="px-3 py-2">

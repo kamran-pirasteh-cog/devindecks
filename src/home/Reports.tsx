@@ -317,15 +317,16 @@ export function Reports({
     <div>
       {/*
        * Reports aren't shipped yet, so this is a preview: the real layout is on
-       * show, greyed and inert. It renders inside the "Coming soon" dialog,
-       * which supplies the heading and the explanation — so there's no notice
-       * of its own here.
+       * show, in its own colours, and inert. It renders inside the "Coming
+       * soon" dialog, which supplies the heading and the explanation — so
+       * there's no notice of its own here.
        *
-       * `inert` is what makes the greying honest: opacity alone leaves every
-       * control clickable and keyboard-reachable, so someone could still
-       * schedule a send from a section that doesn't work yet.
+       * It's shown undimmed because the point of the preview is the design;
+       * `inert` is what keeps it honest, and it does so on its own. Opacity
+       * would leave every control clickable and keyboard-reachable anyway, so
+       * dropping it costs nothing: nobody can schedule a send from here.
        */}
-      <div inert className="pointer-events-none select-none opacity-40 grayscale">
+      <div inert className="pointer-events-none select-none">
         <PendingApprovals runs={pending} decks={docs} onChange={refresh} />
 
         {toast ? (

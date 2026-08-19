@@ -78,8 +78,9 @@ const fmtFrom = (node: HTMLElement, inherit: Fmt): Fmt => {
 /**
  * Flatten a paragraph's DOM into model runs — one run per stretch of uniform
  * formatting, adjacent identical stretches merged so a box's runs don't
- * fragment a little more with every edit. A <br> (Shift+Enter) starts a new
- * paragraph, which is what the old innerText split gave us.
+ * fragment a little more with every edit. A <br> starts a new paragraph, which
+ * is what the old innerText split gave us — so a soft line break and an Enter
+ * (which the browser makes a new block) read back the same way.
  */
 /** A run still carrying the `data-run` index it was parsed from. */
 type DraftRun = TextRun & { __src: number | null };
@@ -602,6 +603,11 @@ export function TextEditor({
         syncMarkers();
         onInput?.(e.currentTarget);
       }}
+      // Enter is deliberately NOT handled: it types a new paragraph, the way it
+      // does in PowerPoint and in every other text box. It used to finish the
+      // edit, on the theory that most boxes are one-line labels — but that
+      // makes a multi-line box impossible to type normally, and Escape (and
+      // clicking away) already end the edit.
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -615,13 +621,6 @@ export function TextEditor({
         if (painter) {
           e.preventDefault();
           applyPainter(painter);
-        } else if (key === 'enter' && !e.shiftKey) {
-          // Enter finishes the edit, the way clicking away does — the common
-          // case is a one-line label, and typing past the box was never the
-          // point. Shift+Enter is the way to add a line, which the browser's
-          // own <br> handles and `runsFromNodes` reads back as a paragraph.
-          e.preventDefault();
-          commit();
         } else if (e.key === 'Tab') {
           // PowerPoint's demote/promote. The editable would otherwise lose
           // focus to the next control, ending the edit.

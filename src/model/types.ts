@@ -147,6 +147,19 @@ interface BaseElement {
    * Devin edits the SAME mechanism. e.g. 'title', 'subtitle', 'kpi.value'.
    */
   role?: string;
+  /**
+   * Which element of the source LAYOUT this one was instantiated from.
+   *
+   * `id` can't do this job: `getLayoutSlide` hands out fresh element ids on
+   * every insert (two copies of the same layout on one deck would collide
+   * otherwise), so the id that ties an element back to its master is gone the
+   * moment it lands. This one survives, and it's what lets `reapplyLayout`
+   * match an element to its master after the master has moved.
+   *
+   * Absent means "not from a layout" — an element the author added themselves,
+   * which reapply leaves strictly alone.
+   */
+  layoutElementId?: string;
   name?: string;
   rect: Rect;
   /** Clockwise degrees. */
@@ -271,6 +284,13 @@ export interface Slide {
   background?: Fill;
   /** Slide template this slide was instantiated from, if any. */
   layoutId?: string;
+  /**
+   * The layout's `version` at the moment this slide was inserted. Mirrors
+   * `ChartProvenance.templateVersion`: comparing it against the layout's
+   * current version is what makes "the master moved since this slide was
+   * made" answerable without diffing the slides themselves.
+   */
+  layoutVersion?: number;
   notes?: string;
   /**
    * Charts living on this slide. Each one owns the elements stamped with its
@@ -315,6 +335,8 @@ export interface Deck {
   designSystemId: string;
   designSystemVersion: number;
   deckTemplateId?: string;
+  /** The deck template's `version` when this deck was created from it. */
+  deckTemplateVersion?: number;
   createdAt: string;
   updatedAt: string;
   /**

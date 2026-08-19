@@ -85,3 +85,21 @@ export function unionRect(elements: SlideElement[], ids: string[]) {
   const b = Math.max(...els.map((e) => e.rect.y + e.rect.h));
   return { x, y, w: r - x, h: b - y };
 }
+
+/**
+ * True when `ids` is exactly one whole group — the case PowerPoint rings with a
+ * single box.
+ *
+ * Outlining every member as well would draw the group's insides on top of it,
+ * which is the opposite of what grouping is for: the group is one object now.
+ * Deliberately false for two groups picked together (each still deserves its own
+ * box) and for a partly selected group, which isn't a group's box at all.
+ */
+export function isSoleGroup(elements: SlideElement[], ids: string[]): boolean {
+  if (ids.length < 2) return false;
+  const first = elements.find((e) => e.id === ids[0]);
+  const gid = first && outerGroupId(first);
+  if (!gid) return false;
+  const members = groupMembers(elements, gid);
+  return members.length === ids.length && members.every((m) => ids.includes(m.id));
+}

@@ -14,7 +14,9 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import {
-  ALLOWED_FONTS,
+  FONT_CHOICES,
+  fontChoiceIdOf,
+  fontChoicePatch,
   emuToPoints,
   hex as hexRef,
   isCropped,
@@ -29,7 +31,6 @@ import {
   type ColorToken,
   type DashStyle,
   type DesignSystem,
-  type FontFamily,
   type Outline,
   type ParaAlign,
   type SlideElement,
@@ -464,14 +465,14 @@ export function SelectionFormatBar({
         <>
           <Group label="Font">
             <select
-              value={run?.font ?? ds.fonts.body}
-              onChange={(e) => store().patchRuns(selectedIds, { font: e.target.value as FontFamily })}
+              value={fontChoiceIdOf(run, ds.fonts.body)}
+              onChange={(e) => store().patchRuns(selectedIds, fontChoicePatch(e.target.value))}
               aria-label="Font"
               className={FIELD_CLASS}
             >
-              {ALLOWED_FONTS.map((f) => (
-                <option key={f} value={f}>
-                  {f}
+              {FONT_CHOICES.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label}
                 </option>
               ))}
             </select>

@@ -11,9 +11,17 @@
  * localStorage today; the same seam as every other repository here.
  */
 import { nanoid } from 'nanoid';
-import { defaultChartSpec, type ChartSpec, type ChartStyle, type DeepPartial } from '@/model';
+import {
+  DEFAULT_CHART_STYLE,
+  defaultChartSpec,
+  type ChartSpec,
+  type ChartStyle,
+  type DeepPartial,
+} from '@/model';
 import { CHART_TEMPLATES, type ChartTemplateCategory } from './registry';
 import type { ChartResearchHints } from './research';
+import { defineCollection } from '@/platform/collection';
+import { localStorageAdapter } from '@/platform/store';
 
 const KEY = 'devindesign.charts.v1';
 
@@ -36,24 +44,27 @@ export interface StoredChartTemplate {
 
 type TemplateMap = Record<string, StoredChartTemplate>;
 
-function read(): TemplateMap {
-  if (typeof window === 'undefined') return {};
-  try {
-    return JSON.parse(window.localStorage.getItem(KEY) ?? '{}') as TemplateMap;
-  } catch {
-    return {};
-  }
-}
+const collection = defineCollection<StoredChartTemplate>(KEY, localStorageAdapter);
 
-function write(map: TemplateMap) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(KEY, JSON.stringify(map));
-}
+/** Hydrate from the adapter — only needed once that adapter is a remote one. */
+export const hydrateChartTemplates = () => collection.hydrate();
+export const subscribeChartTemplates = collection.subscribe;
+
+const read = (): TemplateMap => collection.snapshot();
+const write = (map: TemplateMap) => collection.replace(map);
 
 const now = () => new Date().toISOString();
 
-/** Idempotent, and safe to call on every load. */
-export function seedChartTemplatesIfFirstRun(): void {
+/**
+ * Idempotent, and safe to call on every load.
+ *
+ * `style` is the brand's chart style. A template's spec pins the values Admin
+ * calls "defaults for new charts" — legend, data labels, gaps, number format —
+ * and those pinned values win at compile time, so seeding without the brand's
+ * style is what left the template grid showing house defaults no matter what
+ * Admin said.
+ */
+export function seedChartTemplatesIfFirstRun(style: ChartStyle = DEFAULT_CHART_STYLE): void {
   if (typeof window === 'undefined') return;
   const map = read();
   let changed = false;
@@ -66,7 +77,7 @@ export function seedChartTemplatesIfFirstRun(): void {
       description: t.description,
       category: t.category,
       order: t.order,
-      spec: t.buildSpec(),
+      spec: t.buildSpec(style),
       styleOverrides: t.styleOverrides,
       research: t.research,
       version: 1,
@@ -91,6 +102,7 @@ export function createChartTemplate(opts: {
   description?: string;
   category?: ChartTemplateCategory;
   spec?: ChartSpec;
+  style?: ChartStyle;
 }): StoredChartTemplate {
   const ts = now();
   const template: StoredChartTemplate = {
@@ -98,7 +110,7 @@ export function createChartTemplate(opts: {
     name: opts.name,
     description: opts.description ?? '',
     category: opts.category ?? 'Custom',
-    spec: opts.spec ?? defaultChartSpec('column', 'stacked'),
+    spec: opts.spec ?? defaultChartSpec('column', 'stacked', opts.style ?? DEFAULT_CHART_STYLE),
     version: 1,
     createdAt: ts,
     updatedAt: ts,
@@ -180,8 +192,14 @@ export function suggestCopyName(base: string): string {
   return candidate;
 }
 
-/** Restore every built-in to its shipped state, leaving custom ones alone. */
-export function resetBuiltInChartTemplates(): void {
+/**
+ * Restore every built-in to its shipped state, leaving custom ones alone.
+ *
+ * "Shipped state" is resolved against the brand, not against the house
+ * defaults — this is also the way to pull existing templates back in line
+ * after the chart style changes.
+ */
+export function resetBuiltInChartTemplates(style: ChartStyle = DEFAULT_CHART_STYLE): void {
   const map = read();
   for (const t of CHART_TEMPLATES) {
     const ts = now();
@@ -191,7 +209,7 @@ export function resetBuiltInChartTemplates(): void {
       description: t.description,
       category: t.category,
       order: t.order,
-      spec: t.buildSpec(),
+      spec: t.buildSpec(style),
       styleOverrides: t.styleOverrides,
       research: t.research,
       version: (map[t.id]?.version ?? 0) + 1,

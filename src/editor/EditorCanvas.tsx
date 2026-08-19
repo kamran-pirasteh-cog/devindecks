@@ -19,6 +19,7 @@ import Selecto from 'react-selecto';
 import { ElementVisual, PageNumber, slideBackgroundHex } from '@/render/SlideView';
 import {
   isShape,
+  isSoleGroup,
   isText,
   marginGuides,
   outerGroupId,
@@ -97,6 +98,24 @@ const SNAP_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315, 360];
  * Gesto captured — a mouse event, a touch event, or its own synthetic object —
  * and an `instanceof` check quietly answers "no pointer" for two of the three.
  */
+/**
+ * The size Moveable is allowed to MEASURE a node at.
+ *
+ * A line is zero on its cross axis (see `makeLine`), and a node that measures 0
+ * on an axis poisons the GROUP box: Moveable derives a group's maximum size
+ * from its members' own maxima, and a member with a zero start size contributes
+ * a maximum of 0 (`updateGroupMax` has no ratio to scale by, so it uses 0). The
+ * group is then clamped to zero on that axis for the whole gesture — its
+ * internal scale goes to 0, its box flattens onto a strip, and the axis stops
+ * being measured at all. Selecting several lines and dragging a handle stacked
+ * them together instead of resizing them where they sat.
+ *
+ * One pixel is enough to keep the ratio finite, and nothing is drawn from the
+ * box: `ElementVisual` sizes itself from the MODEL (a line's <svg> floors its
+ * own size and overflows), so this is a measurement floor only.
+ */
+const measurePx = (px: number) => Math.max(px, 1);
+
 const pointerPos = (ev: unknown): { x: number; y: number } | null => {
   const e = ev as { clientX?: number; clientY?: number } | null | undefined;
   return typeof e?.clientX === 'number' && typeof e.clientY === 'number'
@@ -613,6 +632,16 @@ export function EditorCanvas() {
     return null;
   })();
 
+  /**
+   * Whether the group under the selection gets one box instead of a box per
+   * member — PowerPoint's grouped look; see `isSoleGroup`.
+   *
+   * Drilled-into chart parts are excluded: three selected bars are three
+   * objects that happen to share the chart's group, and each one has to keep
+   * showing where it is.
+   */
+  const groupBoxOnly = !chartPart && !!slide && isSoleGroup(slide.elements, selectedIds);
+
   const guidelineNodes = slide
     ? slide.elements
         .filter((e) => !selectedIds.includes(e.id))
@@ -1027,8 +1056,8 @@ export function EditorCanvas() {
         n.node.style.removeProperty('height');
         continue;
       }
-      n.node.style.width = `${el.rect.w * scale}px`;
-      n.node.style.height = `${el.rect.h * scale}px`;
+      n.node.style.width = `${measurePx(el.rect.w * scale)}px`;
+      n.node.style.height = `${measurePx(el.rect.h * scale)}px`;
     }
     chartResizeStartRef.current = null;
   };
@@ -1038,8 +1067,8 @@ export function EditorCanvas() {
     const id = target.dataset.id;
     const el = id ? findEl(id) : undefined;
     if (!id || !el) return null;
-    target.style.width = `${ev.width}px`;
-    target.style.height = `${ev.height}px`;
+    target.style.width = `${measurePx(ev.width)}px`;
+    target.style.height = `${measurePx(ev.height)}px`;
     target.style.transform = ev.drag.transform;
     const [dx, dy] = ev.drag.dist as [number, number];
     return {
@@ -1047,8 +1076,11 @@ export function EditorCanvas() {
       box: {
         x: el.rect.x * scale + dx,
         y: el.rect.y * scale + dy,
-        w: ev.width as number,
-        h: ev.height as number,
+        // A line stays a line: its cross axis is 0 by definition, and the node
+        // it is measured through now floors at a pixel (see `measurePx`), so
+        // taking Moveable's number here would open it into a thin rectangle.
+        w: el.rect.w === 0 ? 0 : (ev.width as number),
+        h: el.rect.h === 0 ? 0 : (ev.height as number),
       },
     };
   };
@@ -1563,8 +1595,9 @@ export function EditorCanvas() {
               }}
               className="dd-el absolute left-0 top-0"
               style={{
-                width: boxW,
-                height: boxH,
+                // Floored for Moveable's benefit only — see `measurePx`.
+                width: measurePx(boxW),
+                height: measurePx(boxH),
                 // Position via transform ONLY. React owns the transform string, so
                 // it always overwrites anything Moveable applies mid-drag — no
                 // leftover translate, no post-drag jump, overlay stays aligned.
@@ -1800,6 +1833,9 @@ export function EditorCanvas() {
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             snapThreshold={6}
+            // One box for a group, rather than the group's box plus every
+            // member's own — see `groupBoxOnly`.
+            hideChildMoveableDefaultLines={groupBoxOnly}
             elementGuidelines={guidelineNodes}
             verticalGuidelines={[0, displayWidth / 2, displayWidth, ...marginX, ...shapeInset.x]}
             horizontalGuidelines={[0, height / 2, height, ...marginY, ...shapeInset.y]}
@@ -1976,8 +2012,9 @@ export function EditorCanvas() {
               const rect = {
                 x: el.rect.x + pxToEmu(dx, scale),
                 y: el.rect.y + pxToEmu(dy, scale),
-                w: pxToEmu(last.width, scale),
-                h: pxToEmu(last.height, scale),
+                // Zero stays zero — see the same guard in `paintResizeFrame`.
+                w: el.rect.w === 0 ? 0 : pxToEmu(last.width, scale),
+                h: el.rect.h === 0 ? 0 : pxToEmu(last.height, scale),
               };
               if (soleChart) {
                 // The backdrop IS the frame, so resizing it resizes the chart —
@@ -2049,8 +2086,11 @@ export function EditorCanvas() {
                 const hi = Math.max(...starts.map((s) => get(s)[0] + get(s)[1]));
                 return [lo, hi] as const;
               };
-              const [gx0, gx1] = bounds((s) => [s.x, s.w]);
-              const [gy0, gy1] = bounds((s) => [s.y, s.h]);
+              // Measured extents, not model extents: the box Moveable reports
+              // is the union of the FLOORED nodes, so the two have to agree or
+              // every frame starts from a factor that isn't 1.
+              const [gx0, gx1] = bounds((s) => [s.x, measurePx(s.w)]);
+              const [gy0, gy1] = bounds((s) => [s.y, measurePx(s.h)]);
 
               /**
                * How far the handle has travelled on an axis Moveable isn't
@@ -2116,8 +2156,8 @@ export function EditorCanvas() {
                 const node = nodeMap.current.get(start.id);
                 const el = findEl(start.id);
                 if (!node) return;
-                node.style.width = `${box.w}px`;
-                node.style.height = `${box.h}px`;
+                node.style.width = `${measurePx(box.w)}px`;
+                node.style.height = `${measurePx(box.h)}px`;
                 node.style.transform = `translate(${box.x}px, ${box.y}px)${
                   el?.rotation ? ` rotate(${el.rotation}deg)` : ''
                 }`;
