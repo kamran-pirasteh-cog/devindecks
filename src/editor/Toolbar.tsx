@@ -72,6 +72,11 @@ export function Toolbar() {
   const toggleGuides = useEditor((s) => s.toggleGuides);
   const pageNumbers = useEditor((s) => showsPageNumbers(s.deck));
   const togglePageNumbers = useEditor((s) => s.togglePageNumbers);
+  const fitToMargins = useEditor((s) => s.fitToMargins);
+  const slideIsEmpty = useEditor(
+    (s) => !s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.elements.length,
+  );
+  const selCount = useEditor((s) => s.selectedIds.length);
   const insertSticky = useEditor((s) => s.insertSticky);
   const togglePanel = useComments((s) => s.togglePanel);
   const panelOpen = useComments((s) => s.panelOpen);
@@ -188,7 +193,11 @@ export function Toolbar() {
         ) : null}
       </div>
       {SHAPES.map((s) => (
-        <Btn key={s.preset} onClick={() => addElement(makeShape(s.preset))} title={`Add ${s.preset}`}>
+        <Btn
+          key={s.preset}
+          onClick={() => addElement(makeShape(s.preset))}
+          title={`Add ${s.preset}`}
+        >
           {s.label}
         </Btn>
       ))}
@@ -201,6 +210,17 @@ export function Toolbar() {
         title={showGuides ? 'Hide margin guides (⌘⇧G)' : 'Show margin guides (⌘⇧G)'}
       >
         <span className={showGuides ? 'text-sky-500' : undefined}>⊞</span>
+      </Btn>
+      <Btn
+        onClick={fitToMargins}
+        title={
+          selCount > 0
+            ? 'Move the selection as one block onto the margin guides'
+            : 'Move this slide\u2019s content as one block onto the margin guides'
+        }
+        disabled={slideIsEmpty}
+      >
+        <span className="text-xs font-medium">Enforce margins</span>
       </Btn>
       <Btn
         onClick={togglePageNumbers}
@@ -235,7 +255,7 @@ export function Toolbar() {
         title="Add a sticky note (it grows as you type)"
         className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
       >
-        Stickies
+        Sticky note
       </button>
       {FLAGS.comments ? (
         <>
@@ -245,7 +265,9 @@ export function Toolbar() {
             title={panelOpen ? 'Hide comments' : 'Show comments'}
             aria-pressed={panelOpen}
             className={`flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
-              panelOpen ? 'text-indigo-600 dark:text-indigo-400' : 'text-zinc-600 dark:text-zinc-300'
+              panelOpen
+                ? 'text-indigo-600 dark:text-indigo-400'
+                : 'text-zinc-600 dark:text-zinc-300'
             }`}
           >
             Comments

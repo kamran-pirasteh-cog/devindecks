@@ -32,6 +32,13 @@ export interface GridDerived {
   totals: number[];
   /** Every value the value axis has to contain. */
   extent: number[];
+  /**
+   * The same, for the series on the SECONDARY axis — empty when there are none.
+   * Kept apart rather than merged: the whole point of a second axis is that
+   * those numbers are in other units, and one extent covering both is the
+   * flat line at the bottom of the plot that the second axis exists to fix.
+   */
+  extentSecondary: number[];
   series: GridSeries[];
   categoryLabels: string[];
 }
@@ -44,6 +51,13 @@ export interface DeriveOptions {
    * column stack's total label or its 100% denominator.
    */
   unstacked?: ReadonlySet<string>;
+  /**
+   * Series plotted against the secondary value axis — see
+   * `secondarySeriesKeys`. They are implicitly unstacked (a stack spanning two
+   * scales means nothing), they stay out of the totals and the 100% denominator,
+   * and their values go to `extentSecondary`.
+   */
+  secondary?: ReadonlySet<string>;
 }
 
 /**
@@ -59,7 +73,8 @@ export function deriveGrid(
   const { categories, series } = data;
   const stacked = stack === 'stacked' || stack === 'stacked100';
   const pct = stack === 'stacked100';
-  const inStack = (s: GridSeries) => !options.unstacked?.has(s.key);
+  const onSecondary = (s: GridSeries) => options.secondary?.has(s.key) ?? false;
+  const inStack = (s: GridSeries) => !options.unstacked?.has(s.key) && !onSecondary(s);
 
   const totals = categories.map((_, ci) =>
     series.reduce((sum, s) => sum + (inStack(s) ? (s.values[ci] ?? 0) : 0), 0),
@@ -72,6 +87,7 @@ export function deriveGrid(
 
   const datums: GridDatum[] = [];
   const extent: number[] = [];
+  const extentSecondary: number[] = [];
 
   categories.forEach((cat, ci) => {
     let up = 0;
@@ -80,8 +96,12 @@ export function deriveGrid(
 
     series.forEach((s, si) => {
       const raw = s.values[ci] ?? null;
+      const secondary = onSecondary(s);
       const share = denom > 0 && raw !== null ? Math.abs(raw) / denom : undefined;
-      const v = pct
+      // A secondary series keeps its own units. Dividing it by the stack's
+      // total would turn the rate the second axis exists for into a share of
+      // something it isn't part of.
+      const v = pct && !secondary
         ? raw === null
           ? null
           : denom > 0
@@ -103,7 +123,7 @@ export function deriveGrid(
         }
       }
 
-      if (v !== null) extent.push(base, top);
+      if (v !== null) (secondary ? extentSecondary : extent).push(base, top);
 
       datums.push({
         seriesKey: s.key,
@@ -115,7 +135,7 @@ export function deriveGrid(
         value: raw,
         base,
         top,
-        labelValue: pct ? (share ?? 0) : (raw ?? 0),
+        labelValue: pct && !secondary ? (share ?? 0) : (raw ?? 0),
         share,
       });
     });
@@ -128,6 +148,7 @@ export function deriveGrid(
     data: datums,
     totals,
     extent,
+    extentSecondary,
     series,
     categoryLabels: categories.map((c) => c.label),
   };

@@ -34,6 +34,17 @@ const PREVIEW_SETS: { id: string; label: string; charts: PreviewChart[] }[] = [
       { kind: 'line', title: 'Line' },
     ],
   },
+  // Both ways the columns under a combo's line can sit, side by side: whether
+  // the segments stack or cluster is a real choice about what's being read, and
+  // it changes what the style has to survive.
+  {
+    id: 'combo',
+    label: 'Column + line',
+    charts: [
+      { kind: 'combo', stack: 'stacked', title: 'Stacked + line' },
+      { kind: 'combo', stack: 'clustered', title: 'Clustered + line' },
+    ],
+  },
   { id: 'pie', label: 'Pie', charts: [{ kind: 'pie', title: 'Share of revenue' }] },
   {
     id: 'waterfall',
@@ -46,6 +57,12 @@ const PREVIEW_SETS: { id: string; label: string; charts: PreviewChart[] }[] = [
     charts: [{ kind: 'scatter', title: 'Accounts' }],
   },
   { id: 'mekko', label: 'Mekko', charts: [{ kind: 'mekko', title: 'Market structure' }] },
+  {
+    id: 'dotplot',
+    label: 'Dot plot',
+    charts: [{ kind: 'dotplot', title: 'Segments, FY23 vs FY25' }],
+  },
+  { id: 'gantt', label: 'Gantt', charts: [{ kind: 'gantt', title: 'Launch plan' }] },
 ];
 
 export function ChartStyleSection({
@@ -92,7 +109,7 @@ export function ChartStyleSection({
               ))}
             </div>
           </div>
-          <ChartStylePreview ds={ds} charts={active.charts} />
+          <ChartStylePreview ds={ds} charts={active.charts} className="max-w-[38rem]" />
           <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
             Compiled by the same engine the editor uses, so this is exactly what
             a new chart will look like.
@@ -102,7 +119,11 @@ export function ChartStyleSection({
               three series can fall apart at six, and the only way to find that
               out used to be inserting a real chart. */}
           <div className="mt-3">
-            <ChartPreviewDataEditor data={ds.previewData} onChange={onPreviewData} />
+            <ChartPreviewDataEditor
+              data={ds.previewData}
+              onChange={onPreviewData}
+              showSecondary={active.charts.some((c) => c.kind === 'combo')}
+            />
           </div>
         </div>
       </div>

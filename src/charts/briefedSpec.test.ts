@@ -9,7 +9,7 @@ import {
 } from '@/model';
 import { compileChart } from '@/chart/compile';
 import { recommendLayouts } from './intent';
-import { briefTitle, specFromBrief } from './briefedSpec';
+import { DEFAULT_CHART_TITLE, briefTitle, specFromBrief } from './briefedSpec';
 import { CHART_LAYOUTS } from './layouts';
 
 const AS_OF = '2026-08-17';
@@ -127,6 +127,22 @@ describe('specFromBrief', () => {
 describe('briefTitle', () => {
   it('prints a single period once rather than as a range', () => {
     const rec = recommendLayouts('revenue mix by region for FY25', { asOf: AS_OF });
+    expect(briefTitle(rec.brief)).toBe('Revenue by region · FY25');
+  });
+
+  it('falls back to the placeholder when no measure was named', () => {
+    const rec = recommendLayouts('by function over the last 8 quarters', {
+      asOf: AS_OF,
+      slideTitle: 'Session insights, merged PRs, comps, usage analytics',
+    });
+    expect(briefTitle(rec.brief)).toBe(DEFAULT_CHART_TITLE);
+  });
+
+  it('drops a subject that reads as a sentence rather than a name', () => {
+    const rec = recommendLayouts('revenue by region for FY25', {
+      asOf: AS_OF,
+      slideTitle: 'Session insights, merged PRs, comps, usage analytics',
+    });
     expect(briefTitle(rec.brief)).toBe('Revenue by region · FY25');
   });
 });

@@ -15,16 +15,29 @@ import {
   ACCEPT_ATTR,
   ARTIFACT_FOLDERS,
   ArtifactError,
+  ROOT_ARTIFACT_FOLDERS,
   addArtifact,
+  childFolders,
   countByFolder,
   deleteArtifact,
   formatBytes,
+  isLeafFolder,
   listArtifacts,
   MAX_BYTES,
   renameArtifact,
+  type ArtifactFolder,
   type ArtifactFolderId,
   type StoredArtifact,
 } from '@/artifacts/repository';
+
+/** Only leaves hold artifacts, so only leaves are upload destinations. */
+const LEAF_FOLDERS = ARTIFACT_FOLDERS.filter((f) => isLeafFolder(f.id));
+
+/** "Images / Client Logos" — enough to tell nested destinations apart. */
+function folderPath(folder: ArtifactFolder): string {
+  const parent = ARTIFACT_FOLDERS.find((f) => f.id === folder.parentId);
+  return parent ? `${parent.name} / ${folder.name}` : folder.name;
+}
 
 function FolderIcon({ className = 'h-9 w-9' }: { className?: string }) {
   return (
@@ -123,14 +136,14 @@ function FolderPrompt({
           Artifacts are organized by type, so they need a destination folder.
         </p>
         <div className="mt-3 space-y-1.5">
-          {ARTIFACT_FOLDERS.map((f) => (
+          {LEAF_FOLDERS.map((f) => (
             <button
               key={f.id}
               onClick={() => onChoose(f.id)}
               className="flex w-full items-center gap-2.5 rounded-md border border-zinc-200 px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               <FolderIcon className="h-6 w-6" />
-              {f.name}
+              {folderPath(f)}
             </button>
           ))}
         </div>
@@ -313,8 +326,50 @@ export function Artifacts() {
     />
   );
 
+  // Shared by the top level and by a parent folder's drill-in: same cards,
+  // different set. Only leaves take a drop — a parent holds no artifacts.
+  const folderGrid = (folders: ArtifactFolder[]) => (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      {folders.map((folder) => {
+        const leaf = isLeafFolder(folder.id);
+        const children = leaf ? 0 : childFolders(folder.id).length;
+        return (
+          <button
+            key={folder.id}
+            onClick={() => setOpenId(folder.id)}
+            {...(leaf ? dropHandlers(folder.id) : {})}
+            className={`flex items-center gap-3 rounded-lg border px-3.5 py-3 text-left ${
+              dropTarget === folder.id
+                ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-500/10'
+                : 'border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900'
+            }`}
+          >
+            <FolderIcon />
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium text-zinc-900 dark:text-white">
+                {folder.name}
+              </span>
+              <span className="block text-xs text-zinc-400">
+                {counts ? (
+                  <>
+                    {children ? `${children} folders · ` : ''}
+                    {counts[folder.id]} {counts[folder.id] === 1 ? 'item' : 'items'}
+                  </>
+                ) : (
+                  '—'
+                )}
+              </span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
   if (open && openId) {
     const dropping = dropTarget === openId;
+    const subfolders = childFolders(openId);
+    const parent = ARTIFACT_FOLDERS.find((f) => f.id === open.parentId) ?? null;
     return (
       <div>
         <div className="mb-4 flex items-center justify-between gap-3">
@@ -326,17 +381,34 @@ export function Artifacts() {
               Artifacts
             </button>
             <span className="text-zinc-300 dark:text-zinc-600">/</span>
+            {parent ? (
+              <>
+                <button
+                  onClick={() => setOpenId(parent.id)}
+                  className="truncate rounded px-1.5 py-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                >
+                  {parent.name}
+                </button>
+                <span className="text-zinc-300 dark:text-zinc-600">/</span>
+              </>
+            ) : null}
             <span className="truncate px-1.5 py-1 font-medium text-zinc-900 dark:text-white">
               {open.name}
             </span>
           </div>
-          <UploadButton busy={busy} onClick={() => fileInputRef.current?.click()} />
-          {fileInput((files) => upload(files, openId))}
+          {subfolders.length ? null : (
+            <>
+              <UploadButton busy={busy} onClick={() => fileInputRef.current?.click()} />
+              {fileInput((files) => upload(files, openId))}
+            </>
+          )}
         </div>
 
         <ErrorList errors={errors} onDismiss={() => setErrors([])} />
 
-        {items.length ? (
+        {subfolders.length ? (
+          folderGrid(subfolders)
+        ) : items.length ? (
           <div
             {...dropHandlers(openId)}
             className={`grid grid-cols-2 gap-3 rounded-lg sm:grid-cols-3 lg:grid-cols-5 ${
@@ -373,30 +445,7 @@ export function Artifacts() {
 
       <ErrorList errors={errors} onDismiss={() => setErrors([])} />
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        {ARTIFACT_FOLDERS.map((folder) => (
-          <button
-            key={folder.id}
-            onClick={() => setOpenId(folder.id)}
-            {...dropHandlers(folder.id)}
-            className={`flex items-center gap-3 rounded-lg border px-3.5 py-3 text-left ${
-              dropTarget === folder.id
-                ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-500/10'
-                : 'border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900'
-            }`}
-          >
-            <FolderIcon />
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium text-zinc-900 dark:text-white">
-                {folder.name}
-              </span>
-              <span className="block text-xs text-zinc-400">
-                {counts ? `${counts[folder.id]} ${counts[folder.id] === 1 ? 'item' : 'items'}` : '—'}
-              </span>
-            </span>
-          </button>
-        ))}
-      </div>
+      {folderGrid(ROOT_ARTIFACT_FOLDERS)}
 
       {pending ? (
         <FolderPrompt

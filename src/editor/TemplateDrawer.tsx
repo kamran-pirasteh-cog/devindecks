@@ -19,8 +19,11 @@ import {
 } from '@/templates/layoutRepository';
 import {
   ARTIFACT_FOLDERS,
+  ROOT_ARTIFACT_FOLDERS,
+  childFolders,
   countByFolder,
   listArtifacts,
+  type ArtifactFolder,
   type ArtifactFolderId,
   type StoredArtifact,
 } from '@/artifacts/repository';
@@ -53,6 +56,7 @@ function ArtifactPanel() {
   }, [openId]);
 
   const open = ARTIFACT_FOLDERS.find((f) => f.id === openId) ?? null;
+  const subfolders = openId ? childFolders(openId) : [];
 
   // Transparent PNGs and SVGs are the norm here, and both vanish against a
   // plain tile — same checkerboard as the Admin grid.
@@ -63,16 +67,43 @@ function ArtifactPanel() {
     backgroundPosition: '0 0, 5px 5px',
   };
 
+  // Shared by the top level and by a parent folder's drill-in.
+  const rows = (folders: ArtifactFolder[]) =>
+    folders.map((folder) => (
+      <button
+        key={folder.id}
+        onClick={() => setOpenId(folder.id)}
+        className="flex w-full items-center gap-2 rounded-md border border-zinc-200 px-2 py-1.5 text-left hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden className="h-5 w-5 shrink-0 text-zinc-400">
+          <path
+            fill="currentColor"
+            d="M4 5h5.2l1.6 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
+          />
+        </svg>
+        <span className="min-w-0">
+          <span className="block truncate text-xs font-medium">{folder.name}</span>
+          <span className="block text-[10px] text-zinc-400">
+            {counts ? `${counts[folder.id]} ${counts[folder.id] === 1 ? 'item' : 'items'}` : '—'}
+          </span>
+        </span>
+      </button>
+    ));
+
+  const folderRows = rows(ROOT_ARTIFACT_FOLDERS);
+
   if (open && openId) {
     return (
       <div className="flex-1 overflow-y-auto p-3">
         <button
-          onClick={() => setOpenId(null)}
+          onClick={() => setOpenId(open.parentId ?? null)}
           className="mb-2 flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
         >
           ‹ {open.name}
         </button>
-        {items.length ? (
+        {subfolders.length ? (
+          <div className="space-y-1.5">{rows(subfolders)}</div>
+        ) : items.length ? (
           <div className="grid grid-cols-2 gap-2">
             {items.map((a) => (
               <button
@@ -107,30 +138,7 @@ function ArtifactPanel() {
     );
   }
 
-  return (
-    <div className="flex-1 space-y-1.5 overflow-y-auto p-3">
-      {ARTIFACT_FOLDERS.map((folder) => (
-        <button
-          key={folder.id}
-          onClick={() => setOpenId(folder.id)}
-          className="flex w-full items-center gap-2 rounded-md border border-zinc-200 px-2 py-1.5 text-left hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden className="h-5 w-5 shrink-0 text-zinc-400">
-            <path
-              fill="currentColor"
-              d="M4 5h5.2l1.6 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
-            />
-          </svg>
-          <span className="min-w-0">
-            <span className="block truncate text-xs font-medium">{folder.name}</span>
-            <span className="block text-[10px] text-zinc-400">
-              {counts ? `${counts[folder.id]} ${counts[folder.id] === 1 ? 'item' : 'items'}` : '—'}
-            </span>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
+  return <div className="flex-1 space-y-1.5 overflow-y-auto p-3">{folderRows}</div>;
 }
 
 export function TemplateDrawer() {

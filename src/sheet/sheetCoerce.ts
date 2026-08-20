@@ -7,8 +7,10 @@
  * as `invalid` rather than silently becoming zero.
  */
 import { formatNumber } from '@/chart/format/number';
-import { parseGrain } from '@/model/sheetSchema';
-import type { CellType, CellValue, NumberFormat } from '@/model';
+import { formatDate } from '@/chart/format/date';
+import { parseDay, parseGrain } from '@/model/sheetSchema';
+import { fromIso } from '@/model';
+import type { CellType, CellValue, NumberFormat, SheetColumn } from '@/model';
 
 /** Unicode minus, en dash and em dash all mean "minus" when pasted. */
 const DASHES = /[−–—]/g;
@@ -29,7 +31,20 @@ export interface CoerceResult {
   warning?: { code: string; message: string };
 }
 
-export function coerceCell(raw: string, type: CellType): CoerceResult {
+/**
+ * What a cell needs to coerce: its type, and — for a date — what it stores.
+ *
+ * The column rather than just the type, because `date` means two different
+ * things. A category axis's date column keeps the author's WORDING ("FY25" must
+ * still read "FY25" after a round trip) and only needs to know what period it
+ * denotes; a Gantt's Start cell must resolve to an actual day or the bar cannot
+ * be placed. See `SheetColumn.dateGrain`.
+ */
+export type CoerceColumn = Pick<SheetColumn, 'type' | 'dateGrain'>;
+
+export function coerceCell(raw: string, col: CellType | CoerceColumn): CoerceResult {
+  const column: CoerceColumn = typeof col === 'string' ? { type: col } : col;
+  const type = column.type;
   const s = raw.trim();
   if (!s) return { value: { kind: 'empty' } };
 
@@ -41,12 +56,30 @@ export function coerceCell(raw: string, type: CellType): CoerceResult {
       return { value: { kind: 'enum', value: s } };
 
     case 'date': {
+      if (column.dateGrain === 'day') {
+        // An exact day. The first real producer of `{ kind: 'date' }`, whose
+        // slot in `CellValue` has been waiting for one.
+        const iso = parseDay(s);
+        return iso
+          ? { value: { kind: 'date', iso } }
+          : { value: { kind: 'invalid', raw, expected: 'date' } };
+      }
       const parsed = parseGrain(s);
-      // A date column keeps the author's own wording — "FY25" is what belongs
+      // A period label keeps the author's own wording — "FY25" is what belongs
       // on the axis, not "2025-01-01".
       return parsed
         ? { value: { kind: 'text', text: s } }
         : { value: { kind: 'invalid', raw, expected: 'date' } };
+    }
+
+    case 'color': {
+      // The other `CellValue` slot with no producer. A token id or a hex — the
+      // same two things `ColorRef` carries, so nothing is lost on the way in.
+      const hex = /^#?([0-9a-f]{6})$/i.exec(s);
+      if (hex) return { value: { kind: 'color', ref: { kind: 'hex', hex: `#${hex[1]!.toLowerCase()}` } } };
+      return /^[a-z][\w.-]*$/i.test(s)
+        ? { value: { kind: 'color', ref: { kind: 'token', token: s } } }
+        : { value: { kind: 'invalid', raw, expected: 'color' } };
     }
 
     case 'number':
@@ -105,7 +138,7 @@ export function parseNumber(input: string): number | null {
 }
 
 /** What a cell shows when it isn't being edited. */
-export function formatCell(value: CellValue, format?: NumberFormat): string {
+export function formatCell(value: CellValue, format?: NumberFormat, dateFormat?: string): string {
   switch (value.kind) {
     case 'empty':
       return '';
@@ -114,7 +147,9 @@ export function formatCell(value: CellValue, format?: NumberFormat): string {
     case 'text':
       return value.text;
     case 'date':
-      return value.iso;
+      // ISO unless the column names a pattern: a sheet of "2026-03-14" beside a
+      // chart reading "14 Mar '26" is two spellings of one date.
+      return dateFormat ? formatDate(fromIso(value.iso) ?? 0, dateFormat) : value.iso;
     case 'enum':
       return value.value;
     case 'invalid':
@@ -126,6 +161,10 @@ export function formatCell(value: CellValue, format?: NumberFormat): string {
 
 /** What a cell shows once you start editing it — always the raw figure. */
 export function editText(value: CellValue): string {
+  // A date edits as ISO whatever it DISPLAYS as: it is unambiguous, `parseDay`
+  // reads it back exactly, and it is the one spelling that never depends on
+  // which country the author is in.
+  if (value.kind === 'date') return value.iso;
   return value.kind === 'number' ? trimNumber(value.n) : formatCell(value);
 }
 

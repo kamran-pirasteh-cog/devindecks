@@ -21,9 +21,45 @@ export type ChartRef =
       // `tick` is the NUMBER; `tickMark` is the little rule beside it.
       sub: 'line' | 'title' | 'tick' | 'tickMark' | 'grid' | 'unitNote';
       i?: number;
+      /**
+       * Which ROW of a multi-level axis header this belongs to, coarsest first.
+       *
+       * A Gantt's timescale is a stack of bands — which quarter over which
+       * month — and both bands number their cells from zero. Without this the
+       * year band's cell 0 and the month band's cell 0 mint the same element
+       * id, and `reconcileChartElements` diffs on ids: one whole band would
+       * vanish, silently. Unset on every single-row axis, which is all of them
+       * but this one.
+       */
+      tier?: number;
     }
   | { chartId: string; part: 'legend.item'; series: string }
-  | { chartId: string; part: 'decoration'; decoId: string; sub?: string };
+  | { chartId: string; part: 'decoration'; decoId: string; sub?: string }
+  /**
+   * A Gantt's row furniture: its name in the table, the tint behind it, and the
+   * rule under it.
+   *
+   * The BARS are not here — they are `mark`s addressed `series: rowKey,
+   * point: itemKey`, which is what makes every existing gesture work on them:
+   * `applyChartFormat`'s "every point of a series selected means the series
+   * changed" becomes "recolour every bar in a row and the ROW takes the colour,
+   * so a bar added later matches", and `shiftClickParts` already narrows a
+   * range to one series, so shift-clicking two bars in a row selects that row
+   * alone with no new selection code at all.
+   */
+  | { chartId: string; part: 'gantt.row'; row: string; sub: 'label' | 'band' | 'divider' }
+  /** A description table cell, or the heading over its column. */
+  | { chartId: string; part: 'gantt.column'; column: string; sub: 'header' | 'cell'; row?: string }
+  /**
+   * A full-height stripe over the plot: the non-working days, and the today
+   * rule.
+   *
+   * Its OWN part rather than a `decoration`, and that is load-bearing rather
+   * than tidiness: `previewHitTest` ranks a decoration at 0 — the most specific
+   * class there is — so weekend shading routed through it would win the click
+   * over every bar it crosses.
+   */
+  | { chartId: string; part: 'gantt.band'; sub: 'weekend' | 'holiday' | 'today'; i?: number };
 
 export type ChartPart = ChartRef['part'];
 
@@ -44,14 +80,22 @@ export function partKey(ref: ChartRef): string {
       return `label.${ref.series}.${ref.point}`;
     case 'total':
       return `total.${ref.point}`;
-    case 'axis':
+    case 'axis': {
+      const tier = ref.tier === undefined ? '' : `.t${ref.tier}`;
       return ref.i === undefined
-        ? `axis.${ref.axis}.${ref.sub}`
-        : `axis.${ref.axis}.${ref.sub}.${ref.i}`;
+        ? `axis.${ref.axis}.${ref.sub}${tier}`
+        : `axis.${ref.axis}.${ref.sub}${tier}.${ref.i}`;
+    }
     case 'legend.item':
       return `legend.item.${ref.series}`;
     case 'decoration':
       return ref.sub ? `deco.${ref.decoId}.${ref.sub}` : `deco.${ref.decoId}`;
+    case 'gantt.row':
+      return `row.${ref.sub}.${ref.row}`;
+    case 'gantt.column':
+      return ref.sub === 'header' ? `head.${ref.column}` : `cell.${ref.column}.${ref.row}`;
+    case 'gantt.band':
+      return ref.i === undefined ? `band.${ref.sub}` : `band.${ref.sub}.${ref.i}`;
   }
 }
 
@@ -76,6 +120,15 @@ export function partKind(ref: ChartRef): string {
       return `axis.${ref.axis}.${ref.sub}`;
     case 'decoration':
       return `decoration.${ref.sub ?? ''}`;
+    case 'gantt.row':
+      return `gantt.row.${ref.sub}`;
+    // Split PER COLUMN: a shift-range that wandered sideways across a table
+    // would be a rectangle nobody asked for. The only run that means anything
+    // in a table is the one down a single column.
+    case 'gantt.column':
+      return ref.sub === 'header' ? 'gantt.column.header' : `gantt.column.cell.${ref.column}`;
+    case 'gantt.band':
+      return `gantt.band.${ref.sub}`;
     default:
       return ref.part;
   }

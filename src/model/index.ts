@@ -1,4 +1,5 @@
 export * from './units';
+export * from './archetype';
 export * from './fonts';
 export * from './tokens';
 export * from './pageNumbers';

@@ -28,6 +28,7 @@
  * state there.
  */
 import {
+  axisLineVisible,
   canSwapAxes,
   convertData,
   chartOrientation,
@@ -39,8 +40,10 @@ import {
   pointsToEmu,
   setChartOrientation,
   supportsOrientation,
+  supportsSecondaryAxis,
   swapAxes,
   token,
+  DEFAULT_AXIS,
   type AxisId,
   type AxisSpec,
   type ChartKind,
@@ -63,6 +66,7 @@ import { CHART_KIND_LABELS } from '@/charts/kinds';
 import { legendEntryColor, recolorLegendEntry } from '@/store/chartActions';
 import { emphasisSeriesKey } from '@/chart/place/lineArea';
 import { CustomColorSwatch, customHexOf } from '../color';
+import { markCapabilities, markRender } from './markCaps';
 import { describePart } from './previewHitTest';
 
 /** Mutate the spec in place. The owner turns that into whatever a write means. */
@@ -88,8 +92,10 @@ const KIND_OPTIONS: { value: ChartKind; label: string }[] = (
     ['waterfall', 'waterfall'],
     ['pie', 'pie'],
     ['sankey', 'sankey'],
+    ['dotplot', 'dotplot'],
     ['scatter', 'scatter'],
     ['bubble', 'bubble'],
+    ['gantt', 'gantt'],
   ] satisfies [ChartKind, ChartKind][]
 ).map(([value, labelKind]) => ({ value, label: CHART_KIND_LABELS[labelKind] }));
 
@@ -116,37 +122,6 @@ function findSeries(spec: ChartSpec, key: string): AnySeries | undefined {
   return undefined;
 }
 
-/**
- * How the selected series is DRAWN, which is what decides its options.
- *
- * A combo chart's series are not all the same shape — one is a column and the
- * next is a line over it — so the panel can't read this off `spec.kind`. A
- * line's options (weight, dash, dots) are meaningless on a bar, and offering
- * them is worse than not offering them: they write to the spec and nothing on
- * screen moves.
- */
-export function seriesRender(
-  spec: ChartSpec,
-  key: string,
-): 'column' | 'line' | 'area' | 'point' | 'slice' {
-  switch (spec.kind) {
-    case 'line':
-      return 'line';
-    case 'area':
-      return 'area';
-    case 'combo':
-      return spec.render[key] ?? 'column';
-    case 'scatter':
-    case 'bubble':
-      return 'point';
-    case 'pie':
-    case 'donut':
-      return 'slice';
-    default:
-      return 'column';
-  }
-}
-
 const DASHES: { value: DashStyle; label: string }[] = [
   { value: 'solid', label: 'Solid' },
   { value: 'dash', label: 'Dashed' },
@@ -163,13 +138,28 @@ const MARKER_SHAPES: { value: MarkerShape; label: string }[] = [
 
 const DEFAULT_MARKER_PT = 5;
 
-const PLACEMENTS: { value: LabelPlacement; label: string }[] = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'outsideEnd', label: 'Outside' },
-  { value: 'insideEnd', label: 'Inside end' },
-  { value: 'insideCenter', label: 'Center' },
-  { value: 'insideBase', label: 'Inside base' },
-  { value: 'above', label: 'Above' },
+const PLACEMENT_LABELS: Record<LabelPlacement, string> = {
+  auto: 'Auto',
+  outsideEnd: 'Outside',
+  insideEnd: 'Inside end',
+  insideCenter: 'Center',
+  insideBase: 'Inside base',
+  above: 'Above',
+  below: 'Below',
+  left: 'Left',
+  right: 'Right',
+};
+
+/** The five `placeColumnBar` distinguishes — it folds `above`, `below`, `left`
+ *  and `right` into `outsideEnd`, so offering those is four names for one. A
+ *  placer that DOES tell them apart names its own set; see
+ *  `MarkCapabilities.placements`. */
+const PLACEMENTS: LabelPlacement[] = [
+  'auto',
+  'outsideEnd',
+  'insideEnd',
+  'insideCenter',
+  'insideBase',
 ];
 
 /* ------------------------------------------------------------------ */
@@ -343,6 +333,50 @@ export function ChartPartOptions({
       fn(ser.labels);
     });
 
+  /**
+   * Move a series between the two value axes.
+   *
+   * The `y2` axis is created on the way in and dropped again when the last
+   * series leaves it: an axis spec with nothing plotted against it is a gutter
+   * of numbers that mean nothing, and the compiler draws one only while a
+   * series is actually on it.
+   */
+  const setSeriesAxis = (axis: 'primary' | 'secondary') =>
+    patch((s) => {
+      if (!seriesKey || !isGridSpec(s)) return;
+      const ser = s.data.series.find((x) => x.key === seriesKey);
+      if (!ser) return;
+      ser.axis = axis === 'secondary' ? 'secondary' : undefined;
+      if (axis === 'secondary') {
+        s.axes.y2 ??= { ...DEFAULT_AXIS };
+      } else if (!s.data.series.some((x) => x.axis === 'secondary')) {
+        s.axes.y2 = undefined;
+      }
+    });
+
+  const onSecondary =
+    isGridSpec(spec) && !!seriesKey
+      ? spec.data.series.find((s) => s.key === seriesKey)?.axis === 'secondary'
+      : false;
+
+  /**
+   * Which axis this series is read against — the whole point of a combo, and
+   * of any chart carrying a rate beside an absolute.
+   */
+  const axisPicker =
+    series && seriesKey && supportsSecondaryAxis(spec.kind) ? (
+      <Group label="Plot on">
+        <select
+          value={onSecondary ? 'secondary' : 'primary'}
+          onChange={(e) => setSeriesAxis(e.target.value as 'primary' | 'secondary')}
+          className={`${FIELD} w-24`}
+        >
+          <option value="primary">Left axis</option>
+          <option value="secondary">Right axis</option>
+        </select>
+      </Group>
+    ) : null;
+
   const rows = (() => {
     switch (part?.part) {
       /* --- axis: the label, the ticks, the type size --- */
@@ -359,6 +393,17 @@ export function ChartPartOptions({
             <Group label="Show">
               <Toggle on={ax?.show ?? true} onClick={() => setAxis(axis, (a) => (a.show = !a.show))}>
                 Axis
+              </Toggle>
+              {/* The rule, separately from the numbers beside it: an axis
+                  labelled but unruled is a house style, and `show` alone
+                  couldn't ask for it. */}
+              <Toggle
+                on={axisLineVisible(spec, axis)}
+                onClick={() =>
+                  setAxis(axis, (a) => (a.line = !axisLineVisible(spec, axis)))
+                }
+              >
+                Line
               </Toggle>
               {value ? (
                 <Toggle
@@ -466,7 +511,12 @@ export function ChartPartOptions({
       case 'mark':
       case 'label': {
         const labels = spec.decorations.labels;
-        const render = seriesKey ? seriesRender(spec, seriesKey) : null;
+        // Through the REF, not the series key: a kind whose marks differ within
+        // one series has no series-level answer to give — see `markRender`.
+        const render = seriesKey ? markRender(spec, part) : null;
+        // The same table the popover reads, so the two surfaces can't disagree
+        // about whether a slice has a label placement.
+        const caps = render ? markCapabilities(spec, render) : null;
         const colorPicker = series ? (
           <Group label="Color">
             <Swatches
@@ -498,6 +548,7 @@ export function ChartPartOptions({
           return (
             <>
               {colorPicker}
+              {axisPicker}
 
               {spec.kind === 'line' ? (
                 <Group label="Focus">
@@ -621,18 +672,23 @@ export function ChartPartOptions({
                 </Group>
               ) : null}
 
-              <Group label="Label size">
-                <AutoNumber
-                  width="w-14"
-                  placeholder={String(labels.font?.sizePt ?? 'auto')}
-                  value={series.labels?.font?.sizePt}
-                  onChange={(v) =>
-                    setSeriesLabels((l) => {
-                      l.font = v === undefined ? undefined : { ...l.font, sizePt: v };
-                    })
-                  }
-                />
-              </Group>
+              {/* A stroked series' only text is a line chart's end label, and
+                  only when it is switched on — `placeLineArea` draws no
+                  per-point label at all, so with them off this sizes nothing. */}
+              {spec.kind === 'line' && spec.endLabels ? (
+                <Group label="Name size">
+                  <AutoNumber
+                    width="w-14"
+                    placeholder={String(labels.font?.sizePt ?? 'auto')}
+                    value={series.labels?.font?.sizePt}
+                    onChange={(v) =>
+                      setSeriesLabels((l) => {
+                        l.font = v === undefined ? undefined : { ...l.font, sizePt: v };
+                      })
+                    }
+                  />
+                </Group>
+              ) : null}
             </>
           );
         }
@@ -640,42 +696,51 @@ export function ChartPartOptions({
         return (
           <>
             {colorPicker}
+            {axisPicker}
 
             <Group label="Labels">
               <Toggle on={labels.show} onClick={() => setLabels((l) => (l.show = !l.show))}>
                 Show
               </Toggle>
             </Group>
-            <Group label="Shows">
-              <select
-                value={labels.content.kind}
-                onChange={(e) =>
-                  setLabels((l) => (l.content = { kind: e.target.value as SimpleContent['kind'] }))
-                }
-                className={`${FIELD} w-24`}
-              >
-                {LABEL_CONTENTS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </Group>
-            <Group label="Place">
-              <select
-                value={labels.placement}
-                onChange={(e) =>
-                  setLabels((l) => (l.placement = e.target.value as LabelPlacement))
-                }
-                className={`${FIELD} w-24`}
-              >
-                {PLACEMENTS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </Group>
+            {/* A scatter labels a point with the point's own name, and a Mekko
+                cell always reports its share: neither reads the content kind. */}
+            {caps?.content !== false ? (
+              <Group label="Shows">
+                <select
+                  value={labels.content.kind}
+                  onChange={(e) =>
+                    setLabels((l) => (l.content = { kind: e.target.value as SimpleContent['kind'] }))
+                  }
+                  className={`${FIELD} w-24`}
+                >
+                  {LABEL_CONTENTS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </Group>
+            ) : null}
+            {/* Only `placeColumnBar` honours a placement — a slice's label sits
+                on its slice and a point's beside its dot, whatever this says. */}
+            {caps?.placement !== false ? (
+              <Group label="Place">
+                <select
+                  value={labels.placement}
+                  onChange={(e) =>
+                    setLabels((l) => (l.placement = e.target.value as LabelPlacement))
+                  }
+                  className={`${FIELD} w-24`}
+                >
+                  {(caps?.placements ?? PLACEMENTS).map((o) => (
+                    <option key={o} value={o}>
+                      {PLACEMENT_LABELS[o]}
+                    </option>
+                  ))}
+                </select>
+              </Group>
+            ) : null}
             {/* Per SERIES when one is selected — "make the actuals bigger than
                 the forecast" is the common ask, and a chart-wide size can't
                 say it. Blank falls back to the chart's, shown as the hint. */}
@@ -928,7 +993,7 @@ export function ChartPartOptions({
               ? describePart(
                   part,
                   series?.name,
-                  seriesKey ? seriesRender(spec, seriesKey) : undefined,
+                  seriesKey ? (markRender(spec, part) ?? undefined) : undefined,
                 )
               : 'Chart'}
           </span>

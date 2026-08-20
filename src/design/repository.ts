@@ -25,6 +25,7 @@
 import { defineCollection } from '@/platform/collection';
 import { localStorageAdapter } from '@/platform/store';
 import {
+  DEFAULT_BRAND_LOGO,
   DEFAULT_DESIGN_SYSTEM,
   DEFAULT_PAGE_NUMBERS,
   LEGACY_COLOR_ALIASES,
@@ -59,13 +60,33 @@ function withDefaults(ds: DesignSystem): DesignSystem {
     // aliased at render time: its `<select>` has no option for a token that
     // isn't in the palette, so it would silently display — and next save,
     // become — whichever colour happened to be first.
-    type: mapValues(ds.type, (r) =>
-      retired(r.colorToken) ? { ...r, colorToken: LEGACY_COLOR_ALIASES[r.colorToken] } : r,
-    ),
+    // Defaults underneath, so a system stored before a built-in role existed
+    // gains it rather than crashing the dozen places that read `type.body`;
+    // stored roles win, and any role an admin added survives untouched.
+    type: {
+      ...DEFAULT_DESIGN_SYSTEM.type,
+      ...mapValues(ds.type, (r) =>
+        retired(r.colorToken) ? { ...r, colorToken: LEGACY_COLOR_ALIASES[r.colorToken] } : r,
+      ),
+    },
     pageNumbers: { ...DEFAULT_PAGE_NUMBERS, ...ds.pageNumbers },
     // Deep, not shallow: a stored system predating the `chart` section would
     // otherwise survive this line and then crash on `ds.chart.axis.showX`.
     chart: withChartStyleDefaults(ds.chart),
+    // Backfilled only when a logo EXISTS. An unset logo is a real state with
+    // its own behaviour — `chrome.ts` draws a visible placeholder — so
+    // defaulting one in here would silently turn "no mark supplied yet" into
+    // "a mark deliberately positioned bottom-right", and the placeholder that
+    // prompts Kamran to upload one would never appear.
+    ...(ds.logo
+      ? {
+          logo: {
+            ...DEFAULT_BRAND_LOGO,
+            ...ds.logo,
+            placement: { ...DEFAULT_BRAND_LOGO.placement, ...ds.logo.placement },
+          },
+        }
+      : {}),
   };
 }
 

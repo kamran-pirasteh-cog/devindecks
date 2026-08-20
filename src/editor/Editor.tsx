@@ -31,6 +31,7 @@ import { Filmstrip } from './Filmstrip';
 import { Toolbar } from './Toolbar';
 import { EditorCanvas } from './EditorCanvas';
 import { fontSizeDirection } from './fontSizeShortcut';
+import { charFormatAction, charFormatPatch } from './charFormatShortcut';
 import { formatPainterAction } from './formatShortcut';
 import { isCommentShortcut } from './commentShortcut';
 import { clipboardAction } from './clipboardShortcut';
@@ -45,14 +46,14 @@ import { ComingSoonLink } from '@/ui/ComingSoon';
 
 /**
  * Alignment rides the arrow keys: the direction you press is the edge things
- * move to. The plain arrows still nudge, so only a modified press aligns —
- * ⌘ (align to each other) or Ctrl (snap to the margin guides).
+ * move to. The plain arrows still nudge, so only a modified press aligns — ⌘,
+ * or Ctrl on platforms without one. (Ctrl + arrow is the fine nudge wherever ⌘
+ * exists; see `fineNudge` below.)
  *
- * Which of the two actually happens is decided by the SELECTION, not the
- * modifier: `align` measures against the margin frame when a single object is
- * selected and against the selection's own bounds when several are. So each
- * modifier does the documented thing in the case it's documented for, and the
- * sensible thing in the other.
+ * What a press does is decided by the SELECTION, not the modifier: `align`
+ * measures against the margin frame when a single object is selected — so ⌘ +
+ * arrow snaps that object to the margin guides — and against the selection's
+ * own bounds when several are.
  */
 const ALIGN_KEYS: Record<string, AlignMode | undefined> = {
   ArrowUp: 'top',
@@ -191,6 +192,11 @@ export function Editor({
     const NUDGE = inchesToEmu(0.083);
     /** One press of ⇧ + arrow, matched to the nudge so the two feel the same. */
     const RESIZE_STEP = NUDGE;
+    /**
+     * Ctrl + arrow, PowerPoint's fine nudge: one point a press, about a sixth
+     * of the plain-arrow step, for the last bit of positioning by eye.
+     */
+    const FINE_NUDGE = inchesToEmu(1 / 72);
     /** Breathing room between an object and the copy that lands under it. */
     const DUP_GAP = inchesToEmu(0.1);
 
@@ -210,8 +216,20 @@ export function Editor({
 
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
+      /**
+       * Ctrl + arrow with something selected: the fine nudge, claimed from the
+       * align chords below (Ctrl reads as ⌘ there, so it would otherwise snap
+       * to the margin guides — which ⌘ + arrow still does). With nothing
+       * selected there is nothing to nudge, so the chord falls through to
+       * align/page-the-deck as before.
+       */
+      const fineNudge =
+        e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && s.selectedIds.length
+          ? ARROWS[e.key]
+          : undefined;
       // Matched ahead of the nudge branch, which otherwise swallows every arrow.
-      const alignMode = mod && !e.altKey && !e.shiftKey ? ALIGN_KEYS[e.key] : undefined;
+      const alignMode =
+        mod && !e.altKey && !e.shiftKey && !fineNudge ? ALIGN_KEYS[e.key] : undefined;
       const sizeDir = fontSizeDirection(e);
       const painter = formatPainterAction(e);
       const textEdge = textAlignEdge(e);
@@ -257,6 +275,8 @@ export function Editor({
       // theme's own size rather than doing nothing.
       const firstRun = primary && firstRunOf(primary);
 
+      const charFormat = charFormatAction(e);
+
       // Format painter first: its chords carry Alt/Shift, so they must not be
       // read as a plain mod+C/V by anything below.
       if (painter && s.selectedIds.length) {
@@ -278,6 +298,10 @@ export function Editor({
         if (clip === 'cut') s.cutSelection();
         else if (clip === 'copy') s.copySelection();
         else s.pasteClipboard();
+      } else if (fineNudge) {
+        e.preventDefault();
+        const [ax, ay] = fineNudge;
+        s.moveBy(s.selectedIds, ax * FINE_NUDGE, ay * FINE_NUDGE);
       } else if (alignMode && s.selectedIds.length) {
         e.preventDefault();
         s.align(alignMode);
@@ -413,15 +437,14 @@ export function Editor({
       } else if (e.key === 'PageUp' || e.key === 'PageDown') {
         e.preventDefault();
         s.stepSlide(e.key === 'PageDown' ? 1 : -1);
-      } else if (mod && key === 'b' && primaryBody) {
+      } else if (charFormat && primaryBody) {
+        // One branch for B/I/U. Chart data labels come through here too — they
+        // are text elements, so they are in `textTargets` — and `patchRuns`
+        // routes them into the chart's spec rather than onto the emitted box.
+        // Underline has no home in that spec and is quietly a no-op there; see
+        // `charFormatShortcut`.
         e.preventDefault();
-        s.patchRuns(s.selectedIds, { bold: !firstRun?.bold });
-      } else if (mod && key === 'i' && primaryBody) {
-        e.preventDefault();
-        s.patchRuns(s.selectedIds, { italic: !firstRun?.italic });
-      } else if (mod && key === 'u' && primaryBody) {
-        e.preventDefault();
-        s.patchRuns(s.selectedIds, { underline: !firstRun?.underline });
+        s.patchRuns(s.selectedIds, charFormatPatch(charFormat, firstRun));
       } else if (mod && e.shiftKey && !e.altKey && (e.code === 'KeyE' || key === 'e')) {
         // Ahead of ⌘E (align centre), which doesn't rule ⇧ out. Needs no
         // selection: an eyebrow belongs to the slide's title, not to whatever

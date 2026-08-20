@@ -40,11 +40,14 @@ export const BAND_CARD_ROLE = 'band.card';
 
 export type BandSide = 'left' | 'right';
 
-/** The fractions of the page a band is ever cut at, as authored. */
+/** The fractions of the page a band is ever cut at, as authored. `full` is the
+ *  whole page — the band stops being an edge panel and becomes the slide, which
+ *  is how a section divider is built. */
 export const BAND_FRACTIONS = [
   { id: 'quarter', label: '1/4', value: 1 / 4 },
   { id: 'third', label: '1/3', value: 1 / 3 },
   { id: 'half', label: '1/2', value: 1 / 2 },
+  { id: 'full', label: '4/4', value: 1 },
 ] as const;
 
 export type BandFraction = (typeof BAND_FRACTIONS)[number]['id'];

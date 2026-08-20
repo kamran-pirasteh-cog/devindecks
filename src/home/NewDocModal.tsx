@@ -28,9 +28,13 @@ import {
 import { getFolder } from '@/docs/folders';
 import { useToast } from '@/ui/Toast';
 import { listTemplates, seedIfFirstRun, type StoredTemplate } from '@/templates/repository';
+import { createDocFromSlides } from '@/docs/repository';
+import { getActiveDesignSystem } from '@/design/repository';
+import type { Slide } from '@/model';
+import { UploadDeckPanel } from './UploadDeckPanel';
 import { Thumb } from './Thumb';
 
-type Tab = 'templates' | 'docs' | 'blank';
+type Tab = 'templates' | 'upload' | 'docs' | 'blank';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 
@@ -42,7 +46,20 @@ const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 type Source =
   | { kind: 'template'; id: string; label: string; defaultTitle: string }
   | { kind: 'doc'; id: string; label: string; defaultTitle: string }
-  | { kind: 'blank'; label: string; defaultTitle: string };
+  | { kind: 'blank'; label: string; defaultTitle: string }
+  /**
+   * An uploaded file, already parsed and (optionally) converted. The slides ride
+   * along on the source because the parse and the conversion happened in step 1
+   * — repeating either on Create would mean re-reading the file and re-running a
+   * conversion the user has already reviewed and accepted.
+   */
+  | {
+      kind: 'upload';
+      label: string;
+      defaultTitle: string;
+      slides: Slide[];
+      converted: boolean;
+    };
 
 /**
  * `base`, or `base (2)`, `base (3)`… — the first name nothing else is using.
@@ -139,10 +156,20 @@ export function NewDocModal({
 
   const create = () => {
     if (!source || !canCreate) return;
+    const ds = getActiveDesignSystem();
     const deck =
       source.kind === 'doc'
         ? duplicateDoc(source.id, trimmedTitle)
-        : createDoc(source.kind === 'template' ? source.id : 'blank', trimmedTitle);
+        : source.kind === 'upload'
+          ? createDocFromSlides(source.slides, trimmedTitle, {
+              // A converted deck gets the brand's derived page numbers; an
+              // as-is import keeps whatever the file had, which for a .pptx
+              // means its own page-number elements.
+              pageNumbers: source.converted ? true : undefined,
+              designSystemId: ds.id,
+              designSystemVersion: ds.version,
+            })
+          : createDoc(source.kind === 'template' ? source.id : 'blank', trimmedTitle);
     if (!deck) return;
     // `setDocBrief` does the trimming and drops whatever came back empty, so
     // the raw field values — and a comma-split that may be all empties — are
@@ -158,12 +185,16 @@ export function NewDocModal({
         ? `Duplicated “${source.label}” as “${deck.title}”`
         : source.kind === 'template'
           ? `Created “${deck.title}” from the ${source.label} template`
-          : `Created “${deck.title}”`,
+          : source.kind === 'upload'
+            ? `Created “${deck.title}” from ${source.label}` +
+              (source.converted ? ', converted to the brand' : ', imported as-is')
+            : `Created “${deck.title}”`,
     );
   };
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'templates', label: 'Templates' },
+    { id: 'upload', label: 'Upload a presentation' },
     { id: 'docs', label: 'Duplicate existing presentation' },
     { id: 'blank', label: 'Blank slate' },
   ];
@@ -205,7 +236,11 @@ export function NewDocModal({
                 ? `Starting from “${source.label}”.`
                 : source.kind === 'template'
                   ? `Starting from the ${source.label} template.`
-                  : 'Starting from a blank presentation.'}
+                  : source.kind === 'upload'
+                    ? `Starting from ${source.label} — ${source.slides.length} slide` +
+                      `${source.slides.length === 1 ? '' : 's'}, ` +
+                      `${source.converted ? 'converted to the brand' : 'imported as-is'}.`
+                    : 'Starting from a blank presentation.'}
             </p>
 
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -330,6 +365,20 @@ export function NewDocModal({
                     </button>
                   ))}
                 </div>
+              ) : null}
+
+              {tab === 'upload' ? (
+                <UploadDeckPanel
+                  onReady={({ slides, suggestedTitle, converted }) =>
+                    choose({
+                      kind: 'upload',
+                      label: suggestedTitle,
+                      defaultTitle: uniqueTitle(suggestedTitle || 'Untitled presentation'),
+                      slides,
+                      converted,
+                    })
+                  }
+                />
               ) : null}
 
               {tab === 'docs' ? (

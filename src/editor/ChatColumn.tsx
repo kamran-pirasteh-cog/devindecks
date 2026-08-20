@@ -13,6 +13,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type Anthropic from '@anthropic-ai/sdk';
 import { runAgent, transcript, userTurn } from '@/chat/agent';
+import {
+  attachmentMarker,
+  looksLikeRefreshCsv,
+  putAttachment,
+  type Attachment,
+} from '@/chat/attachments';
 import { useResizableWidth } from './useResizableWidth';
 import { ResizeHandle } from './ResizeHandle';
 
@@ -31,6 +37,7 @@ export function ChatColumn() {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [attached, setAttached] = useState<Attachment[]>([]);
   const { width, startDrag } = useResizableWidth(300, 240, 480, 'right');
   const abort = useRef<AbortController | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -53,12 +60,31 @@ export function ChatColumn() {
   // a store nobody is looking at any more.
   useEffect(() => () => abort.current?.abort(), []);
 
+  /**
+   * A pasted CSV never enters the input.
+   *
+   * Two reasons, and either would be enough: a single-line `<input>` joins the
+   * lines of a paste, which silently destroys the file; and a refresh CSV is
+   * hundreds of figures whose whole value is that nothing retypes them. So it
+   * is stashed whole, and the message carries a marker the tools resolve.
+   */
+  const onPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData('text/plain');
+    if (!text.includes('\n')) return;
+    e.preventDefault();
+    setAttached((a) => [...a, putAttachment(text, looksLikeRefreshCsv(text) ? 'refresh-csv' : 'text')]);
+  };
+
   const send = async (text: string) => {
     const said = text.trim();
-    if (!said || busy) return;
+    if ((!said && !attached.length) || busy) return;
     setDraft('');
     setError(null);
-    const next = [...messages, userTurn(said)];
+    // The marker goes in the message the model sees, so it can name the
+    // attachment in a tool call; the panel shows the chip instead.
+    const withAttachments = [...attached.map(attachmentMarker), said].filter(Boolean).join('\n');
+    setAttached([]);
+    const next = [...messages, userTurn(withAttachments)];
     setMessages(next);
     setBusy(true);
     const controller = new AbortController();
@@ -107,6 +133,7 @@ export function ChatColumn() {
                 onClick={() => {
                   setMessages([]);
                   setError(null);
+                  setAttached([]);
                 }}
                 title="Clear the conversation"
                 className="rounded px-1.5 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800"
@@ -206,11 +233,32 @@ export function ChatColumn() {
           </div>
 
           <div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
+            {attached.length ? (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {attached.map((a) => (
+                  <span
+                    key={a.id}
+                    title={`${a.rows} rows — held outside the conversation so nothing retypes it`}
+                    className="flex items-center gap-1.5 rounded-full border border-zinc-200 px-2 py-0.5 text-[11px] text-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
+                  >
+                    {a.kind === 'refresh-csv' ? 'Refresh CSV' : 'Pasted text'} · {a.rows} rows
+                    <button
+                      onClick={() => setAttached((list) => list.filter((x) => x.id !== a.id))}
+                      title="Remove"
+                      className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className="flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-xs dark:border-zinc-700">
               <input
                 ref={input}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
+                onPaste={onPaste}
                 onKeyDown={(e) => {
                   // Stopped here rather than bubbling: the editor's global
                   // shortcuts ignore typing, but Escape and the arrows belong
@@ -222,7 +270,13 @@ export function ChatColumn() {
                   }
                 }}
                 disabled={busy}
-                placeholder={busy ? 'Working…' : 'Ask Devin to make a change…'}
+                placeholder={
+                  busy
+                    ? 'Working…'
+                    : attached.length
+                      ? 'Say what to do with it…'
+                      : 'Ask Devin, or paste a refresh CSV…'
+                }
                 className="flex-1 bg-transparent outline-none placeholder:text-zinc-400 disabled:text-zinc-400"
               />
               {busy ? (

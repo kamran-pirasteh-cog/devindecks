@@ -127,6 +127,7 @@ const RE = {
 
 /** An outright request for a chart type. The author knows; stop guessing. */
 const NAMED_KINDS: { re: RegExp; id: string }[] = [
+  { re: /\bgantt|roadmap|project plan|timeline|schedule|milestones?\b/i, id: 'gantt' },
   { re: /\b100% stacked|100 ?% ?stack\w*\b/i, id: 'stacked100' },
   { re: /\bstacked (?:column|bar|chart)s?\b/i, id: 'stacked' },
   { re: /\bclustered|grouped (?:column|bar)s?\b/i, id: 'clustered' },
@@ -137,6 +138,7 @@ const NAMED_KINDS: { re: RegExp; id: string }[] = [
   { re: /\bsankey|flow diagram\b/i, id: 'sankey' },
   { re: /\bscatter ?(?:plot|chart)?\b/i, id: 'scatter' },
   { re: /\bbubble chart\b/i, id: 'bubble' },
+  { re: /\bdot ?plot|lollipop|dumbbell\b/i, id: 'dotplot' },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -496,6 +498,7 @@ function readFormat(
 
 const GRAIN_NOUN: Record<DateGrain, string> = {
   year: 'year',
+  half: 'half',
   quarter: 'quarter',
   month: 'month',
   week: 'week',
@@ -506,6 +509,7 @@ const grainNoun = (g: DateGrain): string => GRAIN_NOUN[g];
 
 const DEFAULT_COUNT: Record<DateGrain, number> = {
   year: 4,
+  half: 6,
   quarter: 8,
   month: 12,
   week: 8,

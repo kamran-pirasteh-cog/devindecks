@@ -47,13 +47,35 @@ function seeded(seedText: string): () => number {
   };
 }
 
+/** The placeholder an author types over, when there's nothing honest to say. */
+export const DEFAULT_CHART_TITLE = 'Chart Title';
+
+/**
+ * A subject worth printing in front of a title.
+ *
+ * The subject can come from the deck's tags — a client name — or, failing that,
+ * from the SLIDE'S TITLE, which is as often a whole sentence as it is a name.
+ * "Session insights, merged PRs, comps, usage analytics — Revenue by function"
+ * is not a chart title anybody wrote on purpose, so a phrase that doesn't read
+ * as a name is dropped and the title stands on its own.
+ */
+const nameLike = (subject: string): boolean =>
+  !/[,;:]/.test(subject) && subject.trim().split(/\s+/).length <= 4;
+
 /**
  * The chart's title: what it shows, for whom, over what. Assembled from what
  * the brief actually knows — an unknown subject leaves the subject out rather
  * than writing "for [client]".
+ *
+ * With no measure named there is nothing to assemble. It used to fall back to
+ * the word "Data" and print the surrounding scraps anyway — a slide title, a
+ * "by function", a date range — which reads as a title the author chose and
+ * has to be deleted rather than typed over. `DEFAULT_CHART_TITLE` is the
+ * honest version of that.
  */
 export function briefTitle(brief: ChartBrief): string {
-  const measure = brief.measure ?? 'Data';
+  if (!brief.measure) return DEFAULT_CHART_TITLE;
+  const measure = brief.measure;
   const by = brief.dimension ? ` by ${brief.dimension}` : '';
   const labels = brief.period?.labels ?? [];
   // One period prints once. "FY25–FY25" reads as a broken range rather than as
@@ -61,7 +83,7 @@ export function briefTitle(brief: ChartBrief): string {
   const span = labels.length
     ? ` · ${labels.length > 1 ? `${labels[0]}–${labels[labels.length - 1]}` : labels[0]}`
     : '';
-  const who = brief.subject ? `${brief.subject} — ` : '';
+  const who = brief.subject && nameLike(brief.subject) ? `${brief.subject} — ` : '';
   return `${who}${measure}${by}${span}`;
 }
 

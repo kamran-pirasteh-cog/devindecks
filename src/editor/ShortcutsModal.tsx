@@ -4,10 +4,11 @@
  * Keyboard shortcut reference.
  *
  * Every binding here is transcribed from the real handlers — `Editor.tsx`'s
- * window keydown, `TextEditor.tsx`'s in-place editor, `fontSizeShortcut.ts`, and
- * the drag/resize modifiers in `EditorCanvas.tsx`. If you add or change a
- * binding in any of those, update the matching row here; a shortcut sheet that
- * drifts from the code is worse than none.
+ * window keydown, `TextEditor.tsx`'s in-place editor, `fontSizeShortcut.ts`,
+ * `SheetGrid.tsx`'s grid keydown, and the drag/resize modifiers in
+ * `EditorCanvas.tsx`. If you add or change a binding in any of those, update the
+ * matching row here; a shortcut sheet that drifts from the code is worse than
+ * none.
  */
 import { useEffect } from 'react';
 import { MODAL_Z } from './layers';
@@ -67,9 +68,9 @@ const buildGroups = (MOD: string): Group[] => [
   {
     title: 'Text',
     items: [
-      { keys: [MOD, 'B'], label: 'Bold' },
-      { keys: [MOD, 'I'], label: 'Italic' },
-      { keys: [MOD, 'U'], label: 'Underline' },
+      { keys: [MOD, 'B'], label: 'Bold', note: 'text boxes and chart data labels' },
+      { keys: [MOD, 'I'], label: 'Italic', note: 'text boxes and chart data labels' },
+      { keys: [MOD, 'U'], label: 'Underline', note: 'text boxes only' },
       { keys: [MOD, 'L'], label: 'Align left' },
       { keys: [MOD, 'E'], label: 'Align centre' },
       { keys: [MOD, 'R'], label: 'Align right' },
@@ -91,7 +92,8 @@ const buildGroups = (MOD: string): Group[] => [
     title: 'Move & arrange',
     items: [
       { keys: ['↑', '↓', '←', '→'], label: 'Nudge' },
-      { keys: ['⇧', 'Arrow'], label: 'Resize', note: '→ ↓ grow, ← ↑ shrink' },
+      { keys: ['Ctrl', 'Arrow'], label: 'Nudge finely', note: 'a point a press' },
+      { keys: ['⇧', 'Arrow'], label: 'Resize', note: '→ ↓ grow, ← ↑ shrink; a group scales as one' },
       {
         keys: ['⌥', '⇧', 'Arrow'],
         label: 'Stretch one side',
@@ -109,8 +111,7 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: ['Esc'], label: 'Step back out to the group', note: 'inside a group' },
       { keys: [MOD, '⌥', '↑'], label: 'Bring forward', note: `${MOD}⌥⇧↑ jumps to the front` },
       { keys: [MOD, '⌥', '↓'], label: 'Send backward', note: `${MOD}⌥⇧↓ drops to the back` },
-      { keys: [MOD, 'Arrow'], label: 'Align edges that way', note: '2+ selected' },
-      { keys: ['Ctrl', 'Arrow'], label: 'Snap to that margin guide', note: 'one object' },
+      { keys: [MOD, 'Arrow'], label: 'Align edges that way', note: '2+ selected — one object snaps to that margin guide' },
       { keys: ['…', 'again'], label: 'Travel on to the next guide, then the slide edge', note: 'stops when there is nothing further that way' },
       { keys: ['…', 'midway'], label: 'Centred on the slide', note: 'one object, on the way past' },
     ],
@@ -145,6 +146,20 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: [MOD, '↑ / ↓'], label: 'Move the selected slides up or down' },
       { keys: [MOD, '⇧', '↑ / ↓'], label: 'Move them to the start or end of the deck' },
       { keys: ['Drag'], label: 'Reorder slides', note: 'a multi-slide drag carries a counted stack' },
+    ],
+  },
+  {
+    title: 'Chart datasheet',
+    items: [
+      { keys: [MOD, 'D'], label: 'Fill down', note: 'one cell copies the row above; a selection repeats its top row' },
+      { keys: [MOD, 'R'], label: 'Fill right', note: 'one cell copies the cell to its left' },
+      { keys: [MOD, 'Z'], label: 'Undo inside the sheet', note: `${MOD}⇧Z redoes — the deck's own history is untouched` },
+      { keys: [MOD, '↑ ↓ ← →'], label: 'Jump to the end of the data' },
+      { keys: ['⇧', '↑ ↓ ← →'], label: 'Extend the selection' },
+      { keys: ['Tab', 'Enter'], label: 'Next cell', note: 'inside a selected block they cycle within it' },
+      { keys: [MOD, '+'], label: 'Insert a row' },
+      { keys: ['F2'], label: 'Edit the cell', note: 'or just start typing to overwrite it' },
+      { keys: ['Delete'], label: 'Clear the selected cells' },
     ],
   },
 ];

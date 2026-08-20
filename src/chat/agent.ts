@@ -152,6 +152,10 @@ export function toolLabel(name: string, input: Record<string, unknown>): string 
       return `Arranging ${many}`;
     case 'delete_elements':
       return `Deleting ${many}`;
+    case 'preview_number_refresh':
+      return 'Checking the refreshed figures against the deck';
+    case 'apply_number_refresh':
+      return 'Writing the refreshed figures into the deck';
     case 'set_deck_title':
       return `Renaming the deck to “${s('title')}”`;
     default:

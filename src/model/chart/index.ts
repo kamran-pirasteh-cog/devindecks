@@ -7,6 +7,8 @@ export * from './ref';
 export * from './instance';
 export * from './defaults';
 export * from './previewData';
+export * from './ganttColumns';
 export * from './shape';
+export * from './combo';
 export * from './migrate';
 export * from './legacy';

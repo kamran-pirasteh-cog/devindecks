@@ -10,6 +10,7 @@
  * a fully-resolved style and stores the difference (`diffChartStyle`).
  */
 import type { ChartStyle, DesignSystem, NumberFormat } from '@/model';
+import { resolveTypeRole } from '@/model';
 
 const FIELD =
   'rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-900';
@@ -156,7 +157,7 @@ export function ChartStyleControls({
               type="number"
               min={6}
               max={24}
-              value={style.fonts[slot].sizePt ?? ds.type[style.fonts[slot].role].sizePt}
+              value={style.fonts[slot].sizePt ?? resolveTypeRole(ds, style.fonts[slot].role).sizePt}
               onChange={(e) => patch((s) => (s.fonts[slot].sizePt = Number(e.target.value) || 9))}
               className={`${FIELD} w-16 text-right`}
             />

@@ -112,6 +112,81 @@ describe('resizeBy on everything else', () => {
   });
 });
 
+describe('resizeBy on a group', () => {
+  /** Two 1" squares side by side, a 1" gap between them: a 3" x 1" group box. */
+  const pair = () =>
+    deck([
+      shapeAt('a', { x: inchesToEmu(1), y: inchesToEmu(1), w: inchesToEmu(1), h: inchesToEmu(1) }),
+      shapeAt('b', { x: inchesToEmu(3), y: inchesToEmu(1), w: inchesToEmu(1), h: inchesToEmu(1) }),
+    ]);
+
+  beforeEach(() => {
+    loadDeck(pair());
+    s().select(['a', 'b']);
+    s().group();
+  });
+
+  it('grows the group box by one step, not each member', () => {
+    s().resizeBy(s().selectedIds, STEP, 0);
+    const a = rectOf('a');
+    const b = rectOf('b');
+    // 3" box + 1" step = 4", so every horizontal measure scales by 4/3.
+    expect(a.x).toBe(inchesToEmu(1));
+    expect(a.w).toBeCloseTo(inchesToEmu(4 / 3), -3);
+    expect(b.x + b.w).toBeCloseTo(inchesToEmu(5), -3);
+    expect(b.w).toBeCloseTo(inchesToEmu(4 / 3), -3);
+  });
+
+  it('spreads the members apart instead of letting them swell together', () => {
+    const gapBefore = rectOf('b').x - (rectOf('a').x + rectOf('a').w);
+    s().resizeBy(s().selectedIds, STEP, 0);
+    const gapAfter = rectOf('b').x - (rectOf('a').x + rectOf('a').w);
+    expect(gapAfter).toBeGreaterThan(gapBefore);
+    expect(gapAfter / gapBefore).toBeCloseTo(4 / 3, 2);
+  });
+
+  it('leaves the untouched axis alone', () => {
+    s().resizeBy(s().selectedIds, STEP, 0);
+    expect(rectOf('a').y).toBe(inchesToEmu(1));
+    expect(rectOf('a').h).toBe(inchesToEmu(1));
+    expect(rectOf('b').h).toBe(inchesToEmu(1));
+  });
+
+  it('pins the group\'s top-left corner', () => {
+    s().resizeBy(s().selectedIds, STEP, STEP);
+    expect(rectOf('a').x).toBe(inchesToEmu(1));
+    expect(rectOf('a').y).toBe(inchesToEmu(1));
+  });
+
+  it('shrinks by the same step it grew by', () => {
+    const before = { a: { ...rectOf('a') }, b: { ...rectOf('b') } };
+    s().resizeBy(s().selectedIds, STEP, 0);
+    s().resizeBy(s().selectedIds, -STEP, 0);
+    expect(rectOf('a').w).toBeCloseTo(before.a.w, -3);
+    expect(rectOf('b').x).toBeCloseTo(before.b.x, -3);
+  });
+
+  it('keeps loose objects growing where they stand', () => {
+    s().ungroup();
+    s().select(['a', 'b']);
+    const gapBefore = rectOf('b').x - (rectOf('a').x + rectOf('a').w);
+    s().resizeBy(['a', 'b'], STEP, 0);
+    // Each takes the whole step about its own corner, so neither one moves.
+    expect(rectOf('a').x).toBe(inchesToEmu(1));
+    expect(rectOf('b').x).toBe(inchesToEmu(3));
+    expect(rectOf('a').w).toBe(inchesToEmu(2));
+    expect(rectOf('b').w).toBe(inchesToEmu(2));
+    expect(rectOf('b').x - (rectOf('a').x + rectOf('a').w)).toBeLessThan(gapBefore);
+  });
+
+  it('is one undo step for the whole group', () => {
+    s().resizeBy(s().selectedIds, STEP, 0);
+    s().undo();
+    expect(rectOf('a').w).toBe(inchesToEmu(1));
+    expect(rectOf('b').x).toBe(inchesToEmu(3));
+  });
+});
+
 describe('rotateBy', () => {
   beforeEach(() => {
     loadDeck(deck([shape('e1'), shape('e2')]));

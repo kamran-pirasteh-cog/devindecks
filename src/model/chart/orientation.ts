@@ -24,6 +24,8 @@ export type ChartOrientation = 'vertical' | 'horizontal';
  *   and the meaningful operation is trading their roles — `swapAxes` — which
  *   changes the data rather than the layout, and has no persistent "which way
  *   round am I" to read back afterwards.
+ * - A GANTT's value axis is TIME, which runs left to right and nowhere else.
+ *   Standing a calendar on its end is not an orientation, it is a mistake.
  */
 export const supportsOrientation = (kind: ChartKind): boolean =>
   kind === 'column' ||
@@ -32,7 +34,8 @@ export const supportsOrientation = (kind: ChartKind): boolean =>
   kind === 'area' ||
   kind === 'combo' ||
   kind === 'waterfall' ||
-  kind === 'sankey';
+  kind === 'sankey' ||
+  kind === 'dotplot';
 
 /**
  * Can a chart of this kind be turned as a whole — the quarter-turn rotation
@@ -46,7 +49,9 @@ export const supportsOrientation = (kind: ChartKind): boolean =>
  * leaves the plot upright.
  */
 export const supportsTurn = (kind: ChartKind): boolean =>
-  kind !== 'scatter' && kind !== 'bubble';
+  // Permissive by default, so a new kind that must NOT turn has to say so here
+  // — a Gantt handed a rotation handle puts its timescale down the side.
+  kind !== 'scatter' && kind !== 'bubble' && kind !== 'gantt';
 
 /** Kinds whose "orientation" control is really a swap of the two variables. */
 export const canSwapAxes = (kind: ChartKind): boolean =>
@@ -88,6 +93,7 @@ export function setChartOrientation(spec: ChartSpec, to: ChartOrientation): Char
     case 'area':
     case 'combo':
     case 'sankey':
+    case 'dotplot':
       return { ...spec, orientation: to };
 
     default:

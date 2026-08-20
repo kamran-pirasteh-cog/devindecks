@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_DESIGN_SYSTEM,
+  defaultChartSpec,
   emuToInches,
   inchesToEmu,
+  type ColumnBarSpec,
   type Deck,
   type ShapeElement,
   type SlideElement,
@@ -10,6 +12,7 @@ import {
 } from '@/model';
 import { loadDeck, useEditor } from '@/store/editorStore';
 import { applyTool } from './apply';
+import { clearAttachments, putAttachment } from './attachments';
 import { bodyText } from './context';
 
 const SIZE = { w: 12_192_000, h: 6_858_000 };
@@ -219,5 +222,139 @@ describe('undo', () => {
     expect(bodyText((byId('t1') as TextElement).body)).toBe('First');
     s().undo();
     expect(bodyText((byId('t1') as TextElement).body)).toBe('Old title');
+  });
+});
+
+describe('refreshing figures', () => {
+  const CSV_HEADER =
+    'ref,page,label,current_value,new_value,unit,as_of,source_url,source_note,confidence,notes';
+
+  /** A deck with one chart on page 1 and a KPI line on page 2. */
+  function refreshDeck() {
+    const spec = defaultChartSpec('column', 'clustered') as ColumnBarSpec;
+    spec.data.categories = [
+      { key: 'c0', label: 'FY24' },
+      { key: 'c1', label: 'FY25' },
+    ];
+    spec.data.series = [{ key: 's0', name: 'Revenue', values: [100, 120] }];
+    const kpi: TextElement = {
+      id: 'k1',
+      type: 'text',
+      role: 'kpi.value',
+      rect: { x: inchesToEmu(1), y: inchesToEmu(1), w: inchesToEmu(4), h: inchesToEmu(1) },
+      body: {
+        paragraphs: [
+          {
+            runs: [
+              { text: 'ARR of ', sizePt: 14 },
+              { text: '$4.2M', sizePt: 28, bold: true, color: { kind: 'token', token: 'brand.accent' } },
+              { text: ' and climbing', sizePt: 14 },
+            ],
+          },
+        ],
+      },
+    };
+    return {
+      ...deck([]),
+      slides: [
+        {
+          id: 's1',
+          elements: [],
+          charts: [
+            {
+              id: 'ch_1',
+              groupId: 'g1',
+              frame: { x: inchesToEmu(1), y: inchesToEmu(1), w: inchesToEmu(6), h: inchesToEmu(4) },
+              spec,
+            },
+          ],
+        },
+        { id: 's2', elements: [kpi] },
+      ],
+    } as Deck;
+  }
+
+  const attach = (...rows: string[]) => putAttachment([CSV_HEADER, ...rows].join('\n'), 'refresh-csv').id;
+
+  const seriesValues = () =>
+    (useEditor.getState().deck.slides[0].charts![0].spec as ColumnBarSpec).data.series[0].values;
+  const kpiRuns = () => {
+    const el = useEditor.getState().deck.slides[1].elements[0] as TextElement;
+    return el.body.paragraphs[0].runs;
+  };
+
+  beforeEach(() => {
+    clearAttachments();
+    loadDeck(refreshDeck(), DEFAULT_DESIGN_SYSTEM);
+  });
+
+  it('previews without touching the deck', () => {
+    const out = applyTool('preview_number_refresh', {
+      csv_id: attach('p1/c:ch_1/s0/c0,1,x,100,140,,,,,reported,'),
+    });
+    expect(out.isError).toBeFalsy();
+    expect(out.text).toContain('Nothing has been changed yet');
+    expect(seriesValues()).toEqual([100, 120]);
+  });
+
+  it('writes a chart figure into the series the ref names', () => {
+    applyTool('apply_number_refresh', { csv_id: attach('p1/c:ch_1/s0/c1,1,x,120,155,,,,,reported,') });
+    expect(seriesValues()).toEqual([100, 155]);
+  });
+
+  it('replaces a figure in a sentence without disturbing the runs around it', () => {
+    applyTool('apply_number_refresh', { csv_id: attach('p2/t:k1/n0,2,x,4200000,4900000,,,,,reported,') });
+    expect(kpiRuns().map((r) => r.text)).toEqual(['ARR of ', '$4.9M', ' and climbing']);
+    // The whole point: the figure changed and nothing about how it looks did.
+    expect(kpiRuns()[1]).toMatchObject({ sizePt: 28, bold: true, color: { kind: 'token', token: 'brand.accent' } });
+  });
+
+  it('leaves the user on the slide they started on', () => {
+    useEditor.getState().setCurrentSlide('s1');
+    applyTool('apply_number_refresh', { csv_id: attach('p2/t:k1/n0,2,x,4200000,4900000,,,,,reported,') });
+    expect(useEditor.getState().currentSlideId).toBe('s1');
+  });
+
+  it('takes a whole refresh back in one undo', () => {
+    applyTool('apply_number_refresh', {
+      csv_id: attach(
+        'p1/c:ch_1/s0/c0,1,x,100,140,,,,,reported,',
+        'p1/c:ch_1/s0/c1,1,x,120,155,,,,,reported,',
+        'p2/t:k1/n0,2,x,4200000,4900000,,,,,reported,',
+      ),
+    });
+    expect(seriesValues()).toEqual([140, 155]);
+    useEditor.getState().undo();
+    expect(seriesValues()).toEqual([100, 120]);
+    expect(kpiRuns()[1].text).toBe('$4.2M');
+  });
+
+  it('applies only the refs it was given', () => {
+    applyTool('apply_number_refresh', {
+      csv_id: attach('p1/c:ch_1/s0/c0,1,x,100,140,,,,,reported,', 'p1/c:ch_1/s0/c1,1,x,120,155,,,,,reported,'),
+      refs: ['p1/c:ch_1/s0/c0'],
+    });
+    expect(seriesValues()).toEqual([140, 120]);
+  });
+
+  it('reports what it could not apply instead of applying it anyway', () => {
+    const out = applyTool('apply_number_refresh', {
+      csv_id: attach('p1/c:ch_1/s0/c0,1,x,100,42%,,,,,reported,', 'p9/c:gone/s0/c0,9,x,1,2,,,,,reported,'),
+    });
+    expect(seriesValues()).toEqual([100, 120]);
+    expect(out.text).toContain('percent sign');
+    expect(out.text).toContain('Nothing in this deck has the ref');
+  });
+
+  it('names the figures the CSV never checked', () => {
+    const out = applyTool('preview_number_refresh', {
+      csv_id: attach('p1/c:ch_1/s0/c0,1,x,100,140,,,,,reported,'),
+    });
+    expect(out.text).toContain('never checked');
+    expect(out.text).toContain('p2/t:k1/n0');
+  });
+
+  it('refuses an id it was never given', () => {
+    expect(applyTool('preview_number_refresh', { csv_id: 'att_nope' }).isError).toBe(true);
   });
 });

@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
+import { isGanttSpec } from '@/model';
 import type { ChartInstance, ChartRef, ChartSpec } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { SheetGrid } from '@/sheet/SheetGrid';
@@ -97,6 +98,27 @@ export function ChartDatasheetPanel({
   const slide = useEditor((s) => s.deck.slides.find((sl) => sl.id === s.currentSlideId));
   const patchChart = useEditor((s) => s.patchChart);
   const { sheet, diagnostics, commit, live } = useChartDraft(chart);
+
+  /**
+   * Indent or outdent a task.
+   *
+   * Written to the SPEC, not to the sheet: the depth belongs to the row, and
+   * `sheetFromSpec` re-derives `rowIndent` from it on the next pass. Clamped to
+   * one deeper than the row above so the tree is always walkable — the same
+   * rule `deriveGantt` enforces, applied at the point of entry so the sheet and
+   * the picture never disagree about what a level means.
+   */
+  const indentRow = useCallback(
+    (r: number, delta: 1 | -1) =>
+      patchChart(chart.id, (spec) => {
+        if (!isGanttSpec(spec)) return;
+        const row = spec.rows[r];
+        if (!row) return;
+        const ceiling = r === 0 ? 0 : (spec.rows[r - 1]!.level ?? 0) + 1;
+        row.level = Math.max(0, Math.min((row.level ?? 0) + delta, ceiling));
+      }),
+    [chart.id, patchChart],
+  );
 
   const patch = useCallback(
     (fn: (spec: ChartSpec) => void) => patchChart(chart.id, fn),
@@ -263,7 +285,7 @@ export function ChartDatasheetPanel({
               {drift.templateStale ? 'Template updated' : 'Brand updated'}
             </button>
           ) : null}
-          <DevinChartMenu chart={chart} onApplied={onClose} />
+          <DevinChartMenu chart={chart} />
           <button
             onClick={onClose}
             title="Close"
@@ -294,6 +316,7 @@ export function ChartDatasheetPanel({
             diagnostics={diagnostics}
             onChange={(next) => commit(next)}
             onLiveEdit={live}
+            onIndentRow={indentRow}
           />
         </div>
 

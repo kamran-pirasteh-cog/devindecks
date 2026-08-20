@@ -8,6 +8,7 @@
  * against the rects — which also works in a test with no browser at all.
  */
 import type { ChartRef, SlideElement } from '@/model';
+import type { MarkRender } from './markCaps';
 
 /** Painted order, topmost last — the same array `SlideView` renders. */
 export interface HitTarget {
@@ -40,6 +41,19 @@ function rank(ref: ChartRef): number {
     case 'plot':
     case 'legend.box':
       return 4;
+    // A Gantt's table is TEXT aimed at directly, exactly like a data label.
+    case 'gantt.column':
+      return 0;
+    case 'gantt.row':
+      // The name is aimed at; the tint behind the row and the rule under it are
+      // furniture that happens to span the chart — the gridline argument above,
+      // applied to the other axis.
+      return ref.sub === 'label' ? 0 : ref.sub === 'divider' ? 3 : 4;
+    case 'gantt.band':
+      // The today rule is a hairline over everything; the shading is backdrop.
+      // Neither may out-rank a bar it crosses, which is why these are their own
+      // part rather than decorations (which rank 0).
+      return ref.sub === 'today' ? 3 : 4;
   }
 }
 
@@ -224,11 +238,33 @@ export function rectOfPart(
  * `axis.y.tick`. The sub-part a click landed on doesn't matter to the options it
  * gets — clicking a tick, the axis line or its title all mean "the axis".
  */
+/**
+ * What to call a mark of each render class.
+ *
+ * A table rather than a chain of ternaries now that a Gantt contributes five of
+ * its own — and it is the reason a milestone reads "Launch · milestone" rather
+ * than "Launch · bar", which is the difference between a header that names what
+ * was clicked and one that names its neighbour.
+ */
+const MARK_NOUNS: Partial<Record<MarkRender, string>> = {
+  line: 'point',
+  area: 'point',
+  point: 'point',
+  dot: 'dot',
+  slice: 'slice',
+  column: 'bar',
+  'gantt.bar': 'bar',
+  'gantt.chevron': 'chevron',
+  'gantt.milestone': 'milestone',
+  'gantt.summary': 'summary',
+  'gantt.bracket': 'bracket',
+};
+
 export function describePart(
   ref: ChartRef,
   seriesName?: string,
   /** How that series is DRAWN — a combo's series aren't all the same shape. */
-  render?: 'column' | 'line' | 'area' | 'point' | 'slice',
+  render?: MarkRender,
 ): string {
   switch (ref.part) {
     case 'plot':
@@ -246,13 +282,7 @@ export function describePart(
             ? 'area'
             : ref.point === 'end'
               ? 'end dot'
-              : render === 'line'
-                ? 'point'
-                : render === 'slice'
-                  ? 'slice'
-                  : render === 'point'
-                    ? 'point'
-                    : 'bar';
+              : (MARK_NOUNS[render ?? 'column'] ?? 'bar');
       return `${seriesName} · ${noun}`;
     }
     case 'label':
@@ -260,11 +290,25 @@ export function describePart(
     case 'total':
       return 'Total';
     case 'axis':
-      return ref.axis === 'y' ? 'Value axis' : 'Category axis';
+      return ref.axis === 'y'
+        ? 'Value axis'
+        : ref.axis === 'y2'
+          ? 'Right axis'
+          : 'Category axis';
     case 'legend.item':
     case 'legend.box':
       return 'Legend';
     case 'decoration':
       return 'Annotation';
+    case 'gantt.row':
+      return ref.sub === 'label' ? 'Task' : ref.sub === 'divider' ? 'Row divider' : 'Row band';
+    case 'gantt.column':
+      return ref.sub === 'header' ? 'Column heading' : 'Cell';
+    case 'gantt.band':
+      return ref.sub === 'today'
+        ? 'Today line'
+        : ref.sub === 'weekend'
+          ? 'Non-working days'
+          : 'Holiday';
   }
 }

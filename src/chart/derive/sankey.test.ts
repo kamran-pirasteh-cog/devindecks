@@ -270,3 +270,72 @@ describe('layoutSankey — determinism', () => {
     expect(positions(a)).toEqual(positions(b));
   });
 });
+
+/**
+ * Both of the spec's fixed sizes — the gap between stacked nodes and the
+ * thickness of a node bar — are in POINTS, so neither shrinks with the chart.
+ * Shrinking a Sankey used to walk straight past what its frame could hold: the
+ * gaps outgrew the cross extent and the column was laid out past both ends of
+ * the frame, and the columns closed to less than a bar apart and then to less
+ * than nothing, so every ribbon collapsed to zero width and came back running
+ * backwards. Both are what "resizing a Sankey makes it fall apart" was.
+ */
+describe('layoutSankey — fitting the frame it was given', () => {
+  const fan = (branches: number): SankeyData => ({
+    nodes: [
+      { key: 'src', label: 'Total' },
+      ...Array.from({ length: branches }, (_, i) => ({ key: `n${i}`, label: `Seg ${i}` })),
+    ],
+    links: Array.from({ length: branches }, (_, i) => ({
+      key: `f${i}`,
+      from: 'src',
+      to: `n${i}`,
+      value: 100,
+    })),
+  });
+
+  const chain = (layers: number): SankeyData => ({
+    nodes: Array.from({ length: layers }, (_, i) => ({ key: `n${i}`, label: `L${i}` })),
+    links: Array.from({ length: layers - 1 }, (_, i) => ({
+      key: `f${i}`,
+      from: `n${i}`,
+      to: `n${i + 1}`,
+      value: 100,
+    })),
+  });
+
+  it('keeps a crowded column inside the cross extent at every height', () => {
+    for (const branches of [5, 8, 12]) {
+      for (const across of [4.5, 2, 1, 0.5].map(inchesToEmu)) {
+        const l = run(fan(branches), { acrossExtent: across });
+        const top = Math.min(...l.nodes.map((n) => n.across));
+        const bottom = Math.max(...l.nodes.map((n) => n.across + n.acrossExtent));
+        // Each node's extent is rounded to whole EMU, so a tall column can end
+        // half an EMU per node past the edge. That's a millionth of an inch —
+        // the failure this guards against overshot by fractions of an INCH.
+        const rounding = l.nodes.length;
+        expect(top).toBeGreaterThanOrEqual(-rounding);
+        expect(bottom).toBeLessThanOrEqual(across + rounding);
+      }
+    }
+  });
+
+  it('never lets two columns meet, so no ribbon inverts', () => {
+    for (const layers of [2, 3, 5]) {
+      for (const along of [8, 3, 1.5, 0.5, 0.25].map(inchesToEmu)) {
+        const l = run(chain(layers), { alongExtent: along });
+        for (const link of l.links) expect(link.endAlong).toBeGreaterThan(link.startAlong);
+        const last = l.nodes.reduce((n, m) => (m.along > n.along ? m : n));
+        expect(last.along + last.alongExtent).toBeLessThanOrEqual(along);
+      }
+    }
+  });
+
+  it('narrows monotonically — a ribbon never widens as the frame shrinks', () => {
+    const widths = [8, 4, 2, 1.5, 1, 0.5]
+      .map(inchesToEmu)
+      .map((along) => run(chain(5), { alongExtent: along }).links[0])
+      .map((l) => l.endAlong - l.startAlong);
+    for (let i = 1; i < widths.length; i++) expect(widths[i]).toBeLessThan(widths[i - 1]);
+  });
+});

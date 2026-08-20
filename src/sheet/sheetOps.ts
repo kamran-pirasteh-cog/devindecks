@@ -6,11 +6,14 @@
  */
 import { nanoid } from 'nanoid';
 import {
+  cellText,
   columnsFor,
   EMPTY,
   rangeBounds,
   type CellRange,
+  type CellType,
   type CellValue,
+  type SheetColumn,
   type SheetModel,
   type SheetSeries,
 } from '@/model';
@@ -170,19 +173,77 @@ export function clearRange(sheet: SheetModel, range: CellRange): SheetModel {
   return withRows(sheet, rows);
 }
 
-/** Excel's ⌘D / ⌘R — repeat the leading edge across the selection. */
+/**
+ * Excel's ⌘D / ⌘R — repeat the leading edge across the selection.
+ *
+ * Grows the sheet to reach a selection that runs off the bottom of the data,
+ * the way pasting does: dragging down through the blank rows and pressing ⌘D is
+ * how a column of "same as last year" gets typed once instead of six times.
+ * Columns are NOT grown — a phantom column is a whole new category or series,
+ * and filling one into existence is a bigger edit than the keystroke implies.
+ *
+ * The value carried across is coerced into the column it lands in, so filling a
+ * label sideways into number cells keeps the text and raises a diagnostic
+ * rather than silently dropping it.
+ */
 export function fillRange(sheet: SheetModel, range: CellRange, dir: 'down' | 'right'): SheetModel {
   const { r0, r1, c0, c1 } = rangeBounds(range);
-  const rows = sheet.rows.map((row, r) => {
+  if (r0 === r1 && dir === 'down') return sheet;
+  if (c0 === c1 && dir === 'right') return sheet;
+
+  let next = sheet;
+  while (next.rows.length <= r1) {
+    const grown = insertRow(next, next.rows.length);
+    if (grown === next) break;
+    next = grown;
+  }
+
+  const source = next.rows;
+  const rows = source.map((row, r) => {
     if (r < r0 || r > r1) return row;
     return row.map((cell, c) => {
       if (c < c0 || c > c1) return cell;
-      if (dir === 'down') return r === r0 ? cell : (sheet.rows[r0]?.[c] ?? EMPTY);
-      return c === c0 ? cell : (sheet.rows[r]?.[c0] ?? EMPTY);
+      if (dir === 'down' ? r === r0 : c === c0) return cell;
+      const from = dir === 'down' ? source[r0]?.[c] : source[r]?.[c0];
+      return fitToColumn(from, next.columns[c], cell);
     });
   });
-  return withRows(sheet, rows);
+  return withRows(next, rows);
 }
+
+/**
+ * The filled value as the destination column can hold it. A cell of the right
+ * shape is copied verbatim — coercing a colour or a date through its text would
+ * be a lossy round trip — and anything else goes through the same coercion a
+ * paste uses.
+ */
+function fitToColumn(
+  from: CellValue | undefined,
+  col: SheetColumn | undefined,
+  current: CellValue,
+): CellValue {
+  if (!col || col.editable === false) return current;
+  if (!from || from.kind === 'empty') return EMPTY;
+  if (matchesType(from, col.type)) return from;
+  return coerceCell(cellText(from), col).value;
+}
+
+const matchesType = (cell: CellValue, type: CellType): boolean => {
+  switch (cell.kind) {
+    case 'number':
+      return type === 'number' || type === 'percent';
+    case 'text':
+      return type === 'text';
+    case 'date':
+      return type === 'date';
+    case 'enum':
+      return type === 'enum';
+    case 'color':
+      return type === 'color';
+    default:
+      return false;
+  }
+};
 
 /* ------------------------------------------------------------------ */
 /* Paste                                                              */
@@ -321,7 +382,7 @@ function writeCell(
 ): SheetModel {
   const col = sheet.columns[c];
   if (!col || col.editable === false) return sheet;
-  const { value, warning } = coerceCell(raw, col.type);
+  const { value, warning } = coerceCell(raw, col);
   if (warning && !warnings.some((w) => w.code === warning.code)) warnings.push(warning);
   return setCell(sheet, r, c, value);
 }

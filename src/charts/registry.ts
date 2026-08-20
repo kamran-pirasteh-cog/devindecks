@@ -15,6 +15,8 @@ import {
   pointsToEmu,
   type ChartSpec,
   type ColumnBarSpec,
+  type DotPlotSpec,
+  type GanttSpec,
   type DeepPartial,
   type ChartStyle,
   type LineSpec,
@@ -204,6 +206,37 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
     styleOverrides: { gridlines: { horizontal: 'none' } },
   },
   {
+    id: 'chart.progress-to-target',
+    name: 'Progress to target',
+    description: 'One track per measure, with today\'s number between its baseline and its goal.',
+    category: 'Operations',
+    order: 85,
+    research: {
+      guidance:
+        'Three numbers per row and they must be the same measure on the same basis: where it started, where it is now, and the committed target. If the target is a range or unstated, say so rather than picking the midpoint.',
+    },
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('dotplot', 'clustered', style) as DotPlotSpec;
+      spec.title = 'Progress to target';
+      spec.data.categories = cats(['Gross margin', 'Net retention', 'Win rate']);
+      // Each dot carries the period it was measured at, as a caption under the
+      // number — three tracks against a shared timeline is the argument this
+      // template makes, and "52%" says nothing without "as of Q2 FY26".
+      const asOf = (note: string) =>
+        Object.fromEntries(spec.data.categories.map((c) => [c.key, { note }]));
+      spec.data.series = [
+        { key: 's0', name: 'Baseline', values: [3, 96, 18], pointOverrides: asOf('FY23') },
+        { key: 's1', name: 'Today', values: [52, 108, 31], pointOverrides: asOf('Q2 FY26') },
+        { key: 's2', name: 'Target', values: [75, 120, 40], pointOverrides: asOf('FY27') },
+      ];
+      // Every marker is named on the track, so a legend would repeat the labels
+      // the chart already carries.
+      spec.legend = { show: false, position: 'bottom' };
+      spec.numberFormat = { style: 'number', decimals: 0, thousands: false, suffix: '%' };
+      return spec;
+    },
+  },
+  {
     id: 'chart.mix-shift',
     name: 'Mix shift',
     description: 'A 100% stacked area showing how a mix moved over time.',
@@ -212,6 +245,31 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
     buildSpec: (style) => {
       const spec = defaultChartSpec('area', 'stacked100', style);
       spec.title = 'Revenue mix';
+      return spec;
+    },
+  },
+  {
+    id: 'chart.launch-plan',
+    name: 'Launch plan',
+    description: 'A dated timeline: workstreams down the side, phases and milestones across.',
+    category: 'Operations',
+    order: 90,
+    research: {
+      guidance:
+        'Real dates, not durations — a start and an end for each workstream, and a date for each milestone. If a date is a target rather than a commitment, say so; if a phase has no agreed end, leave it out rather than guessing one, because a bar on a plan reads as a promise.',
+    },
+    buildSpec: (style) => {
+      const spec = defaultChartSpec('gantt', 'clustered', style) as GanttSpec;
+      spec.title = 'Launch plan';
+      // The two columns a plan is read with: what, and who owns it. The due
+      // date is DERIVED from the bars rather than typed, so the table beside
+      // the chart cannot drift from the picture next to it.
+      spec.columns = [
+        { key: 'col.task', header: 'Workstream', side: 'left', order: 0, source: 'label' },
+        { key: 'col.owner', header: 'Owner', side: 'left', order: 1, source: 'text' },
+        { key: 'col.end', header: 'Due', side: 'right', order: 0, source: 'end', dateFormat: 'd MMM' },
+      ];
+      spec.ruler = { rows: { show: true }, bands: { show: true } };
       return spec;
     },
   },

@@ -40,6 +40,12 @@ export interface ChartMeta {
   period?: ChartPeriod;
   /** Who or what the chart is about, from the deck and slide around it. */
   subject?: string;
+  /**
+   * Where the subject came from. Only a tag is a deliberate statement of who
+   * the deck is about; a title is a headline that merely tends to contain the
+   * name, so a subject read out of one is an assumption to confirm, not a fact.
+   */
+  subjectSource?: 'tag' | 'slide' | 'deck';
   categories: string[];
   seriesNames: string[];
 }
@@ -52,6 +58,7 @@ export interface DeckContext {
 
 const GRAIN_NOUN: Record<DateGrain, string> = {
   year: 'year',
+  half: 'half-year',
   quarter: 'fiscal quarter',
   month: 'month',
   week: 'week',
@@ -68,7 +75,7 @@ export function inferChartMeta(spec: ChartSpec, ctx: DeckContext = {}): ChartMet
     unitSentence: unitSentence(spec),
     dimension: inferDimension(spec, seriesNames),
     period: inferPeriod(categories),
-    subject: inferSubject(ctx),
+    ...inferSubject(ctx),
     categories,
     seriesNames,
   };
@@ -198,11 +205,16 @@ function inferPeriod(categories: string[]): ChartPeriod | undefined {
   };
 }
 
-function inferSubject(ctx: DeckContext): string | undefined {
+function inferSubject(ctx: DeckContext): Pick<ChartMeta, 'subject' | 'subjectSource'> {
   // Tags are documented as holding client names, so they're the most specific
   // signal available; the slide title beats the deck title for the same reason.
   const tag = ctx.deckTags?.find((t) => t.trim());
-  return tag ?? ctx.slideTitle?.trim() ?? ctx.deckTitle?.trim() ?? undefined;
+  if (tag) return { subject: tag, subjectSource: 'tag' };
+  const slide = ctx.slideTitle?.trim();
+  if (slide) return { subject: slide, subjectSource: 'slide' };
+  const deck = ctx.deckTitle?.trim();
+  if (deck) return { subject: deck, subjectSource: 'deck' };
+  return {};
 }
 
 /** A human phrase for the period, e.g. "each fiscal quarter from Q1'23 to Q4'25". */

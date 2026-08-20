@@ -17,13 +17,15 @@ import type {
   LabelFont,
   TypeRoleRef,
 } from '@/model';
-import { pointsToEmu, resolveColor } from '@/model';
+import { pointsToEmu, resolveColor, resolveTypeRole } from '@/model';
 import { buildRamp, inkOn, isTooPale, shadeOf, tooSimilar } from './color';
 
 export interface ChartTextRole {
   font: FontFamily;
   sizePt: number;
   bold?: boolean;
+  /** Italic, for a label singled out by hand. See `LabelFont.italic`. */
+  italic?: boolean;
   /**
    * Numeric weight. Charts lean on Medium (500) constantly — a data label has
    * to out-weigh a tick label without shouting the way bold does — and the run
@@ -178,7 +180,14 @@ export const paletteColor = (palette: ColorRef[], i: number): ColorRef =>
  * than as prose. Muted and uppercase because these are annotations on the data,
  * not the data: the marks should carry the colour and the weight.
  */
-const CHART_FONT: FontFamily = 'Geist';
+/**
+ * The chart's sans face.
+ *
+ * Exported because one thing in the set is neither prose nor an annotation on
+ * the data: a Gantt's description table, whose cells are NAMES. See
+ * `tableRole`.
+ */
+export const CHART_FONT: FontFamily = 'Geist';
 const LABEL_FONT: FontFamily = 'Geist Mono';
 
 /** The annotation treatment, applied on top of a design-system role. */
@@ -194,6 +203,7 @@ export function fontOver(font?: LabelFont): Partial<ChartTextRole> {
   return {
     ...(font.sizePt !== undefined ? { sizePt: font.sizePt } : {}),
     ...(font.bold !== undefined ? { bold: font.bold } : {}),
+    ...(font.italic !== undefined ? { italic: font.italic } : {}),
     ...(font.color !== undefined ? { color: font.color } : {}),
     ...(font.font !== undefined ? { font: font.font } : {}),
   };
@@ -201,7 +211,7 @@ export function fontOver(font?: LabelFont): Partial<ChartTextRole> {
 
 /** A design-system type role plus the style's local tweaks. */
 function textRole(ds: DesignSystem, ref: TypeRoleRef, over: Partial<ChartTextRole> = {}): ChartTextRole {
-  const base = ds.type[ref.role];
+  const base = resolveTypeRole(ds, ref.role);
   return {
     font: CHART_FONT,
     sizePt: ref.sizePt ?? base.sizePt,
@@ -277,6 +287,10 @@ export function resolveChartTheme(spec: ChartSpec, ds: DesignSystem): ChartTheme
         weight: 600,
         color: muted,
       }),
+      // Geist Medium: the legend is the one piece of furniture a reader scans
+      // to decode the marks, so it sits a notch above the muted annotations
+      // without reaching for bold. Weight rides on `style.fonts.legend`, so a
+      // brand can still dial it.
       legend: textRole(ds, style.fonts.legend, fontOver(spec.legend?.font)),
       // The title is mono and UPPERCASE like the rest of the chart's furniture,
       // but in the strong ink and a size above it: it labels the chart, so it

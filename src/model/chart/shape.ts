@@ -1,14 +1,29 @@
 /**
  * Data shapes.
  *
- * Twelve chart kinds do NOT need twelve datasheets. They need four data
- * shapes — a category grid, x/y points, a waterfall ledger and a butterfly
- * pair — and the datasheet switches on the shape, not the kind. Adding a chart
- * type is then one line in `dataShapeOf` plus a placer, with no grid changes
- * at all.
+ * Fourteen chart kinds do NOT need fourteen datasheets. They need a handful of
+ * data SHAPES — a category grid, x/y points, a waterfall ledger, a butterfly
+ * pair, a flow list and a schedule — and the datasheet switches on the shape,
+ * not the kind. Adding a chart type is then one line in `dataShapeOf` plus a
+ * placer, with no grid changes at all.
+ *
+ * A new shape is the expensive case, and only earns its place when the data
+ * genuinely isn't a grid: a Gantt row holds SEVERAL items, each a span of time
+ * rather than a number, beside a table of authored columns. There is no
+ * arrangement of categories × series that says that.
  */
 import type { ChartKind, ChartSpec, GridData, GridSeries, XYData } from './spec';
-import { isButterflySpec, isGridSpec, isSankeySpec, isWaterfallSpec, isXYSpec } from './spec';
+import {
+  isButterflySpec,
+  isGanttSpec,
+  isGridSpec,
+  isSankeySpec,
+  isWaterfallSpec,
+  isXYSpec,
+  type GanttSpec,
+} from './spec';
+import { fromIso, nextCell, type EpochDay } from '../units';
+import { parseGrain } from '../sheetSchema';
 import { defaultChartSpec } from './defaults';
 
 export type DataShape =
@@ -16,7 +31,8 @@ export type DataShape =
   | { form: 'xy'; fields: ('x' | 'y' | 'size' | 'label')[] }
   | { form: 'waterfall' }
   | { form: 'sankey' }
-  | { form: 'butterfly' };
+  | { form: 'butterfly' }
+  | { form: 'gantt' };
 
 export function dataShapeOf(kind: ChartKind): DataShape {
   switch (kind) {
@@ -36,6 +52,10 @@ export function dataShapeOf(kind: ChartKind): DataShape {
       return { form: 'sankey' };
     case 'butterfly':
       return { form: 'butterfly' };
+    // A row holds several items, each a SPAN rather than a number, beside a
+    // table of authored columns — see `GanttSpec`.
+    case 'gantt':
+      return { form: 'gantt' };
     default:
       return { form: 'grid', valueHeader: 'Value' };
   }
@@ -78,6 +98,28 @@ const gridOf = (spec: ChartSpec): GridData | null => {
       series: [{ key: 's0', name: 'Value', values: spec.data.links.map((l) => l.value) }],
     };
   }
+  if (isGanttSpec(spec)) {
+    // Every item becomes a category carrying its DURATION IN DAYS — the only
+    // number a schedule has. As with a Sankey, the structure that a grid has
+    // nowhere to put becomes the row labels. A milestone has no span, so it
+    // carries a null: a gap, which is what a moment in time is on a bar chart.
+    const rowLabel = new Map(spec.rows.map((r) => [r.key, r.label] as const));
+    return {
+      categories: spec.items.map((it) => ({
+        key: it.key,
+        label: it.label
+          ? `${rowLabel.get(it.row) ?? it.row} · ${it.label}`
+          : (rowLabel.get(it.row) ?? it.row),
+      })),
+      series: [
+        {
+          key: 's0',
+          name: 'Days',
+          values: spec.items.map((it) => (it.to === undefined ? null : it.to - it.from)),
+        },
+      ],
+    };
+  }
   if (isXYSpec(spec)) {
     // x becomes the category axis; each series contributes its y values.
     const first = spec.data.series[0];
@@ -95,6 +137,15 @@ const gridOf = (spec: ChartSpec): GridData | null => {
   }
   return null;
 };
+
+/**
+ * Where an undated conversion starts every task.
+ *
+ * The sample's own start, so a converted chart lands on the same axis the
+ * default one does. Never a clock read — see `GanttSpec.today`.
+ */
+const ganttAnchor = (spec: GanttSpec): EpochDay =>
+  spec.items[0]?.from ?? spec.timescale.min ?? 0;
 
 const xyFromGrid = (grid: GridData): XYData => ({
   series: grid.series.map((s: GridSeries) => ({
@@ -188,6 +239,41 @@ export function convertData(from: ChartSpec, to: ChartKind): ChartSpec {
         value: s?.values[i] ?? null,
       })),
     };
+    return carried;
+  }
+
+  if (isGanttSpec(carried)) {
+    // Two readings, and taking the good one matters.
+    //
+    // A DATED category axis is already a schedule: parse each label, and let
+    // the next category's date close the span. That is the conversion someone
+    // switching a quarterly column chart to a plan actually wants.
+    //
+    // Otherwise the numbers are DURATIONS and nothing says when anything
+    // starts, so every task begins together and the chart is a ranking by
+    // length. Deliberately not a fabricated cascade, and deliberately not
+    // anchored to today: an invented sequence reads as a real plan, and a
+    // clock-anchored one compiles differently tomorrow.
+    const dated = grid.categories.map((c) => parseGrain(c.label));
+    const allDated = dated.length > 0 && dated.every((d) => d !== null);
+    const anchor = carried.timescale.min ?? ganttAnchor(carried);
+    const first = grid.series[0];
+
+    carried.rows = grid.categories.map((c) => ({ key: c.key, label: c.label, level: 0 }));
+    carried.items = grid.categories.map((c, i) => {
+      const from = allDated ? (fromIso(dated[i]!.iso) ?? anchor) : anchor;
+      const to = allDated
+        ? (fromIso(dated[i + 1]?.iso ?? '') ?? nextCell(dated[i]!.grain, from))
+        : from + Math.max(1, Math.round(first?.values[i] ?? 1));
+      return {
+        key: `g-${c.key}`,
+        row: c.key,
+        from,
+        to,
+        shape: { form: 'bar' as const },
+      };
+    });
+    carried.cells = {};
     return carried;
   }
 

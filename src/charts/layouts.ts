@@ -15,7 +15,8 @@ export type LayoutGroup =
   | 'Combo'
   | 'Waterfall'
   | 'Composition'
-  | 'Relationships';
+  | 'Relationships'
+  | 'Timelines';
 
 export interface ChartLayout {
   id: string;
@@ -78,6 +79,20 @@ export const CHART_LAYOUTS: ChartLayout[] = [
     stack: 'stacked100',
     group: 'Bars',
     purpose: 'shows how a mix shifts when the total itself does not matter',
+  },
+
+  // A dot plot sits in Bars because it answers a bar chart's question — how do
+  // these few numbers compare — with a tenth of the ink. It earns its own tile
+  // rather than being an option ON the bar tiles because the data it wants is
+  // different: a handful of rows carrying two or three moments each, where a
+  // clustered column wants many periods.
+  {
+    id: 'dotplot',
+    name: 'Dot plot',
+    kind: 'dotplot',
+    stack: 'clustered',
+    group: 'Bars',
+    purpose: 'shows where each row sits between two or three points on one scale',
   },
 
   {
@@ -167,6 +182,18 @@ export const CHART_LAYOUTS: ChartLayout[] = [
     group: 'Relationships',
     purpose: 'relates two measures with a third carried in the size',
   },
+  // The only group whose axis is TIME rather than a quantity, which is why it
+  // is a group of its own rather than a tile under Bars: everything else here
+  // answers "how big", and a Gantt answers "when".
+  {
+    id: 'gantt',
+    name: 'Gantt',
+    kind: 'gantt',
+    stack: 'clustered',
+    group: 'Timelines',
+    purpose: 'shows when each workstream runs, and what it has to finish before',
+  },
+
 ];
 
 export const LAYOUT_GROUPS: LayoutGroup[] = [
@@ -176,6 +203,7 @@ export const LAYOUT_GROUPS: LayoutGroup[] = [
   'Waterfall',
   'Composition',
   'Relationships',
+  'Timelines',
 ];
 
 export const layoutById = (id: string): ChartLayout | undefined =>

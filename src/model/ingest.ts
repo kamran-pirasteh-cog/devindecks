@@ -24,7 +24,14 @@ import type { DesignSystem } from './tokens';
 import type { Paragraph, Slide, SlideElement, TextBody } from './types';
 import type { EMU } from './units';
 
-export type DiagnosticSeverity = 'error' | 'warning';
+/**
+ * `info` is not a lesser warning — it's a note about something the engine did
+ * ON PURPOSE and wants on the record: type stepped off the brand ladder to make
+ * text fit, a PDF region kept as a raster. A reviewer should be able to see
+ * every such decision without those decisions competing for attention with
+ * things that might be wrong.
+ */
+export type DiagnosticSeverity = 'error' | 'warning' | 'info';
 
 export interface Diagnostic {
   severity: DiagnosticSeverity;
@@ -268,6 +275,8 @@ export function ingestSlides(raw: RawSlide[], opts: IngestOptions): IngestResult
 
 /** Counts by severity, for callers that only need a pass/fail summary. */
 export function summarize(diagnostics: Diagnostic[]) {
-  const errors = diagnostics.filter((d) => d.severity === 'error').length;
-  return { errors, warnings: diagnostics.length - errors, total: diagnostics.length };
+  const count = (s: DiagnosticSeverity) => diagnostics.filter((d) => d.severity === s).length;
+  const errors = count('error');
+  const warnings = count('warning');
+  return { errors, warnings, info: count('info'), total: diagnostics.length };
 }

@@ -30,10 +30,16 @@ import {
   type ChartSpec,
   type Deck,
   type Slide,
-  type SlideElement,
   type TextElement,
 } from '@/model';
 import { inferChartMeta, type ChartMeta } from './meta';
+import {
+  ASK_FIRST_RULES,
+  chartClarifications,
+  clarificationLines,
+  dedupeClarifications,
+  type Clarification,
+} from './questions';
 
 /** Where a number lives, and what it currently says. */
 export interface DeckNumber {
@@ -77,6 +83,8 @@ export interface DeckRefreshPrompt {
   /** How many figures the deck states in total. */
   numberCount: number;
   csvHeader: string[];
+  /** What the deck couldn't say — asked before any research starts. */
+  clarifications: Clarification[];
 }
 
 export interface DeckRefreshContext {
@@ -120,7 +128,9 @@ const KIND_NOUN: Record<string, string> = {
   waterfall: 'waterfall (bridge) chart',
   sankey: 'Sankey diagram',
   mekko: 'Mekko chart',
+  dotplot: 'dot plot',
   butterfly: 'butterfly chart',
+  gantt: 'Gantt chart (a project timeline)',
 };
 
 /* ------------------------------------------------------------------ */
@@ -271,6 +281,66 @@ const SUFFIX_SCALE: Record<string, number> = {
   Bn: 1e9,
 };
 
+/**
+ * A text element's runs laid end to end, with a map back into them.
+ *
+ * The inventory and the eventual write-back read the same flat string from the
+ * same function, so a `ref`'s `n3` means the same token in both. Paragraphs are
+ * joined with a newline rather than collapsed to a space: collapsing is fine
+ * for a label but loses the offsets a surgical edit needs.
+ */
+export interface RunSpan {
+  /** Paragraph and run index this stretch of the flat string came from. */
+  p: number;
+  r: number;
+  start: number;
+  end: number;
+}
+
+export function flattenRuns(el: TextElement): { flat: string; spans: RunSpan[] } {
+  const spans: RunSpan[] = [];
+  let flat = '';
+  el.body.paragraphs.forEach((para, p) => {
+    if (p > 0) flat += '\n';
+    para.runs.forEach((run, r) => {
+      const start = flat.length;
+      flat += run.text;
+      spans.push({ p, r, start, end: flat.length });
+    });
+  });
+  return { flat, spans };
+}
+
+/** One number found in a text element, and exactly where it sits. */
+export interface NumberSite {
+  /** Its ordinal within the element — the `n` in a text `ref`. */
+  index: number;
+  /** The token as typed, "$4.2M". */
+  display: string;
+  value: number;
+  /** Offsets into the flat string from `flattenRuns`. */
+  start: number;
+  end: number;
+}
+
+export function numberSites(el: TextElement): NumberSite[] {
+  const { flat } = flattenRuns(el);
+  const out: NumberSite[] = [];
+  for (const m of flat.matchAll(NUMBER_TOKEN)) {
+    const display = m[0].trim();
+    const numeric = m[1].trim();
+    if (looksLikeAYear(numeric, m[2])) continue;
+    const value = parseDisplay(numeric, m[2]);
+    if (value === null) continue;
+    // `m[0]` can carry a leading space the trim drops, so the recorded range is
+    // the trimmed token — what a replacement is allowed to touch.
+    const lead = m[0].length - m[0].trimStart().length;
+    const start = m.index + lead;
+    out.push({ index: out.length, display, value, start, end: start + display.length });
+  }
+  return out;
+}
+
 function textNumbers(slide: Slide, page: number): DeckNumber[] {
   const out: DeckNumber[] = [];
   for (const el of slide.elements) {
@@ -280,23 +350,16 @@ function textNumbers(slide: Slide, page: number): DeckNumber[] {
     if (el.chartRef) continue;
     const text = elementText(el);
     if (!text) continue;
-    let i = 0;
-    for (const m of text.matchAll(NUMBER_TOKEN)) {
-      const display = m[0].trim();
-      const numeric = m[1].trim();
-      if (looksLikeAYear(numeric, m[2])) continue;
-      const value = parseDisplay(numeric, m[2]);
-      if (value === null) continue;
+    for (const site of numberSites(el)) {
       out.push({
-        ref: `p${page}/t:${el.id}/n${i}`,
+        ref: `p${page}/t:${el.id}/n${site.index}`,
         page,
         slideId: slide.id,
         origin: 'text',
         label: el.role ? `${el.role}: ${text}` : text,
-        value,
-        display,
+        value: site.value,
+        display: site.display,
       });
-      i += 1;
     }
   }
   return out;
@@ -337,13 +400,49 @@ export function buildDeckRefreshPrompt(
   );
   lines.push('');
   lines.push(
-    'For each one, find the current figure from a primary source and return it in the CSV described at the bottom. Return **one row per `ref`, for every `ref` listed** — including the ones that have not changed, where `new_value` simply repeats `current_value`.',
+    'This is an **exhaustive verification, not a spot-check**. Independently establish the correct current figure for every single `ref` below from a primary source — including the ones that look right, the ones that look uncontroversial, and the ones that are obviously derived from others. A figure is only confirmed once you have found it in a source; "it looks plausible" is not a check.',
+  );
+  lines.push('');
+  lines.push(
+    'Return **one row per `ref`, for every `ref` listed** — including the unchanged ones, where `new_value` simply repeats `current_value`. A missing row reads as "not checked", so the count of rows returned must equal the count of `ref`s listed.',
   );
   if (ctx.asOf) {
     lines.push('');
     lines.push(`Refresh as of **${ctx.asOf}** — the most recent figure published on or before that date.`);
   }
   lines.push('');
+
+  const clarifications = dedupeClarifications([
+    ...pages.flatMap((p) =>
+      p.charts.flatMap((c) => chartClarifications(c.meta, `${c.title ?? 'Untitled chart'} — page ${p.page}`)),
+    ),
+    // A figure written into a sentence carries no axis, no units and no series
+    // name — the surrounding words are all the definition there is, and they
+    // are usually a claim rather than a specification.
+    ...(pages.some((p) => p.textNumbers.length)
+      ? [
+          {
+            topic: 'Stated figures',
+            question:
+              '**The figures written into the page text have no units or definition beyond the sentence around them.** Where a line is ambiguous about what its number counts, over what period, or on what basis, ask rather than reading it the most natural way.',
+          },
+        ]
+      : []),
+  ]);
+  if (clarifications.length) {
+    lines.push('## Ask these first');
+    lines.push('');
+    lines.push(
+      'The deck states its numbers but not what was meant by them. Confirm every point below before looking anything up — one message, all of the questions, then wait:',
+    );
+    lines.push('');
+    lines.push(clarificationLines(clarifications));
+    lines.push('');
+    lines.push('How to ask:');
+    lines.push('');
+    lines.push(ASK_FIRST_RULES.join('\n'));
+    lines.push('');
+  }
 
   lines.push('## Rules');
   lines.push('');
@@ -357,6 +456,9 @@ export function buildDeckRefreshPrompt(
       '- If a source restates a prior period, use the restated figure and note it.',
       '- Echo each `ref` back **character for character**. It is how the row finds its way back onto the slide; a reworded ref cannot be applied.',
       "- Where a figure looks wrong rather than stale — a typo, a units mix-up, a label that doesn't match its value — return the correct figure and flag it in `notes`.",
+      '- **Check every figure independently.** Do not carry one confirmed number across to a similar-looking one elsewhere in the deck, and do not assume a total, a growth rate or a margin is right because its components are — recompute it and say so in `notes`.',
+      '- Where the same quantity appears on more than one page, verify each occurrence and flag any disagreement between them in `notes`.',
+      '- If a question comes up mid-research that changes what a figure should be, stop and ask rather than choosing a reading.',
     ].join('\n'),
   );
   lines.push('');
@@ -425,6 +527,25 @@ export function buildDeckRefreshPrompt(
   lines.push('```');
   lines.push('');
 
+  lines.push('## Also return an HTML check sheet');
+  lines.push('');
+  lines.push(
+    'Alongside the CSV, return a **single self-contained `.html` file** — one file, no external scripts, stylesheets, fonts or images, so it opens straight from disk. It is read before the CSV is applied to the deck, and it is the only chance to catch a wrong number while it is still cheap to fix.',
+  );
+  lines.push('');
+  lines.push(
+    [
+      '- **One section per page, in deck order**, headed the same way as the sections below (`Page 3 — Margin bridge`), so it can be read side by side with the slides.',
+      '- Within a page, a table per chart and one for the figures stated in the text: `ref`, label, old value, new value, the change (absolute and %), `as_of`, and the source as a clickable link.',
+      '- **Show old and new together, and mark the difference** — colour or a badge for changed, unchanged, and not-available. A row that did not change must still appear, visibly marked as checked-and-unchanged.',
+      '- **Redraw each chart** from the new figures, as inline SVG built by hand — same chart type, same series, same category order as the deck. Put the deck\'s current version beside it, drawn the same way from `current_value`, so the two shapes can be compared at a glance. No charting library, no CDN.',
+      '- Flag anything that deserves a second look before it lands: a value that moved by more than half, a sign that flipped, a figure whose magnitude suggests different units, a series that no longer sums to its total.',
+      '- Open with a summary line — figures checked, changed, unchanged, unavailable — and list every unresolved question underneath it.',
+      '- The HTML is for reading, not for pasting back. The CSV stays the thing that gets applied, and the two must agree row for row.',
+    ].join('\n'),
+  );
+  lines.push('');
+
   lines.push('---');
   lines.push('');
   lines.push(
@@ -438,7 +559,13 @@ export function buildDeckRefreshPrompt(
       .join(' · '),
   );
 
-  return { text: lines.join('\n'), pages, numberCount, csvHeader: [...REFRESH_CSV_HEADER] };
+  return {
+    text: lines.join('\n'),
+    pages,
+    numberCount,
+    csvHeader: [...REFRESH_CSV_HEADER],
+    clarifications,
+  };
 }
 
 const cell = (s: string) => s.replace(/\|/g, '\\|');

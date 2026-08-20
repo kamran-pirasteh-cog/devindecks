@@ -4,6 +4,7 @@
  * geometries we allow; the SVG here and the exported <a:prstGeom> must stay in
  * lockstep so the editor preview matches PowerPoint/Slides.
  */
+import { ROUND_RECT_RADIUS_RATIO } from '@/model';
 import type { PathOp, ShapePreset } from '@/model';
 
 export interface ShapeGeomProps {
@@ -46,7 +47,7 @@ export function ShapeGeom({
         <ellipse cx={w / 2} cy={h / 2} rx={iw / 2} ry={ih / 2} {...common} />
       );
     case 'roundRect': {
-      const r = Math.min(w, h) * 0.12;
+      const r = Math.min(w, h) * ROUND_RECT_RADIUS_RATIO;
       return (
         <rect x={s} y={s} width={iw} height={ih} rx={r} ry={r} {...common} />
       );

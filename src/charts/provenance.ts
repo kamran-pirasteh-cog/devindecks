@@ -83,10 +83,26 @@ export function restyleChart(
   return stampProvenance(next, ds, template);
 }
 
-/** The data-bearing fields, whatever shape this spec's data takes. */
+/**
+ * The data-bearing fields, whatever shape this spec's data takes.
+ *
+ * Every kind must be named. Adopting a template's spec REPLACES everything this
+ * doesn't carry back, so a kind that falls through to `spec.data` when it has
+ * none silently wipes the author's numbers — and a schedule is not the place to
+ * discover that.
+ */
 function extractData(spec: ChartSpec): Partial<ChartSpec> {
   if (spec.kind === 'butterfly') {
     return { categories: spec.categories, left: spec.left, right: spec.right } as Partial<ChartSpec>;
+  }
+  // A Gantt keeps its data in four fields and has no `data` at all.
+  if (spec.kind === 'gantt') {
+    return {
+      rows: spec.rows,
+      items: spec.items,
+      cells: spec.cells,
+      columns: spec.columns,
+    } as Partial<ChartSpec>;
   }
   return { data: spec.data } as Partial<ChartSpec>;
 }

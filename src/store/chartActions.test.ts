@@ -784,6 +784,98 @@ describe('applyChartTextFormat', () => {
     expect(sizeOf(slide, '::label.s0.c1')).toBe(18);
   });
 
+  /*
+   * Bold and italic on a SINGLE data label — the editorial act these exist for:
+   * marking out the one number that is pro-forma, or estimated, or the point of
+   * the slide. Both travel the same road as a size step (`chartFontFromRun` →
+   * `writeLabelFonts` → `labelHomeFor`), so what these prove is that the road
+   * carries them: that the override lands on the narrowest node, survives a
+   * recompile, and does not touch the label next to it.
+   */
+  const runOf = (slide: Slide, suffix: string) => {
+    const el = slide.elements.find((e) => e.id.endsWith(suffix));
+    return el && el.type === 'text' ? el.body.paragraphs[0].runs[0] : undefined;
+  };
+
+  it('bolds ONE data label, as a point override, and leaves its neighbours roman', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const one = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0' && e.chartRef.point === 'c1',
+    )!;
+
+    applyChartTextFormat(slide, [one.id], DS, () => ({ bold: true }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].pointOverrides?.c1?.label?.font?.bold).toBe(true);
+    expect(runOf(slide, '::label.s0.c1')?.bold).toBe(true);
+    // The chart-wide node is untouched, so every other label is unaffected.
+    expect(spec.decorations.labels.font?.bold).toBeUndefined();
+    expect(runOf(slide, '::label.s0.c2')?.bold).not.toBe(true);
+  });
+
+  it('italicizes ONE data label, and keeps it across a recompile', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const one = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0' && e.chartRef.point === 'c1',
+    )!;
+
+    applyChartTextFormat(slide, [one.id], DS, () => ({ italic: true }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].pointOverrides?.c1?.label?.font?.italic).toBe(true);
+    expect(runOf(slide, '::label.s0.c1')?.italic).toBe(true);
+    expect(runOf(slide, '::label.s0.c2')?.italic).not.toBe(true);
+
+    // A resize is a recompile — the thing that used to eat formatting written
+    // onto the emitted element rather than into the spec.
+    resizeChartFrames(slide, [one.id], inchesToEmu(1), inchesToEmu(1), DS, inchesToEmu(1));
+    expect(runOf(slide, '::label.s0.c1')?.italic).toBe(true);
+  });
+
+  it('bold and italic compose on one label rather than replacing each other', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const one = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0' && e.chartRef.point === 'c1',
+    )!;
+
+    applyChartTextFormat(slide, [one.id], DS, () => ({ bold: true }));
+    applyChartTextFormat(slide, [one.id], DS, () => ({ italic: true }));
+    const run = runOf(slide, '::label.s0.c1');
+    expect(run?.bold).toBe(true);
+    expect(run?.italic).toBe(true);
+  });
+
+  it('turns italic back OFF explicitly, rather than leaving it inherited', () => {
+    // `false` has to survive as `false`: `fontOver` checks `!== undefined`, so a
+    // cleared flag is what turns off an italic coming from the series or chart.
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const one = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0' && e.chartRef.point === 'c1',
+    )!;
+
+    applyChartTextFormat(slide, [one.id], DS, () => ({ italic: true }));
+    applyChartTextFormat(slide, [one.id], DS, () => ({ italic: false }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].pointOverrides?.c1?.label?.font?.italic).toBe(false);
+    expect(runOf(slide, '::label.s0.c1')?.italic).toBe(false);
+  });
+
+  it('italicizes a whole series when every one of its labels is selected', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const ids = slide.elements
+      .filter((e) => e.chartRef?.part === 'label' && e.chartRef.series === 's0')
+      .map((e) => e.id);
+
+    applyChartTextFormat(slide, ids, DS, () => ({ italic: true }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].labels?.font?.italic).toBe(true);
+    // Scoped to the series, not scattered across point overrides.
+    expect(spec.data.series[0].pointOverrides).toBeUndefined();
+  });
+
   it('writes to the series when every one of its labels is selected', () => {
     const slide = emptySlide();
     insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
@@ -858,7 +950,17 @@ describe('applyChartTextFormat', () => {
 describe('chartFontFromRun', () => {
   it('keeps what a chart can store and drops what it cannot', () => {
     expect(chartFontFromRun({ sizePt: 14, bold: true })).toEqual({ sizePt: 14, bold: true });
-    expect(chartFontFromRun({ italic: true, underline: true })).toBeNull();
+    // Italic is storable now — `LabelFont` carries it, so ⌘I on a label reaches
+    // the spec. Underline and a numeric weight still have no home there.
+    expect(chartFontFromRun({ italic: true })).toEqual({ italic: true });
+    expect(chartFontFromRun({ underline: true, weight: 500 })).toBeNull();
+  });
+
+  it('carries an explicit false through, so a flag can be turned OFF', () => {
+    // `fontOver` gates on `!== undefined`, so `false` is the only way to clear
+    // an italic inherited from the series or the chart.
+    expect(chartFontFromRun({ italic: false })).toEqual({ italic: false });
+    expect(chartFontFromRun({ bold: false })).toEqual({ bold: false });
   });
 });
 

@@ -58,6 +58,15 @@ const MARK_GAP_IN = 0.1;
 const TITLE_GAP_IN = 0.07;
 /** Leading the renderer gives an unspaced paragraph. */
 const LINE_HEIGHT = 1.25;
+/**
+ * Where the mark's centre sits in that line, as a fraction of it.
+ *
+ * NOT 0.5. The type is top-anchored and all caps, so the ink it actually puts
+ * on the slide is the cap band in the UPPER part of the line box — the descender
+ * space under the baseline stays empty. Centring the square on the box therefore
+ * hangs it below the caps beside it; this lifts it onto them.
+ */
+const MARK_CENTER = 0.42;
 
 /** The type role an eyebrow is sized from — the deck's smallest. */
 const typeOf = (ds: DesignSystem) => ds.type.caption;
@@ -170,9 +179,9 @@ export function makeEyebrow(
     role: EYEBROW_MARK_ROLE,
     name: 'Eyebrow mark',
     preset: 'rect',
-    // Optically centred on the line of type beside it rather than sitting on
-    // its box top, where it would read as floating above the words.
-    rect: { x: origin.x, y: origin.y + Math.round((lineH - mark) / 2), w: mark, h: mark },
+    // Optically centred on the CAPS beside it (see MARK_CENTER) rather than on
+    // the line box, which would sit it low against the empty descender space.
+    rect: { x: origin.x, y: origin.y + Math.round(lineH * MARK_CENTER - mark / 2), w: mark, h: mark },
     fill: { kind: 'solid', color: ink },
     groupIds: [gid],
   };
@@ -204,6 +213,11 @@ export function makeEyebrow(
               text: '',
               font: EYEBROW_FONT,
               sizePt: role.sizePt,
+              // Explicitly regular, not merely unset: typing into the empty
+              // paragraph inherits this run, and an eyebrow left at whatever
+              // bold the caret was last carrying is the wrong weight for caps
+              // at this size (see EYEBROW_FONT).
+              bold: false,
               caps: true,
               color: ink,
             },

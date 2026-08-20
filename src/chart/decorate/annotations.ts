@@ -7,11 +7,18 @@
  * the chart or reorder the categories and the annotation follows, still saying
  * something true. An arrow drawn as a shape is a claim that silently goes stale.
  */
-import { pointsToEmu, type Anchor, type ChartSpec, type EMU, type Rect } from '@/model';
+import {
+  pointsToEmu,
+  type Anchor,
+  type ChartSpec,
+  type EMU,
+  type LabelFont,
+  type Rect,
+} from '@/model';
 import type { TextMeasurer } from '@/render/measureText';
 import { lineHeightEmu } from '@/render/measureText';
 import type { LinearScale } from '../scale/linear';
-import type { ChartTheme } from '../theme';
+import { fontOver, type ChartTheme } from '../theme';
 import type { Mark } from '../mark';
 import { rectFromEdges } from '../mark';
 import { formatNumber } from '../format/number';
@@ -29,7 +36,18 @@ export interface DecorateInput {
   measurer: TextMeasurer;
   /** 0..1 category positions, from whichever placer is in charge. */
   centers: number[];
+  /**
+   * The secondary value axis and the series on it, when the chart has one. An
+   * annotation follows its data, so an arrow on a right-axis line has to be
+   * projected through that line's scale — through the primary's it would point
+   * into empty space.
+   */
+  secondary?: { keys: ReadonlySet<string>; proj: Projector; scale: LinearScale } | null;
 }
+
+/** The projector a series is drawn with — the secondary one only if it's on it. */
+const projFor = (input: DecorateInput, seriesKey: string): Projector =>
+  input.secondary?.keys.has(seriesKey) ? input.secondary.proj : input.proj;
 
 interface ResolvedPoint {
   /** Absolute EMU on the slide. */
@@ -49,7 +67,11 @@ interface ResolvedPoint {
  * the wrong bar, which is the one failure mode worse than not drawing it.
  */
 function resolve(anchor: Anchor, input: DecorateInput): ResolvedPoint | null {
-  const { derived, proj, centers } = input;
+  const { derived, centers } = input;
+  const proj =
+    anchor.at === 'point' || anchor.at === 'segmentTop'
+      ? projFor(input, anchor.series)
+      : input.proj;
 
   const place = (index: number, value: number): ResolvedPoint => {
     const along = proj.category(centers[index] ?? 0);
@@ -104,7 +126,11 @@ function referenceLine(
   line: ChartSpec['decorations']['referenceLines'][number],
   input: DecorateInput,
 ): Mark[] {
-  const { chartId, proj, theme, measurer } = input;
+  const { chartId, theme, measurer } = input;
+  // A reference line names a value ON an axis, so which axis it is matters:
+  // "target 20%" against the right-hand scale is a different height on the plot
+  // to 20 against the left's.
+  const proj = line.axis === 'y2' && input.secondary ? input.secondary.proj : input.proj;
   const { plot, horizontal } = proj;
   const at = proj.value(line.value);
   const color = line.style?.color ?? theme.axisLine;
@@ -122,7 +148,14 @@ function referenceLine(
   ];
 
   if (line.label) {
-    const style = textStyle({ ...theme.text.dataLabel, color }, 'right', 'middle');
+    // The label's ink defaults to the rule's, so recolouring the line carries
+    // its label with it — but an explicit font colour wins, which is the whole
+    // point of the override.
+    const style = textStyle(
+      { ...theme.text.dataLabel, color, ...fontOver(line.font) },
+      'right',
+      'middle',
+    );
     const w = measurer.measure(line.label, style).wEmu + pointsToEmu(2);
     const h = lineHeightEmu(style);
     marks.push({
@@ -145,7 +178,8 @@ function trendLine(
   trend: ChartSpec['decorations']['trendLines'][number],
   input: DecorateInput,
 ): Mark[] {
-  const { chartId, derived, proj, theme, centers } = input;
+  const { chartId, derived, theme, centers } = input;
+  const proj = projFor(input, trend.series);
   const points = derived.data
     .filter((d) => d.seriesKey === trend.series && d.value !== null)
     .sort((a, b) => a.pointIndex - b.pointIndex);
@@ -226,7 +260,7 @@ function cagrArrow(
       ? 'n/m'
       : `CAGR ${formatNumber(rate, arrow.numberFormat ?? { style: 'percent', decimals: 1 }, { peers: [rate] }).text}`);
 
-  return connector(input, arrow.id, a, b, label, { arrowhead: true });
+  return connector(input, arrow.id, a, b, label, { arrowhead: true, font: arrow.font });
 }
 
 function differenceArrow(
@@ -255,6 +289,7 @@ function differenceArrow(
   return connector(input, arrow.id, a, b, arrow.label ?? parts.join(' · '), {
     arrowhead: !arrow.bracket,
     bracket: arrow.bracket,
+    font: arrow.font,
   });
 }
 
@@ -272,7 +307,7 @@ function connector(
   a: ResolvedPoint,
   b: ResolvedPoint,
   label: string,
-  opts: { arrowhead?: boolean; bracket?: boolean },
+  opts: { arrowhead?: boolean; bracket?: boolean; font?: LabelFont },
 ): Mark[] {
   const { chartId, theme, measurer } = input;
   const color = theme.text.dataLabel.color;
@@ -302,7 +337,11 @@ function connector(
   }
 
   if (label) {
-    const style = textStyle({ ...theme.text.totalLabel, color }, 'center', 'middle');
+    const style = textStyle(
+      { ...theme.text.totalLabel, color, ...fontOver(opts.font) },
+      'center',
+      'middle',
+    );
     const w = measurer.measure(label, style).wEmu + pointsToEmu(6);
     const h = lineHeightEmu(style);
     const mx = (a.x + b.x) / 2;
@@ -361,7 +400,7 @@ function annotation(
   const at = resolve(note.anchor, input);
   if (!at) return [];
 
-  const style = textStyle(theme.text.dataLabel, 'left', 'middle');
+  const style = textStyle({ ...theme.text.dataLabel, ...fontOver(note.font) }, 'left', 'middle');
   const w = measurer.measure(note.text, style).wEmu + pointsToEmu(4);
   const h = lineHeightEmu(style);
   const x = at.x + note.offset.dx;

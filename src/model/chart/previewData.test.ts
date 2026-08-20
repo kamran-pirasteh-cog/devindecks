@@ -12,7 +12,9 @@ import {
   setPreviewValue,
   type ChartPreviewData,
   type ColumnBarSpec,
+  type ComboSpec,
   type WaterfallSpec,
+  setPreviewSecondary,
 } from '@/model';
 
 const data: ChartPreviewData = {
@@ -101,6 +103,39 @@ describe('applyPreviewData', () => {
   });
 });
 
+describe('applyPreviewData — the combo line', () => {
+  const combo = (d: ChartPreviewData) =>
+    applyPreviewData(defaultChartSpec('combo'), d) as ComboSpec;
+
+  it('draws the table as columns and the secondary row as the line', () => {
+    const spec = combo({ ...data, secondary: { name: 'Margin %', values: [10, 11, 12, 13] } });
+    expect(spec.data.series.map((s) => s.name)).toEqual(['ARR', 'Services', 'Margin %']);
+    // Exactly one line, and it is the row that was typed as one.
+    expect(spec.render).toEqual({ s2: 'line' });
+    expect(spec.data.series[2]).toMatchObject({ axis: 'secondary', values: [10, 11, 12, 13] });
+    expect(spec.data.series.slice(0, 2).every((s) => s.axis === undefined)).toBe(true);
+  });
+
+  it('pads the line to the categories, as any other row is padded', () => {
+    const spec = combo({ ...data, secondary: { name: 'Rate', values: [1] } });
+    expect(spec.data.series[2].values).toEqual([1, null, null, null]);
+  });
+
+  it('falls back to the built-in rate rather than a combo with no line', () => {
+    const spec = combo({ categories: ['a'], series: [{ name: 'S', values: [1] }] });
+    expect(spec.data.series).toHaveLength(2);
+    expect(spec.data.series[1].axis).toBe('secondary');
+  });
+
+  it('leaves the row alone for kinds with one value axis', () => {
+    const spec = applyPreviewData(defaultChartSpec('column', 'stacked'), {
+      ...data,
+      secondary: { name: 'Margin %', values: [10, 11, 12, 13] },
+    }) as ColumnBarSpec;
+    expect(spec.data.series.map((s) => s.name)).toEqual(['ARR', 'Services']);
+  });
+});
+
 describe('editing the preview data', () => {
   it('grows every series when a row is added, so the table stays rectangular', () => {
     const next = addPreviewCategory(data);
@@ -130,6 +165,23 @@ describe('editing the preview data', () => {
     const next = setPreviewValue(data, 1, 2, 99);
     expect(next.series[1].values).toEqual([1, 2, 99, 4]);
     expect(next.series[0].values).toEqual(data.series[0].values);
+  });
+
+  it('keeps the secondary row rectangular when a row is added or removed', () => {
+    const d = setPreviewSecondary(data, { name: 'Margin %', at: 0, value: 9 });
+    expect(addPreviewCategory(d).secondary?.values).toHaveLength(5);
+    expect(removePreviewCategory(d, 0).secondary?.values).toEqual([null, null, null]);
+  });
+
+  it('writes the secondary row without inventing values for the rest of it', () => {
+    const d = setPreviewSecondary(data, { at: 2, value: 7 });
+    expect(d.secondary?.values).toEqual([null, null, 7, null]);
+    expect(setPreviewSecondary(d, { name: 'Rate' }).secondary?.values).toEqual([
+      null,
+      null,
+      7,
+      null,
+    ]);
   });
 
   it('takes null for a cell, since a gap is a thing worth previewing', () => {

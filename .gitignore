@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Real client decks used by `npm run validate:brand` — never committed.
+fixtures/brand-corpus/*
+!fixtures/brand-corpus/README.md

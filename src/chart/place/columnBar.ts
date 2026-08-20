@@ -36,24 +36,48 @@ export interface ColumnBarInput {
    * mean the same thing they do everywhere else; only the data is scoped.
    */
   onlySeries?: Set<string>;
+  /**
+   * The series that SHARE the category band, in drawing order — a combo's
+   * column members, where the chart's other series are lines drawn over them.
+   *
+   * Unset means every series in `derived`, which is right for a plain column
+   * chart. Passing it is what stops a clustered combo from reserving an empty
+   * slot in each cluster for a series that isn't a bar at all.
+   */
+  bandSeries?: string[];
 }
 
 /** 0..1 centres of each category, for the shared axis furniture. */
 export function categoryCenters(spec: ColumnBarSpec, derived: GridDerived): number[] {
+  // Band CENTRES don't depend on how many bars share the band, so this needs
+  // no `bandSeries` — see `bandScale`.
   const band = bandFor(spec, derived);
   return derived.categoryLabels.map((_, i) => band.center(i));
 }
 
-function bandFor(spec: ColumnBarSpec, derived: GridDerived) {
+function bandFor(spec: ColumnBarSpec, derived: GridDerived, bandSeries?: string[]) {
   const stacked = spec.stack !== 'clustered';
   return bandScale({
     count: derived.categoryLabels.length,
     // A stack IS one bar — the series live inside it, not beside it.
-    seriesCount: stacked ? 1 : derived.series.length,
+    seriesCount: stacked ? 1 : (bandSeries?.length ?? derived.series.length),
     gapWidthPct: spec.gapWidthPct,
     overlapPct: stacked ? 100 : spec.overlapPct,
   });
 }
+
+/**
+ * Which slot in the band this series occupies.
+ *
+ * Its position among the BARS, not among the series: a combo whose second
+ * series is a line has its third series sitting in slot 1, right beside the
+ * first, rather than leaving a bar-shaped hole where the line's slot would be.
+ */
+const slotOf = (input: ColumnBarInput, seriesKey: string, seriesIndex: number): number => {
+  if (!input.bandSeries) return seriesIndex;
+  const i = input.bandSeries.indexOf(seriesKey);
+  return i < 0 ? 0 : i;
+};
 
 /** Drop the data of the series this placer was told to leave alone. */
 function scopeToSeries(input: ColumnBarInput): ColumnBarInput {
@@ -103,7 +127,7 @@ export function placeColumnBar(rawInput: ColumnBarInput): Mark[] {
   const input = scopeToSeries(rawInput);
   const { chartId, spec, derived, proj, theme } = input;
   const { horizontal } = proj;
-  const band = bandFor(spec, derived);
+  const band = bandFor(spec, derived, input.bandSeries);
   const stacked = spec.stack !== 'clustered';
   const marks: Mark[] = [];
 
@@ -113,7 +137,7 @@ export function placeColumnBar(rawInput: ColumnBarInput): Mark[] {
     const point = overrideFor(derived, d.seriesIndex, d.pointKey);
     if (point?.hidden) continue;
 
-    const seriesSlot = stacked ? 0 : d.seriesIndex;
+    const seriesSlot = stacked ? 0 : slotOf(input, d.seriesKey, d.seriesIndex);
     const c0 = band.barStart(d.pointIndex, seriesSlot);
     const c1 = c0 + band.barWidth;
     const catA = proj.category(c0);
@@ -199,7 +223,7 @@ function placeDataLabels(
     const h = lineHeightEmu(style);
     const w = measurer.measure(text, style).wEmu + pointsToEmu(2);
 
-    const seriesSlot = stacked ? 0 : d.seriesIndex;
+    const seriesSlot = stacked ? 0 : slotOf(input, d.seriesKey, d.seriesIndex);
     const c0 = band.barStart(d.pointIndex, seriesSlot);
     const centreCat = proj.category(c0 + band.barWidth / 2);
     const valA = proj.value(d.base);

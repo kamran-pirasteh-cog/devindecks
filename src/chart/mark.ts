@@ -28,6 +28,7 @@ export interface MarkTextStyle {
   font: FontFamily;
   sizePt: number;
   bold?: boolean;
+  italic?: boolean;
   /** Face between regular and bold, e.g. Medium 500 for a data label. */
   weight?: number;
   color: ColorRef;
@@ -58,6 +59,14 @@ export type Mark =
       dash: DashStyle;
       /** Set when the line runs bottom-left to top-right within its box. */
       flipV?: boolean;
+      /**
+       * An arrowhead at the far end.
+       *
+       * `LineElement` has carried `startArrow`/`endArrow` all along; no placer
+       * had wanted one until a Gantt's dependency links, where the head IS the
+       * direction of the dependency. Passed straight through by `emitMark`.
+       */
+      endArrow?: boolean;
       name?: string;
     }
   | {

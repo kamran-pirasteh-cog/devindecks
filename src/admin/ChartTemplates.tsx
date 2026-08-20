@@ -55,8 +55,10 @@ const NEW_KINDS: ChartKind[] = [
   'pie',
   'waterfall',
   'mekko',
+  'dotplot',
   'scatter',
   'bubble',
+  'gantt',
 ];
 
 export function ChartTemplates({ ds }: { ds: DesignSystem }) {
@@ -132,7 +134,7 @@ export function ChartTemplates({ ds }: { ds: DesignSystem }) {
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
             {category}
           </div>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-5">
             {(byCategory.get(category) ?? []).map((t) => (
               <ChartTemplateCard key={t.id} template={t} ds={ds} onChange={refresh} />
             ))}

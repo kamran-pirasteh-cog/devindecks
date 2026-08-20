@@ -102,7 +102,13 @@ export const DECK_TOOLS: Anthropic.Tool[] = [
         italic: { type: 'boolean' },
         align: { type: 'string', enum: ['left', 'center', 'right', 'justify'] },
         color: COLOR,
-        role: { type: 'string', description: 'e.g. "title", "subtitle", "body", "caption".' },
+        role: {
+          type: 'string',
+          description:
+            'A design-system type role the new text is set in: "title", "subtitle", "heading", ' +
+            '"body", "caption", "kpiValue", or an id the brand has added. Unknown names fall ' +
+            'back to body.',
+        },
         bullet: { type: 'string', enum: ['none', 'bullet', 'number'] },
       },
       required: ['text', 'x_in', 'y_in', 'w_in'],
@@ -230,6 +236,50 @@ export const DECK_TOOLS: Anthropic.Tool[] = [
       type: 'object',
       properties: { ids: IDS },
       required: ['ids'],
+    },
+  },
+  {
+    name: 'preview_number_refresh',
+    description:
+      'Work out what a refresh CSV would do to this deck, WITHOUT changing anything. Always call ' +
+      'this before apply_number_refresh. Returns, per row: what would change, what is already ' +
+      'up to date, what could not be applied and why, and which figures in the deck the CSV ' +
+      'never mentions. Anything it reports as needing a decision must be put to the user before ' +
+      'you apply — a figure written into the wrong place is worse than one left stale.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        csv_id: {
+          type: 'string',
+          description:
+            'The id from the attachment marker in the user\'s message (e.g. "att_1"). The file ' +
+            'itself is held outside the conversation so its numbers cannot be mistyped.',
+        },
+      },
+      required: ['csv_id'],
+    },
+  },
+  {
+    name: 'apply_number_refresh',
+    description:
+      'Write a refresh CSV into the deck: chart figures into their series, and figures stated in ' +
+      'text replaced inside the sentence in the shape they were written in ("$4.2M" becomes ' +
+      '"$4.9M"). Formatting, wording and layout are untouched, and the whole refresh is one ⌘Z. ' +
+      'Only rows that can be applied exactly are applied; the rest come back for the user. Call ' +
+      'preview_number_refresh first and only apply once the user has answered anything it flagged.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        csv_id: { type: 'string', description: 'The attachment id, as for preview_number_refresh.' },
+        refs: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional: apply only these refs, copied character for character from the preview. ' +
+            'Omit to apply every row that the preview showed as a clean change.',
+        },
+      },
+      required: ['csv_id'],
     },
   },
   {

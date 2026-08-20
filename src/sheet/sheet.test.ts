@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   cellText,
   defaultChartSpec,
+  EMPTY,
   sheetFromSpec,
   sheetSchemaFor,
   specFromSheet,
   parseGrain,
+  setChartOrientation,
   type ChartSpec,
   type ColumnBarSpec,
+  type ComboSpec,
+  type DotPlotSpec,
   type ScatterSpec,
   type SheetModel,
   type WaterfallSpec,
@@ -227,6 +231,73 @@ describe('sheetSchemaFor', () => {
       { key: 'c1', label: '2024-02' },
     ];
     expect(sheetSchemaFor(spec).keyColumns[0].type).toBe('date');
+  });
+});
+
+describe('per-datum captions', () => {
+  const dot = () => defaultChartSpec('dotplot') as DotPlotSpec;
+
+  it('gives a dot plot a caption column beside every series, and nothing else one', () => {
+    const s = sheetSchemaFor(dot());
+    expect(s.perSeries.map((c) => c.key)).toEqual(['value', 'note']);
+    expect(sheetSchemaFor(column()).perSeries.map((c) => c.key)).toEqual(['value']);
+    // The figure column stays titled by its series; only the caption says which
+    // field it is.
+    const sheet = sheetFromSpec(dot());
+    expect(sheet.columns.map((c) => c.header)).toEqual([
+      'Category',
+      'FY23',
+      'FY23 Note',
+      'Today',
+      'Today Note',
+      'FY26 plan',
+      'FY26 plan Note',
+    ]);
+  });
+
+  it('round-trips a caption through the sheet and onto the point it dates', () => {
+    const spec = dot();
+    spec.data.series[1].pointOverrides = { c0: { note: 'Q2 FY26' } };
+    const sheet = sheetFromSpec(spec);
+    expect(cellText(sheet.rows[0][4])).toBe('Q2 FY26');
+    expect(cellText(sheet.rows[1][4])).toBe('');
+
+    const typed = setCell(sheet, 1, 4, { kind: 'text', text: 'Q3 FY26' });
+    const { spec: next, diagnostics } = specFromSheet(typed, spec);
+    expect(diagnostics).toEqual([]);
+    const series = (next as DotPlotSpec).data.series[1];
+    expect(series.pointOverrides).toEqual({ c0: { note: 'Q2 FY26' }, c1: { note: 'Q3 FY26' } });
+    // The figures are untouched by the column beside them.
+    expect(series.values).toEqual([58, 40, 22]);
+  });
+
+  it('clears a caption when its cell is emptied, and leaves other overrides alone', () => {
+    const spec = dot();
+    spec.data.series[0].pointOverrides = {
+      c0: { note: 'FY23' },
+      c1: { note: 'FY23', hidden: true },
+    };
+    const sheet = sheetFromSpec(spec);
+    const cleared = setCell(setCell(sheet, 0, 2, EMPTY), 1, 2, EMPTY);
+    const { spec: next } = specFromSheet(cleared, spec);
+    // The caption-only override goes entirely; the hidden point keeps its flag.
+    expect((next as DotPlotSpec).data.series[0].pointOverrides).toEqual({ c1: { hidden: true } });
+  });
+
+  it('keeps the caption column when the chart is stood up and the sheet turns', () => {
+    const spec = setChartOrientation(dot(), 'vertical') as DotPlotSpec;
+    spec.data.series[2].pointOverrides = { c1: { note: 'FY27' } };
+    const sheet = sheetFromSpec(spec);
+    // Transposed: a row is a series, and each category brings a pair of columns.
+    expect(sheet.schema.layout).toBe('seriesDown');
+    expect(sheet.rows[2].map(cellText)).toEqual(['FY26 plan', '67', '', '49', 'FY27', '26', '']);
+
+    // Row 0 is the FY23 series; c2 brings the fifth and sixth columns, and the
+    // caption is the second of the pair.
+    const typed = setCell(sheet, 0, 1 + 2 * 2 + 1, { kind: 'text', text: 'FY23' });
+    const { spec: next, diagnostics } = specFromSheet(typed, spec);
+    expect(diagnostics).toEqual([]);
+    expect((next as DotPlotSpec).data.series[0].pointOverrides).toEqual({ c2: { note: 'FY23' } });
   });
 });
 
@@ -505,6 +576,81 @@ describe('sheetOps — fill and clear', () => {
     const s = sheetOf();
     const filled = fillRange(s, { anchor: { r: 0, c: 1 }, focus: { r: 0, c: 3 } }, 'right');
     expect(at(filled, 0, 3)).toBe(at(s, 0, 1));
+  });
+
+  it('grows the sheet to reach a fill that runs past the data', () => {
+    const s = sheetOf();
+    const rows = s.rows.length;
+    const filled = fillRange(s, { anchor: { r: 0, c: 1 }, focus: { r: rows + 1, c: 1 } }, 'down');
+    expect(filled.rows).toHaveLength(rows + 2);
+    expect(at(filled, rows + 1, 1)).toBe(at(s, 0, 1));
+  });
+
+  it('coerces a filled value into the column it lands in', () => {
+    // A label filled sideways into a number column keeps the text and is
+    // flagged, rather than being dropped on the floor.
+    const s = sheetOf();
+    const filled = fillRange(s, { anchor: { r: 0, c: 0 }, focus: { r: 0, c: 2 } }, 'right');
+    expect(filled.rows[0][1].kind).toBe('invalid');
+    expect(at(filled, 0, 1)).toBe(at(s, 0, 0));
+  });
+
+  it('leaves a one-row fill alone', () => {
+    const s = sheetOf();
+    expect(fillRange(s, { anchor: { r: 1, c: 1 }, focus: { r: 1, c: 1 } }, 'down')).toBe(s);
+  });
+});
+
+describe('a combo chart in the datasheet', () => {
+  const combo = () => {
+    const spec = defaultChartSpec('combo') as ComboSpec;
+    // The line is the FIRST series here, which is the case worth testing: the
+    // sheet has to move it rather than just happening to show it last.
+    spec.render = { [spec.data.series[0].key]: 'line' };
+    return spec;
+  };
+
+  it('sinks the line row below the columns and marks it', () => {
+    const spec = combo();
+    const names = spec.data.series.map((x) => x.name);
+    const sheet = sheetFromSpec(spec);
+
+    expect(sheet.schema.layout).toBe('seriesDown');
+    expect(sheet.rows.map((r) => cellText(r[0]))).toEqual([...names.slice(1), names[0]]);
+    expect(sheet.rowMarks).toEqual([undefined, undefined, 'Line']);
+  });
+
+  it('marks nothing on a chart whose series are all drawn the same way', () => {
+    expect(sheetFromSpec(column()).rowMarks).toBeUndefined();
+  });
+
+  it('writes the reordered rows back onto the right series', () => {
+    const spec = combo();
+    const line = spec.data.series[0];
+    const sheet = sheetFromSpec(spec);
+    const edited = setCell(sheet, 2, 1, { kind: 'number', n: 42 });
+    const out = specFromSheet(edited, spec).spec as ComboSpec;
+
+    // The line keeps its key — so its `render` entry still finds it — and the
+    // edit lands on the line's own first value, not on a column series'.
+    const moved = out.data.series[out.data.series.length - 1];
+    expect(moved.key).toBe(line.key);
+    expect(moved.name).toBe(line.name);
+    expect(moved.values[0]).toBe(42);
+    expect(out.render[line.key]).toBe('line');
+    // Settled: the spec now holds the order the sheet was already showing.
+    expect(sheetFromSpec(out).rowMarks).toEqual([undefined, undefined, 'Line']);
+  });
+
+  it('badges the line column when the sheet is not transposed', () => {
+    const spec = combo();
+    // A horizontal combo runs its categories down the side, so the series stay
+    // in columns — and the badge goes on the header instead of the row.
+    spec.orientation = 'horizontal';
+    const sheet = sheetFromSpec(spec);
+    expect(sheet.schema.layout).toBe('recordsDown');
+    expect(sheet.series.map((x) => x.badge)).toEqual([undefined, undefined, 'Line']);
+    expect(sheet.columns.filter((c) => c.badge === 'Line')).toHaveLength(1);
   });
 });
 

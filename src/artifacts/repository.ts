@@ -19,26 +19,51 @@ import { defineCollection } from '@/platform/collection';
 import { localStorageAdapter } from '@/platform/store';
 
 export type ArtifactFolderId =
+  | 'images'
   | 'cognition-logos'
   | 'client-logos'
   | 'cognition-brand-graphics'
   | 'icons'
   | 'team-photos'
-  | 'case-studies';
+  | 'case-studies'
+  | 'product-content'
+  | 'industry-credentials';
 
 export interface ArtifactFolder {
   id: ArtifactFolderId;
   name: string;
+  /**
+   * Set on a subfolder. A folder with children is a grouping only — artifacts
+   * live in the leaves, which is what keeps `folderId` a single unambiguous
+   * classification and leaves no "in the parent, not a child" state to sort out.
+   */
+  parentId?: ArtifactFolderId;
 }
 
 export const ARTIFACT_FOLDERS: ArtifactFolder[] = [
-  { id: 'cognition-logos', name: 'Cognition Logos' },
-  { id: 'client-logos', name: 'Client Logos' },
-  { id: 'cognition-brand-graphics', name: 'Cognition Brand Graphics' },
+  { id: 'images', name: 'Images' },
+  { id: 'client-logos', name: 'Client Logos', parentId: 'images' },
+  { id: 'cognition-logos', name: 'Cognition Logos', parentId: 'images' },
+  { id: 'cognition-brand-graphics', name: 'Cognition Graphics', parentId: 'images' },
+  { id: 'team-photos', name: 'Team Photos', parentId: 'images' },
   { id: 'icons', name: 'Icons' },
-  { id: 'team-photos', name: 'Team Photos' },
   { id: 'case-studies', name: 'Case Studies' },
+  { id: 'product-content', name: 'Product Content' },
+  { id: 'industry-credentials', name: 'Industry Credentials' },
 ];
+
+/** The folders shown at the top of the library. */
+export const ROOT_ARTIFACT_FOLDERS = ARTIFACT_FOLDERS.filter((f) => !f.parentId);
+
+/** Subfolders of `id`, in declaration order. Empty for a leaf folder. */
+export function childFolders(id: ArtifactFolderId): ArtifactFolder[] {
+  return ARTIFACT_FOLDERS.filter((f) => f.parentId === id);
+}
+
+/** Only leaves take uploads — see the note on `ArtifactFolder.parentId`. */
+export function isLeafFolder(id: ArtifactFolderId): boolean {
+  return childFolders(id).length === 0;
+}
 
 export interface StoredArtifact {
   id: string;
@@ -165,7 +190,11 @@ export function listArtifacts(folderId: ArtifactFolderId): StoredArtifact[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-/** Item counts for every folder, for the folder-grid subtitles. */
+/**
+ * Item counts for every folder, for the folder-grid subtitles. A parent's count
+ * rolls up its children, so "Images" reads as the size of everything under it
+ * rather than the zero it holds directly.
+ */
 export function countByFolder(): Record<ArtifactFolderId, number> {
   // Derived from the folder list so a new folder can't be missed here.
   const counts = Object.fromEntries(
@@ -173,6 +202,9 @@ export function countByFolder(): Record<ArtifactFolderId, number> {
   ) as Record<ArtifactFolderId, number>;
   for (const a of Object.values(read())) {
     if (a.folderId in counts) counts[a.folderId] += 1;
+  }
+  for (const folder of ARTIFACT_FOLDERS) {
+    if (folder.parentId) counts[folder.parentId] += counts[folder.id];
   }
   return counts;
 }

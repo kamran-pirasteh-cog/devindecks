@@ -54,6 +54,7 @@ import {
 import { compileChart } from '@/chart/compile';
 import { snapQuarterTurn } from '@/chart/turn';
 import { nextRotation, normalizeDeg } from '@/editor/rotateStep';
+import { groupMemberRect, groupScaleFactor } from '@/editor/groupResize';
 import {
   applyChartFormat,
   applyChartTextFormat,
@@ -71,6 +72,7 @@ import {
   removeChartFrom,
   repairChartSelection,
   resizeChartFrames,
+  scaleChartFrames,
   syncChartGeometry,
   translateChartFrames,
 } from './chartActions';
@@ -93,13 +95,7 @@ import {
   STICKY_TEXT_ROLE,
 } from '@/editor/sticky';
 
-export type AlignMode =
-  | 'left'
-  | 'hcenter'
-  | 'right'
-  | 'top'
-  | 'vcenter'
-  | 'bottom';
+export type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
 
 /**
  * PowerPoint's "increase/decrease font size" buttons step through this preset
@@ -123,7 +119,7 @@ function nextFontSize(current: number, dir: 'up' | 'down'): number {
 const PASTE_STEP = inchesToEmu(0.1);
 
 /** A detached deep copy — the deck holds only plain JSON, so this is enough. */
-const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 /**
  * A detached, freshly identified copy of a slide — what a duplicate or a slide
@@ -290,14 +286,14 @@ export interface EditorState {
   updateElement: (id: string, patch: Partial<SlideElement>, transient?: boolean) => void;
   setRect: (id: string, rect: Rect, transient?: boolean) => void;
   /** Commit several boxes at once (a group transform) as ONE history step. */
-  setRects: (
-    rects: { id: string; rect: Rect; rotation?: number }[],
-    transient?: boolean,
-  ) => void;
+  setRects: (rects: { id: string; rect: Rect; rotation?: number }[], transient?: boolean) => void;
   moveBy: (ids: string[], dx: EMU, dy: EMU, transient?: boolean) => void;
   /**
-   * Grow or shrink each box by the same amount, top-left pinned — the keyboard
-   * counterpart to dragging the bottom-right handle.
+   * Grow or shrink the selection by the same amount, top-left pinned — the
+   * keyboard counterpart to dragging the bottom-right handle.
+   *
+   * A GROUP takes the step on its own box and scales its members into it, so it
+   * resizes as one object; loose objects each take the step where they stand.
    *
    * Pictures keep their aspect ratio unless `stretch` says otherwise: see
    * `keepRatioFactor`.
@@ -498,6 +494,33 @@ function pushPast(s: { past: Deck[]; future: Deck[] }, entry: Deck): void {
 const MIN_SIZE: EMU = EMU_PER_POINT * 3.6;
 
 /**
+ * Does this object run edge to edge on either axis — a side band down the
+ * height of the page, a photo bled across its width, a section-divider panel?
+ * Such an object is off the margins deliberately, so `fitToMargins` leaves it
+ * where it is. Measured against the SLIDE, not the safe area, and with a point
+ * of slack at each edge so a rect laid at 0 and one laid a hair past it read
+ * the same.
+ */
+function spansSlide(el: SlideElement | undefined, size: { w: EMU; h: EMU }): boolean {
+  if (!el) return false;
+  const slack = EMU_PER_POINT;
+  const { x, y, w, h } = el.rect;
+  return (x <= slack && x + w >= size.w - slack) || (y <= slack && y + h >= size.h - slack);
+}
+
+/**
+ * True when a selection unit is nothing but one chart's parts — a chart's own
+ * group, which resizes through its frame rather than as a group of shapes.
+ */
+function isWholeChart(slide: Slide, unit: string[], chartIds: Set<string>): boolean {
+  const els = slide.elements.filter((el) => unit.includes(el.id));
+  if (els.length !== unit.length) return false;
+  const ref = els[0]?.chartRef?.chartId;
+  if (!ref || !chartIds.has(ref)) return false;
+  return els.every((el) => el.chartRef?.chartId === ref);
+}
+
+/**
  * The single scale a keep-ratio resize applies, taken from whichever axis the
  * arrow drove.
  *
@@ -591,17 +614,14 @@ function unitBoxes(state: EditorState, ids: string[]) {
  * aligning a lone bar is a part-level edit, and dragging the whole chart after
  * it would be wrong.
  */
-const shiftUnits =
-  (shifts: { ids: string[]; dx: number; dy: number }[]) => (s: EditorState) => {
+const shiftUnits = (shifts: { ids: string[]; dx: number; dy: number }[]) => (s: EditorState) => {
     const slide = slideById(s.deck, s.currentSlideId);
     if (!slide) return;
     for (const { ids, dx, dy } of shifts) {
       if (!dx && !dy) continue;
       const moving = new Set(ids);
       const whole = chartsForElements(slide, ids)
-        .filter((c) =>
-          slide.elements.every((e) => e.chartRef?.chartId !== c.id || moving.has(e.id)),
-        )
+      .filter((c) => slide.elements.every((e) => e.chartRef?.chartId !== c.id || moving.has(e.id)))
         .map((c) => c.id);
       for (const el of slide.elements) {
         if (!ids.includes(el.id)) continue;
@@ -708,9 +728,7 @@ export const useEditor = create<EditorState>()(
       set((s) => {
         const els = slideById(s.deck, s.currentSlideId)?.elements ?? [];
         const grown = expandSelection(els, ids);
-        s.selectedIds = additive
-          ? Array.from(new Set([...s.selectedIds, ...grown]))
-          : grown;
+          s.selectedIds = additive ? Array.from(new Set([...s.selectedIds, ...grown])) : grown;
         if (!additive) s.editingId = null;
       });
     },
@@ -802,7 +820,8 @@ export const useEditor = create<EditorState>()(
           s.slideSelectionAnchor = id;
           return;
         }
-        const [lo, hi] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
+          const [lo, hi] =
+            anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
         s.selectedSlideIds = ids.slice(lo, hi + 1);
         s.currentSlideId = id;
         s.selectedIds = [];
@@ -855,7 +874,6 @@ export const useEditor = create<EditorState>()(
         s.selectedIds = [];
       });
     },
-
 
     /* ---- charts ---- */
 
@@ -997,7 +1015,9 @@ export const useEditor = create<EditorState>()(
 
     duplicateSlides(ids) {
       const { deck, selectedSlideIds, currentSlideId } = get();
-      const wanted = new Set(ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]));
+        const wanted = new Set(
+          ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]),
+        );
       // Deck order, so a multi-slide duplicate keeps the run's own order.
       const sources = deck.slides.filter((sl) => wanted.has(sl.id));
       if (!sources.length) return;
@@ -1031,7 +1051,8 @@ export const useEditor = create<EditorState>()(
         const wasCurrentDeleted = idSet.has(s.currentSlideId);
         s.deck.slides = s.deck.slides.filter((sl) => !idSet.has(sl.id));
         if (wasCurrentDeleted) {
-          s.currentSlideId = s.deck.slides[Math.max(0, Math.min(idx, s.deck.slides.length - 1))].id;
+            s.currentSlideId =
+              s.deck.slides[Math.max(0, Math.min(idx, s.deck.slides.length - 1))].id;
         }
         s.selectedIds = [];
         s.selectedSlideIds = [];
@@ -1062,7 +1083,9 @@ export const useEditor = create<EditorState>()(
 
     copySlides(ids) {
       const { deck, selectedSlideIds, currentSlideId } = get();
-      const wanted = new Set(ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]));
+        const wanted = new Set(
+          ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]),
+        );
       // Deck order, so a multi-slide paste lands in the order it was taken.
       const slides = deck.slides.filter((sl) => wanted.has(sl.id)).map(clone);
       if (!slides.length) return;
@@ -1289,7 +1312,10 @@ export const useEditor = create<EditorState>()(
         }
 
         // Captured before the relayout, which changes the element set.
-        const owned = chartElementIdsBefore(slide, charts.map((c) => c.id));
+          const owned = chartElementIdsBefore(
+            slide,
+            charts.map((c) => c.id),
+          );
 
         for (const chart of charts) {
           syncChartGeometry(slide, chart.id, before.get(chart.id) ?? [], s.designSystem);
@@ -1329,10 +1355,43 @@ export const useEditor = create<EditorState>()(
         const chartIds = new Set(charts.map((c) => c.id));
         // Which ids each chart owned before the relayout renames its parts out
         // from under the selection — see `repairChartSelection`.
-        const owned = chartElementIdsBefore(slide, charts.map((c) => c.id));
+          const owned = chartElementIdsBefore(
+            slide,
+            charts.map((c) => c.id),
+          );
+
+          // A GROUP resizes as ONE object, PowerPoint's behaviour: the group's own
+          // box takes the step and its members take that box's factors — offsets
+          // from the pinned corner included — so the group keeps its shape and its
+          // parts keep their spacing. Growing each member by the whole step
+          // instead, which is what the loop below does, makes them swell into one
+          // another and is only right for LOOSE objects, where PowerPoint likewise
+          // moves nothing (see `individualBox` for the drag side of the same rule).
+          //
+          // A chart is excluded: its parts are one object laid out by the compiler
+          // and it resizes through its frame, exactly as it does when selected
+          // alone.
+          const groupUnits = selectionUnits(slide.elements, ids).filter(
+            (unit) => unit.length > 1 && !isWholeChart(slide, unit, chartIds),
+          );
+          const grouped = new Set(groupUnits.flat());
+
+          for (const unit of groupUnits) {
+            const box = unionRect(slide.elements, unit);
+            if (!box) continue;
+            const sx = groupScaleFactor(box.w, dw, MIN_SIZE);
+            const sy = groupScaleFactor(box.h, dh, MIN_SIZE);
+            const members = new Set(unit);
+            for (const el of slide.elements) {
+              if (!members.has(el.id)) continue;
+              if (el.chartRef && chartIds.has(el.chartRef.chartId)) continue;
+              el.rect = groupMemberRect(box, el.rect, sx, sy);
+            }
+            scaleChartFrames(slide, unit, box, sx, sy, s.designSystem, MIN_SIZE);
+          }
 
         for (const el of slide.elements) {
-          if (!ids.includes(el.id)) continue;
+            if (!ids.includes(el.id) || grouped.has(el.id)) continue;
           if (el.chartRef && chartIds.has(el.chartRef.chartId)) continue;
           // A picture is the one thing a one-axis resize visibly ruins. Its
           // source is fitted to the rect — cover when uncropped, stretched onto
@@ -1354,7 +1413,14 @@ export const useEditor = create<EditorState>()(
           el.rect.h = Math.max(MIN_SIZE, el.rect.h + dh);
         }
 
-        resizeChartFrames(slide, ids, dw, dh, s.designSystem, MIN_SIZE);
+          resizeChartFrames(
+            slide,
+            ids.filter((id) => !grouped.has(id)),
+            dw,
+            dh,
+            s.designSystem,
+            MIN_SIZE,
+          );
         s.selectedIds = repairChartSelection(slide, owned, s.selectedIds);
       });
     },
@@ -1442,7 +1508,11 @@ export const useEditor = create<EditorState>()(
           const copy: SlideElement = JSON.parse(JSON.stringify(el));
           copy.id = `${el.id}-${nanoid(4)}`;
           if (copy.groupIds) copy.groupIds = copy.groupIds.map(remapGid);
-          copy.rect = { ...copy.rect, x: copy.rect.x + dx, y: copy.rect.y + dy };
+            copy.rect = {
+              ...copy.rect,
+              x: copy.rect.x + dx,
+              y: copy.rect.y + dy,
+            };
           sl.elements.push(copy);
           newIds.push(copy.id);
         }
@@ -1544,9 +1614,7 @@ export const useEditor = create<EditorState>()(
         if (!slide) return;
         // A chart part's type belongs to the spec, not to the box the compiler
         // emitted — see `applyChartTextFormat`. Those ids drop out here.
-        const claimed = withChartTextFormat(s, slide, ids, () =>
-          chartFontFromRun(patch),
-        );
+          const claimed = withChartTextFormat(s, slide, ids, () => chartFontFromRun(patch));
         for (const el of slide.elements) {
           if (!ids.includes(el.id) || claimed.has(el.id)) continue;
           const body = el.type === 'text' ? el.body : el.type === 'shape' ? el.body : undefined;
@@ -1660,7 +1728,12 @@ export const useEditor = create<EditorState>()(
       if (!elements.length && !charts.length) return;
 
       set((s) => {
-        s.clipboard = { elements, charts, sourceSlideId: slide.id, pastes: 0 };
+          s.clipboard = {
+            elements,
+            charts,
+            sourceSlideId: slide.id,
+            pastes: 0,
+          };
       });
     },
 
@@ -1701,7 +1774,11 @@ export const useEditor = create<EditorState>()(
           const copy = insertChartInto(
             slide,
             clone(chart.spec),
-            { ...chart.frame, x: chart.frame.x + step, y: chart.frame.y + step },
+              {
+                ...chart.frame,
+                x: chart.frame.x + step,
+                y: chart.frame.y + step,
+              },
             s.designSystem,
           );
           newIds.push(
@@ -1713,7 +1790,11 @@ export const useEditor = create<EditorState>()(
           const copy = clone(el);
           copy.id = `${el.id}-${nanoid(4)}`;
           if (copy.groupIds) copy.groupIds = copy.groupIds.map(remapGid);
-          copy.rect = { ...copy.rect, x: copy.rect.x + step, y: copy.rect.y + step };
+            copy.rect = {
+              ...copy.rect,
+              x: copy.rect.x + step,
+              y: copy.rect.y + step,
+            };
           slide.elements.push(copy);
           newIds.push(copy.id);
         }
@@ -1880,20 +1961,27 @@ export const useEditor = create<EditorState>()(
       }
 
       if (mode === 'hcenter' || mode === 'vcenter') {
-        const lo = mode === 'hcenter'
+          const lo =
+            mode === 'hcenter'
           ? Math.min(...boxes.map((b) => b.r.x))
           : Math.min(...boxes.map((b) => b.r.y));
-        const hi = mode === 'hcenter'
+          const hi =
+            mode === 'hcenter'
           ? Math.max(...boxes.map((b) => b.r.x + b.r.w))
           : Math.max(...boxes.map((b) => b.r.y + b.r.h));
         const centre = (lo + hi) / 2;
         get().commit();
-        set(shiftUnits(boxes.map((b) => {
-          const d = mode === 'hcenter'
-            ? centre - b.r.w / 2 - b.r.x
-            : centre - b.r.h / 2 - b.r.y;
-          return mode === 'hcenter' ? { ids: b.ids, dx: d, dy: 0 } : { ids: b.ids, dx: 0, dy: d };
-        })));
+          set(
+            shiftUnits(
+              boxes.map((b) => {
+                const d =
+                  mode === 'hcenter' ? centre - b.r.w / 2 - b.r.x : centre - b.r.h / 2 - b.r.y;
+                return mode === 'hcenter'
+                  ? { ids: b.ids, dx: d, dy: 0 }
+                  : { ids: b.ids, dx: 0, dy: d };
+              }),
+            ),
+          );
         return;
       }
 
@@ -1903,17 +1991,23 @@ export const useEditor = create<EditorState>()(
       const edgeOf = (r: Rect) =>
         mode === 'left' ? r.x : mode === 'right' ? r.x + r.w : mode === 'top' ? r.y : r.y + r.h;
       const shift = (d: number) =>
-        boxes.map((b) => (horizontal ? { ids: b.ids, dx: d, dy: 0 } : { ids: b.ids, dx: 0, dy: d }));
+          boxes.map((b) =>
+            horizontal ? { ids: b.ids, dx: d, dy: 0 } : { ids: b.ids, dx: 0, dy: d },
+          );
 
       // Step 1: pull the selection flush before it starts travelling.
       const edges = boxes.map((b) => edgeOf(b.r));
       if (Math.max(...edges) - Math.min(...edges) > EPS) {
         const target = dir < 0 ? Math.min(...edges) : Math.max(...edges);
         get().commit();
-        set(shiftUnits(boxes.map((b) => {
+          set(
+            shiftUnits(
+              boxes.map((b) => {
           const d = target - edgeOf(b.r);
           return horizontal ? { ids: b.ids, dx: d, dy: 0 } : { ids: b.ids, dx: 0, dy: d };
-        })));
+              }),
+            ),
+          );
         return;
       }
 
@@ -1934,7 +2028,10 @@ export const useEditor = create<EditorState>()(
         { at: 0, on: 'lo' },
         // The last guide on each axis (right / bottom) closes the frame; the
         // ones before it (left, and top + content-top) open it.
-        ...lines.map((at, i): Stop => ({ at, on: i < lines.length - 1 ? 'lo' : 'hi' })),
+          ...lines.map((at, i): Stop => ({
+            at,
+            on: i < lines.length - 1 ? 'lo' : 'hi',
+          })),
         { at: size, on: 'hi' },
       ];
 
@@ -1970,9 +2067,12 @@ export const useEditor = create<EditorState>()(
         // paper's top margin would put it inside the title.
         const [, contentTop, bottom] = guides.horizontal;
         const d =
-          mode === 'left' ? left - r.x
-          : mode === 'right' ? right - (r.x + r.w)
-          : mode === 'top' ? contentTop - r.y
+            mode === 'left'
+              ? left - r.x
+              : mode === 'right'
+                ? right - (r.x + r.w)
+                : mode === 'top'
+                  ? contentTop - r.y
           : bottom - (r.y + r.h);
         if (Math.abs(d) <= EPS) return; // already there — no undo step for a no-op
         get().commit();
@@ -1985,90 +2085,98 @@ export const useEditor = create<EditorState>()(
     },
 
     /**
-     * PowerPoint has no equivalent: one press pulls everything that overhangs
-     * back inside the safe area. Deliberately ONE uniform transform over the
-     * whole content bounding box rather than per-object clamping — relative
-     * positions, gaps and alignments survive, so a laid-out slide stays laid
-     * out and only its overall size/position changes.
+     * PowerPoint has no equivalent: one press does to the slide's content what
+     * you would do by hand — select everything, drag a corner handle in until
+     * the block fits between the margin guides, then slide it onto them.
      *
-     * Two rules, because a title and the body it heads want different things:
+     * Everything in scope is one BLOCK: the union of its bounding boxes, scaled
+     * as a group (offsets from the pinned corner included, `groupMemberRect`,
+     * so gaps and alignments scale with it rather than the parts growing into
+     * each other) and then moved by the minimum that puts its overhanging edges
+     * on the guides.
      *
-     * - Titles park in the top-left corner of the safe area — top edge on the
-     *   top guide, left edge on the left guide. A title is the one object on
-     *   the slide whose position is a brand rule, not a layout choice.
-     * - Everything else is scaled as ONE block until it spans the left AND
-     *   right guides exactly — the body column always measures the full text
-     *   width — and shrunk vertically only if it overhangs top or bottom.
+     * The scale is UNIFORM and shrink-only — one factor on both axes, never
+     * above 1. Uniform because a one-axis squeeze distorts every picture and
+     * chart in the block; shrink-only because a short slide shouldn't be smeared
+     * down the page to reach a guide it was never meant to touch.
      *
-     * Scaling the body as one block rather than clamping objects one by one
-     * keeps relative positions, gaps and alignments intact, so a laid-out
-     * slide stays laid out and only its overall size changes. Horizontally
-     * this stretches as well as shrinks (the block must REACH both guides);
-     * vertically it only ever shrinks, so a short slide isn't smeared down
-     * the page.
+     * Anchored on the block's TOP-LEFT, which is why the two steps compose: the
+     * shrink pulls the right and bottom edges in, and the nudge afterwards is
+     * then the smallest move that fixes what's left. A block that already fits
+     * skips the shrink entirely and is purely moved, by the minimum.
      *
-     * Geometry only: font sizes are left alone, exactly like dragging a
-     * group's handle.
+     * Charts scale through their FRAME and recompile, exactly as they do under a
+     * group resize — inflating their parts and inferring the frame back would
+     * relayout them into something else (see `scaleChartFrames`).
+     *
+     * FULL-BLEED objects sit this out entirely — see `spansSlide`. A band that
+     * runs the height of the page, or a photo bled to both edges, is off the
+     * margins ON PURPOSE, and counting one in the block used to poison the
+     * shrink for everything else: the block was taller than the safe area by
+     * construction, so the whole slide got crushed to fit a shape that never
+     * needed fitting. Dropped by GROUP, so a band's panel and the title inside
+     * it stay together.
      */
     fitToMargins() {
       const s = get();
       const slide = slideById(s.deck, s.currentSlideId);
       if (!slide?.elements.length) return;
       // A selection means "fit these"; otherwise the whole slide.
-      const ids = s.selectedIds.length
+      const asked = s.selectedIds.length
         ? expandSelection(slide.elements, s.selectedIds)
         : slide.elements.map((e) => e.id);
-      const inScope = new Set(ids);
+      // Whole units, so a band's panel taking itself out takes its title with
+      // it rather than leaving the group half-moved.
+      const ids = selectionUnits(slide.elements, asked)
+        .filter(
+          (unit) =>
+            !unit.some((id) =>
+              spansSlide(
+                slide.elements.find((e) => e.id === id),
+                s.deck.slideSize,
+              ),
+            ),
+        )
+        .flat();
+      if (!ids.length) return; // everything in scope is full-bleed: nothing to fit
 
       const frame = marginBox(s.deck.slideSize);
       if (frame.w <= 0 || frame.h <= 0) return;
-      const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+      const box = unionRect(slide.elements, ids);
+      if (!box || box.w <= 0 || box.h <= 0) return;
 
-      // A grouped title moves with its group, not on its own — pulling one
-      // member into the corner would tear the group apart.
-      const titleIds = new Set(
-        slide.elements
-          .filter((e) => inScope.has(e.id) && isTitleRole(e.role) && !e.groupIds?.length)
-          .map((e) => e.id),
-      );
-      const bodyIds = ids.filter((id) => !titleIds.has(id));
-      const box = unionRect(slide.elements, bodyIds);
-
-      // Body: span the guides horizontally, shrink to fit vertically.
-      let sx = 1;
-      let sy = 1;
-      let x = box?.x ?? 0;
-      let y = box?.y ?? 0;
-      if (box && box.w > 0 && box.h > 0) {
-        sx = frame.w / box.w;
-        sy = Math.min(1, frame.h / box.h);
-        x = frame.x;
-        y = clamp(box.y + box.h / 2 - (box.h * sy) / 2, frame.y, frame.y + frame.h - box.h * sy);
-      }
+      const k = Math.min(1, frame.w / box.w, frame.h / box.h);
+      /** The shortest shift that lands `[at, at + span]` inside `[lo, hi]`. */
+      const nudge = (at: number, span: number, lo: number, hi: number): number => {
+        if (at < lo) return lo - at;
+        if (at + span > hi) return hi - (at + span);
+        return 0;
+      };
+      // Measured on the block AFTER the shrink, pinned at its top-left.
+      const dx = nudge(box.x, box.w * k, frame.x, frame.x + frame.w);
+      const dy = nudge(box.y, box.h * k, frame.y, frame.y + frame.h);
+      if (k === 1 && !dx && !dy) return; // already inside — no undo step for a no-op
 
       get().commit();
-      set((d) => {
-        const sl = slideById(d.deck, d.currentSlideId);
-        if (!sl) return;
-        for (const el of sl.elements) {
-          if (titleIds.has(el.id)) {
-            // Never let a title hang past the right guide either.
-            el.rect = {
-              x: frame.x,
-              y: frame.y,
-              w: Math.min(el.rect.w, frame.w),
-              h: el.rect.h,
-            };
-          } else if (box && inScope.has(el.id)) {
-            el.rect = {
-              x: Math.round(x + (el.rect.x - box.x) * sx),
-              y: Math.round(y + (el.rect.y - box.y) * sy),
-              w: Math.round(el.rect.w * sx),
-              h: Math.round(el.rect.h * sy),
-            };
+      if (k < 1) {
+        set((d) => {
+          const sl = slideById(d.deck, d.currentSlideId);
+          if (!sl) return;
+          const chartIds = new Set(chartsForElements(sl, ids).map((c) => c.id));
+          const members = new Set(ids);
+          for (const el of sl.elements) {
+            if (!members.has(el.id)) continue;
+            // A chart's parts are laid out by the compiler; its frame carries it.
+            if (el.chartRef && chartIds.has(el.chartRef.chartId)) continue;
+            el.rect = groupMemberRect(box, el.rect, k, k);
           }
-        }
-      });
+          scaleChartFrames(sl, ids, box, k, k, d.designSystem, MIN_SIZE);
+        });
+      }
+      // Through `shiftUnits`, as align and the arrow keys do: it carries a
+      // chart's frame along with its elements, which a bare rect edit would
+      // leave behind.
+      if (dx || dy) set(shiftUnits([{ ids, dx, dy }]));
     },
 
     distribute(axis) {
@@ -2082,7 +2190,11 @@ export const useEditor = create<EditorState>()(
       const step = (at(boxes[boxes.length - 1]) - start) / (boxes.length - 1);
       const shifts = boxes.map((b, i) => {
         const delta = Math.round(start + step * i) - at(b);
-        return { ids: b.ids, dx: axis === 'h' ? delta : 0, dy: axis === 'h' ? 0 : delta };
+          return {
+            ids: b.ids,
+            dx: axis === 'h' ? delta : 0,
+            dy: axis === 'h' ? 0 : delta,
+          };
       });
       get().commit();
       set(shiftUnits(shifts));

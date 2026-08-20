@@ -11,7 +11,7 @@
  * `datasheetSchemaFor` is what the editor's grid renders, and for a category
  * grid that is the canonical schema transposed; see `transposesInDatasheet`.
  */
-import { WATERFALL_ROLE_OPTIONS } from './chart/roles';
+import { GANTT_ITEM_FORM_OPTIONS, WATERFALL_ROLE_OPTIONS } from './chart/roles';
 import { dataShapeOf } from './chart/shape';
 import {
   isButterflySpec,
@@ -19,10 +19,13 @@ import {
   isHorizontal,
   isSankeySpec,
   isWaterfallSpec,
+  isGanttSpec,
   isXYSpec,
   type ChartSpec,
+  type GanttGrain,
 } from './chart/spec';
 import { supportsOrientation, supportsTurn } from './chart/orientation';
+import { comboDisplayOrder, comboSeriesMark } from './chart/combo';
 import type { SheetColumn, SheetSchema, SheetSeries } from './sheet';
 
 const text = (key: string, header: string): SheetColumn => ({
@@ -103,6 +106,77 @@ export function sheetSchemaFor(spec: ChartSpec): SheetSchema {
         caps: { addRows: true, addSeries: true, reorderRows: true, reorderSeries: true, maxSeries: 2 },
       };
 
+    /**
+     * A schedule: one sheet row per TASK, and each of its bars is a "series".
+     *
+     * The alternative — one row per bar, joined by a Task column — loses on
+     * four counts. Description cells belong to the task, so they would repeat
+     * per bar with two of the three copies necessarily read-only, and the grid
+     * gates editing per COLUMN. `moveRow` would stop meaning "reorder the
+     * plan", because dragging a task would mean dragging N adjacent rows
+     * atomically. Indent is a task property, repeated in three places that must
+     * agree. And task identity would have to be matched by label, which is fine
+     * for a Sankey node (a node IS its name) and wrong for a plan, where two
+     * phases called "Build" are legitimate.
+     *
+     * Repeating the item slot through `perSeries` costs no new grid concepts:
+     * `columnsFor`, `addSeries`/`moveSeries` and `gridExtent`'s phantom columns
+     * already do all of it.
+     *
+     * Only `text` columns appear here. A derived column (Start / End /
+     * Duration) is computed from the bars, and printing it beside the Start and
+     * End cells it was computed from is the same fact twice, one copy of which
+     * cannot be typed into.
+     */
+    case 'gantt': {
+      const authored = isGanttSpec(spec) ? spec.columns.filter((c) => c.source === 'text') : [];
+      const describe = (side: 'left' | 'right'): SheetColumn[] =>
+        authored
+          .filter((c) => c.side === side)
+          .sort((a, b) => a.order - b.order)
+          .map((c) => ({
+            key: `desc.${c.key}`,
+            header: c.header,
+            type: 'text' as const,
+            editable: true,
+            renamable: true,
+            removable: true,
+          }));
+
+      return {
+        id: 'gantt',
+        layout: 'recordsDown',
+        keyColumns: [
+          { key: 'label', header: 'Task', type: 'text', editable: true, required: true },
+          ...describe('left'),
+        ],
+        perSeries: [
+          {
+            key: 'form',
+            header: 'Type',
+            type: 'enum',
+            options: GANTT_ITEM_FORM_OPTIONS,
+            editable: true,
+          },
+          { key: 'start', header: 'Start', type: 'date', dateGrain: 'day', editable: true },
+          { key: 'end', header: 'End', type: 'date', dateGrain: 'day', editable: true },
+          { key: 'text', header: 'Label', type: 'text', editable: true },
+        ],
+        extraColumns: describe('right'),
+        bands: [],
+        caps: {
+          addRows: true,
+          addSeries: true,
+          reorderRows: true,
+          reorderSeries: true,
+          // Six bars on one row is already a busy row; past that the plan wants
+          // another task, not another slot.
+          maxSeries: 6,
+          minRows: 1,
+        },
+      };
+    }
+
     case 'grid':
     default: {
       const dated = isGridSpec(spec) && looksDated(spec.data.categories.map((c) => c.label));
@@ -114,7 +188,15 @@ export function sheetSchemaFor(spec: ChartSpec): SheetSchema {
             ? { key: 'label', header: 'Date', type: 'date', editable: true }
             : text('label', 'Category'),
         ],
-        perSeries: [num('value', shape.valueHeader)],
+        perSeries: [
+          num('value', shape.valueHeader),
+          // A dot plot's markers are a sequence — "was, is, target" — and the
+          // question the reader asks of every one of them is "as of when". The
+          // caption belongs next to the number it dates, so it is a column
+          // beside it rather than a field in a properties panel. Other kinds
+          // don't draw captions yet, so they don't offer the column.
+          ...(spec.kind === 'dotplot' ? [text('note', 'Note')] : []),
+        ],
         extraColumns: [],
         bands:
           spec.kind === 'mekko'
@@ -150,7 +232,12 @@ export function looksDated(labels: string[]): boolean {
   return dated / labels.length >= 0.8;
 }
 
-export type DateGrain = 'year' | 'quarter' | 'month' | 'week' | 'day';
+/**
+ * One vocabulary for calendar units, shared with the Gantt timescale — see
+ * `GanttGrain`. `parseGrain` never returns `'half'`; no label pattern denotes
+ * one, and a timescale band is the only thing that asks for it.
+ */
+export type DateGrain = GanttGrain;
 
 /**
  * Recognise the period a label denotes. Deliberately an explicit pattern list:
@@ -189,6 +276,64 @@ export function parseGrain(label: string): { grain: DateGrain; iso: string } | n
 
   return null;
 }
+
+/**
+ * Recognise a single DAY, for a column that stores one.
+ *
+ * `parseGrain` answers "what period does this label denote", which is a
+ * different question: it is asked of a category axis, where the author's
+ * wording ("FY25") is the label and must survive. This is asked of a Gantt's
+ * Start and End cells, where the answer has to be an actual date or the bar
+ * cannot be placed.
+ *
+ * Same doctrine, and for the same reason stated on `parseGrain`: an explicit
+ * pattern list, never `new Date(string)`. A period label is accepted and
+ * promoted to its FIRST day, so typing "Q3 2026" into a Start cell means what
+ * anyone would expect.
+ */
+export function parseDay(raw: string): string | null {
+  const s = raw.trim();
+  if (!s) return null;
+
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) return isoDay(Number(m[1]), Number(m[2]), Number(m[3]));
+
+  // 14/3/2026 and 3/14/26 are the same six characters in two countries, so the
+  // ambiguity is broken the only way that is not a guess: a value over 12 must
+  // be the day, and otherwise US order wins, matching the pinned en-US locale.
+  m = /^(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})$/.exec(s);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    const year = Number(fullYear(m[3]));
+    return a > 12 ? isoDay(year, b, a) : isoDay(year, a, b);
+  }
+
+  // 14 Mar 2026 · 14 March 26
+  m = /^(\d{1,2})[\s-]([A-Za-z]{3,9})[\s-]'?(\d{2,4})$/.exec(s);
+  if (m) {
+    const mo = monthIndex(m[2]);
+    if (mo >= 0) return isoDay(Number(fullYear(m[3])), mo + 1, Number(m[1]));
+  }
+
+  // Mar 14, 2026 · March 14 2026
+  m = /^([A-Za-z]{3,9})[\s-](\d{1,2}),?[\s-]'?(\d{2,4})$/.exec(s);
+  if (m) {
+    const mo = monthIndex(m[1]);
+    if (mo >= 0) return isoDay(Number(fullYear(m[3])), mo + 1, Number(m[2]));
+  }
+
+  // A period is a legitimate thing to type into a date cell; take its first day.
+  return parseGrain(s)?.iso ?? null;
+}
+
+const monthIndex = (name: string): number =>
+  MONTHS.findIndex((n) => n === name.slice(0, 3).toLowerCase());
+
+/** Null rather than a rolled-over date: 31 February is a typo, not 3 March. */
+const isoDay = (y: number, m: number, d: number): string | null =>
+  m >= 1 && m <= 12 && d >= 1 && d <= 31
+    ? `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+    : null;
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
@@ -272,7 +417,13 @@ export function datasheetSchemaFor(spec: ChartSpec, turn = 0): SheetSchema {
     // The row key is now the series name; the category labels have moved up
     // into the column headers, where they are edited as headers.
     keyColumns: [text('series', 'Series')],
-    perSeries: [num('value', shape.form === 'grid' ? shape.valueHeader : 'Value')],
+    perSeries: [
+      num('value', shape.form === 'grid' ? shape.valueHeader : 'Value'),
+      // The per-datum caption survives the transpose: a cell here is still one
+      // (series, category) datum, so turning the chart onto its side must not
+      // take the column away from the notes it is the only editor for.
+      ...(canonical.perSeries.some((c) => c.key === 'note') ? [text('note', 'Note')] : []),
+    ],
     extraColumns: [],
     bands: [],
     caps: {
@@ -288,12 +439,22 @@ export function datasheetSchemaFor(spec: ChartSpec, turn = 0): SheetSchema {
   };
 }
 
-/** The column groups the datasheet shows — categories when transposed. */
+/**
+ * The column groups the datasheet shows — categories when transposed.
+ *
+ * Untransposed, a combo's series ARE the columns, so the same rule the rows get
+ * applies sideways: the lines sit past the columns and carry a badge saying so.
+ */
 export function datasheetSeriesFor(spec: ChartSpec, turn = 0): SheetSeries[] {
   if (transposesInDatasheet(spec, turn) && isGridSpec(spec)) {
     return spec.data.categories.map((c) => ({ key: c.key, name: c.label }));
   }
-  return sheetSeriesFor(spec);
+  const series = sheetSeriesFor(spec);
+  const order = comboDisplayOrder(spec);
+  return (order ? order.map((i) => series[i]!) : series).map((s) => {
+    const badge = comboSeriesMark(spec, s.key);
+    return badge ? { ...s, badge } : s;
+  });
 }
 
 /** The series a sheet shows for this spec, in display order. */
@@ -313,6 +474,19 @@ export function sheetSeriesFor(spec: ChartSpec): SheetSeries[] {
     }));
   }
   if (isWaterfallSpec(spec) || isSankeySpec(spec)) return [{ key: 's0', name: 'Value' }];
+  if (isGanttSpec(spec)) {
+    // One slot per bar on the busiest row, and at least one so a fresh chart
+    // has somewhere to type. The slot INDEX is the item's index within its
+    // row — see `specFromSheet`, which reuses keys positionally through it.
+    const widest = spec.rows.reduce(
+      (n, r) => Math.max(n, spec.items.filter((i) => i.row === r.key).length),
+      0,
+    );
+    return Array.from({ length: Math.max(1, widest) }, (_, i) => ({
+      key: `i${i}`,
+      name: `Bar ${i + 1}`,
+    }));
+  }
   if (isButterflySpec(spec)) {
     return [...spec.left, ...spec.right].map((s) => ({ key: s.key, name: s.name }));
   }

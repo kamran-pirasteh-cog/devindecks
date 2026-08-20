@@ -26,6 +26,7 @@ import {
   type ChartStyle,
   type ChartStyleVariant,
   type DesignSystem,
+  type StackMode,
 } from '@/model';
 import type { ChartPreviewData } from '@/model';
 import { CHART_KIND_LABELS, STYLEABLE_KINDS } from '@/charts/kinds';
@@ -37,8 +38,27 @@ const BTN =
   'rounded border border-zinc-200 px-2 py-1 text-[11px] transition hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800';
 
 /** A stacked column shows more of a style than a clustered one does. */
-const previewStackFor = (kind: ChartKind) =>
-  kind === 'column' || kind === 'bar' ? ('stacked' as const) : undefined;
+const previewStackFor = (kind: ChartKind): StackMode | undefined =>
+  kind === 'column' || kind === 'bar' ? 'stacked' : undefined;
+
+/**
+ * Kinds whose segments can stack or cluster, and so want the choice in the
+ * preview.
+ *
+ * A variant is formatting, not an archetype — the stacking a chart is inserted
+ * with comes from the layout, not from here — so this is a way of LOOKING at
+ * the style, in the same family as the conventions panel's preview sets. It has
+ * to be here all the same: a style judged only on clustered columns is a style
+ * nobody checked against a stack, and for a combo the two are different enough
+ * pictures that one of them is always the one you needed to see.
+ */
+const STACKABLE: ChartKind[] = ['column', 'bar', 'area', 'combo'];
+
+const STACK_OPTIONS: { value: StackMode; label: string }[] = [
+  { value: 'clustered', label: 'Clustered' },
+  { value: 'stacked', label: 'Stacked' },
+  { value: 'stacked100', label: '100%' },
+];
 
 export function ChartVariants({
   ds,
@@ -147,7 +167,7 @@ export function ChartVariants({
             />
           ) : (
             <>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {forKind.map((v) => (
                   <div
                     key={v.id}
@@ -212,7 +232,7 @@ export function ChartVariants({
 
                 <button
                   onClick={() => add()}
-                  className="flex min-h-[8rem] flex-col items-center justify-center gap-1 rounded-md border border-dashed border-zinc-300 text-[11px] text-zinc-500 transition hover:border-indigo-400 hover:text-indigo-600 dark:border-zinc-700"
+                  className="flex min-h-[6.5rem] flex-col items-center justify-center gap-1 rounded-md border border-dashed border-zinc-300 text-[11px] text-zinc-500 transition hover:border-indigo-400 hover:text-indigo-600 dark:border-zinc-700"
                 >
                   <span className="text-lg leading-none">+</span>
                   New {CHART_KIND_LABELS[kind].toLowerCase()} style
@@ -252,6 +272,13 @@ function VariantEditor({
   onPreviewData: (next: ChartPreviewData | undefined) => void;
 }) {
   const count = variantOverridesCount(variant.overrides);
+  const stackable = STACKABLE.includes(variant.kind);
+  // A combo's columns cluster by default — its line is read against them, and
+  // a stack is the other question. Everything else previews as it does on the
+  // cards, so switching to the editor doesn't redraw the chart under you.
+  const [stack, setStack] = useState<StackMode>(
+    previewStackFor(variant.kind) ?? 'clustered',
+  );
 
   return (
     <div>
@@ -275,12 +302,34 @@ function VariantEditor({
       <div className="grid gap-5 lg:grid-cols-[minmax(0,20rem)_1fr]">
         <ChartStyleControls ds={ds} style={ds.chart} onChange={onStyle} />
         <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-            Preview
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+              Preview
+            </span>
+            {stackable ? (
+              <div className="flex flex-wrap gap-1">
+                {STACK_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    onClick={() => setStack(o.value)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] transition ${
+                      o.value === stack
+                        ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                        : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
           <ChartStylePreview
             ds={ds}
-            charts={[{ kind: variant.kind, stack: previewStackFor(variant.kind) }]}
+            charts={[
+              { kind: variant.kind, stack: stackable ? stack : previewStackFor(variant.kind) },
+            ]}
+            className="max-w-[38rem]"
           />
           <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
             Anything left untouched follows the conventions — edit the
@@ -291,7 +340,11 @@ function VariantEditor({
               the brand's, not this variant's, so two styles of the same kind
               are always compared on the same numbers. */}
           <div className="mt-3">
-            <ChartPreviewDataEditor data={ds.previewData} onChange={onPreviewData} />
+            <ChartPreviewDataEditor
+              data={ds.previewData}
+              onChange={onPreviewData}
+              showSecondary={variant.kind === 'combo'}
+            />
           </div>
         </div>
       </div>
