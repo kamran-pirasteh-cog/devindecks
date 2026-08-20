@@ -14,7 +14,9 @@ import {
   isInsideLegend,
   isPointRef,
   isSankeySpec,
+  isGanttSpec,
   isWaterfallSpec,
+  removeGanttColumn,
   type ChartInstance,
   type ChartRef,
   type ChartSpec,
@@ -317,6 +319,32 @@ function hideChartParts(spec: ChartSpec, refs: ChartRef[]): boolean {
         if (removeDecoration(spec, ref.decoId)) wrote = true;
         break;
 
+      // A Gantt's chrome is spec state, not a decoration in the five arrays
+      // `removeDecoration` scans — so without these, Delete on a today line or
+      // a weekend stripe is a silent no-op.
+      case 'gantt.band':
+        if (hideGanttBand(spec, ref)) wrote = true;
+        break;
+
+      case 'gantt.row':
+        if (isGanttSpec(spec) && ref.sub === 'divider' && spec.ruler?.rows?.show) {
+          spec.ruler.rows = { ...spec.ruler.rows, show: false };
+          wrote = true;
+        } else if (isGanttSpec(spec) && ref.sub === 'band' && spec.banding?.show) {
+          spec.banding = { ...spec.banding, show: false };
+          wrote = true;
+        }
+        break;
+
+      // Deleting a description column REMOVES it — it exists only because
+      // someone added it, exactly as a decoration does.
+      case 'gantt.column':
+        // Through the shared helper, so the authored cells go with it rather
+        // than accumulating in the spec every time a column is added and
+        // dropped again.
+        if (isGanttSpec(spec) && removeGanttColumn(spec, ref.column)) wrote = true;
+        break;
+
       // 'plot' never reaches here — the caller reads it as the whole chart.
       // 'mark' and 'label' are grouped by series below.
       default:
@@ -353,6 +381,30 @@ function hideAxisPart(spec: ChartSpec, ref: Extract<ChartRef, { part: 'axis' }>)
   // the numbers off isn't an axis.
   if (!axis.show) return false;
   axis.show = false;
+  return true;
+}
+
+/** The full-height stripes: non-working days, a named span, the today rule. */
+function hideGanttBand(
+  spec: ChartSpec,
+  ref: Extract<ChartRef, { part: 'gantt.band' }>,
+): boolean {
+  if (!isGanttSpec(spec)) return false;
+  if (ref.sub === 'today') {
+    if (!spec.today?.show) return false;
+    spec.today = { ...spec.today, show: false };
+    return true;
+  }
+  if (ref.sub === 'weekend') {
+    if (!spec.shading?.weekends?.show) return false;
+    spec.shading = { ...spec.shading, weekends: { ...spec.shading.weekends, show: false } };
+    return true;
+  }
+  // A named span was added deliberately, so Delete removes it rather than
+  // hiding it — the rule `removeDecoration` follows.
+  const spans = spec.shading?.spans;
+  if (!spans?.length || ref.i === undefined || !spans[ref.i]) return false;
+  spec.shading = { ...spec.shading, spans: spans.filter((_, i) => i !== ref.i) };
   return true;
 }
 
@@ -394,6 +446,27 @@ function removeDecoration(spec: ChartSpec, decoId: string): boolean {
 function hidePointParts(spec: ChartSpec, refs: ChartRef[]): boolean {
   const points = refs.filter(isPointRef);
   if (!points.length) return false;
+
+  // A Gantt's bar hides on the item itself, and its label on the item's own
+  // `labels`. Routing through `pointOverrides` would write somewhere the placer
+  // never reads, so Delete would look like it worked and change nothing.
+  if (isGanttSpec(spec)) {
+    let wrote = false;
+    for (const ref of points) {
+      const item = spec.items.find((i) => i.key === ref.point);
+      if (!item) continue;
+      if (ref.part === 'mark') {
+        if (item.hidden) continue;
+        item.hidden = true;
+      } else {
+        const base = item.labels ?? spec.decorations.labels;
+        if (!base.show) continue;
+        item.labels = { ...base, show: false };
+      }
+      wrote = true;
+    }
+    return wrote;
+  }
 
   const series = seriesOf(spec);
   if (!series.length) {
@@ -582,6 +655,37 @@ export function resizeChartFrames(
   }
 }
 
+/**
+ * Scale a chart's frame as part of a GROUP resize — the ⇧ + arrow path for a
+ * chart that shares a group with other objects.
+ *
+ * Sibling to `resizeChartFrames`, which takes an absolute delta because the
+ * chart IS the whole selection there. Inside a group the chart is one member of
+ * a box that took the delta, so it takes that box's factors instead — position
+ * included, or it would grow in place while everything around it spread.
+ */
+export function scaleChartFrames(
+  slide: Slide,
+  ids: string[],
+  origin: { x: EMU; y: EMU },
+  sx: number,
+  sy: number,
+  ds: DesignSystem,
+  minSize: EMU,
+): void {
+  for (const chart of chartsForElements(slide, ids)) {
+    // A frozen chart keeps the geometry someone deliberately pinned.
+    if (chart.frozen) continue;
+    chart.frame = {
+      x: Math.round(origin.x + (chart.frame.x - origin.x) * sx),
+      y: Math.round(origin.y + (chart.frame.y - origin.y) * sy),
+      w: Math.max(minSize, Math.round(chart.frame.w * sx)),
+      h: Math.max(minSize, Math.round(chart.frame.h * sy)),
+    };
+    recompileInto(slide, chart.id, ds);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Formatting routed into the spec                                    */
 /* ------------------------------------------------------------------ */
@@ -597,6 +701,9 @@ interface SeriesLike {
 function seriesOf(spec: ChartSpec): SeriesLike[] {
   if (isGridSpec(spec)) return spec.data.series;
   if (isWaterfallSpec(spec)) return [];
+  // A Gantt's ROW is its series: bars are addressed `series: rowKey`, and a row
+  // carries the `format` and `labels` "colour this whole workstream" writes to.
+  if (isGanttSpec(spec)) return spec.rows;
   if (spec.kind === 'scatter' || spec.kind === 'bubble') return spec.data.series;
   if (spec.kind === 'butterfly') return [...spec.left, ...spec.right];
   return [];
@@ -609,6 +716,7 @@ function pointKeysOf(spec: ChartSpec, seriesKey: string): string[] {
     return spec.data.series.find((s) => s.key === seriesKey)?.points.map((p) => p.key) ?? [];
   }
   if (spec.kind === 'butterfly') return spec.categories.map((c) => c.key);
+  if (isGanttSpec(spec)) return spec.items.filter((i) => i.row === seriesKey).map((i) => i.key);
   return [];
 }
 
@@ -629,10 +737,36 @@ function pointKeysOf(spec: ChartSpec, seriesKey: string): string[] {
  *   series. What a single data label selected on the canvas becomes.
  * - `series` — every point of the series selected, so the SERIES changed and a
  *   category added later comes back styled to match.
- * - `item` — a waterfall, which has items instead of series and so keeps a
- *   label's settings on `WaterfallItem.labels`.
+ * - `item` — a kind with items instead of series (a waterfall today), which
+ *   keeps a label's settings on the item itself. See `itemLabelNodes`.
  * - `chart` — a shape with nothing narrower than itself (a sankey).
  */
+/**
+ * A node that owns a label and has no series above it.
+ *
+ * A waterfall's items are the first of these — it has items instead of series,
+ * so the item IS the narrowest node there is. Any later kind shaped the same way
+ * is one case here rather than a fourth `isWaterfallSpec` check inside each of
+ * `labelHomeFor`, `labelSpecAt` and `patchLabelAt`, which is how those three
+ * would come to disagree about scope.
+ *
+ * The live objects are returned, not copies: `patchLabelAt` writes through them.
+ */
+interface LabelItemNode {
+  key: string;
+  labels?: LabelSpec;
+}
+
+/** The item nodes of a kind that has them, or null for a kind with series. */
+function itemLabelNodes(spec: ChartSpec): LabelItemNode[] | null {
+  if (isWaterfallSpec(spec)) return spec.data.items;
+  return null;
+}
+
+/** A Gantt item by key — the narrowest node a bar's own settings live on. */
+const ganttItem = (spec: ChartSpec, key: string) =>
+  isGanttSpec(spec) ? spec.items.find((i) => i.key === key) : undefined;
+
 export type LabelHome =
   | { scope: 'chart' }
   | { scope: 'series'; seriesKey: string }
@@ -651,8 +785,9 @@ export function labelHomeFor(spec: ChartSpec, refs: ChartRef[]): LabelHome | nul
   const points = refs.filter(isPointRef);
   if (!points.length) return null;
 
-  if (isWaterfallSpec(spec)) {
-    const keys = new Set(spec.data.items.map((i) => i.key));
+  const itemNodes = itemLabelNodes(spec);
+  if (itemNodes) {
+    const keys = new Set(itemNodes.map((i) => i.key));
     const items = [...new Set(points.map((r) => r.point))].filter((k) => keys.has(k));
     return items.length ? { scope: 'item', items } : { scope: 'chart' };
   }
@@ -694,7 +829,13 @@ export function labelSpecAt(spec: ChartSpec, home: LabelHome): LabelSpec {
       return labelBase(spec, home.seriesKey);
     case 'point': {
       const series = seriesOf(spec).find((s) => s.key === home.seriesKey);
-      const each = home.points.map((k) => series?.pointOverrides?.[k]?.label);
+      // A Gantt's row IS its series, and the node under a row is the ITEM — it
+      // has no `pointOverrides`, and the placer reads `item.labels`. Without
+      // this the panel reads a node nothing writes to and shows the row's
+      // settings for a single bar the user has already restyled.
+      const each = home.points.map((k) =>
+        isGanttSpec(spec) ? ganttItem(spec, k)?.labels : series?.pointOverrides?.[k]?.label,
+      );
       const first = each[0];
       if (!first || !each.every((l) => l?.show === first.show)) {
         return labelBase(spec, home.seriesKey);
@@ -702,9 +843,8 @@ export function labelSpecAt(spec: ChartSpec, home: LabelHome): LabelSpec {
       return first;
     }
     case 'item': {
-      const each = home.items.map(
-        (k) => (isWaterfallSpec(spec) ? spec.data.items.find((i) => i.key === k)?.labels : undefined),
-      );
+      const nodes = itemLabelNodes(spec) ?? [];
+      const each = home.items.map((k) => nodes.find((i) => i.key === k)?.labels);
       const first = each[0];
       if (!first || !each.every((l) => l?.show === first.show)) return spec.decorations.labels;
       return first;
@@ -739,11 +879,27 @@ export function patchLabelAt(
       for (const key of Object.keys(series.pointOverrides ?? {})) {
         delete series.pointOverrides![key]!.label;
       }
+      // Same shadowing rule for a Gantt, whose narrower node is the item.
+      if (isGanttSpec(spec)) {
+        for (const item of spec.items) {
+          if (item.row === home.seriesKey) delete item.labels;
+        }
+      }
       return true;
     }
     case 'point': {
       const series = seriesOf(spec).find((s) => s.key === home.seriesKey);
       if (!series) return false;
+      if (isGanttSpec(spec)) {
+        let wrote = false;
+        for (const key of home.points) {
+          const item = ganttItem(spec, key);
+          if (!item) continue;
+          item.labels = { ...(item.labels ?? labelBase(spec, home.seriesKey)), ...patch };
+          wrote = true;
+        }
+        return wrote;
+      }
       series.pointOverrides ??= {};
       for (const key of home.points) {
         const prior = series.pointOverrides[key] ?? {};
@@ -755,10 +911,11 @@ export function patchLabelAt(
       return true;
     }
     case 'item': {
-      if (!isWaterfallSpec(spec)) return false;
+      const nodes = itemLabelNodes(spec);
+      if (!nodes) return false;
       let wrote = false;
       for (const key of home.items) {
-        const item = spec.data.items.find((i) => i.key === key);
+        const item = nodes.find((i) => i.key === key);
         if (!item) continue;
         item.labels = { ...(item.labels ?? spec.decorations.labels), ...patch };
         wrote = true;
@@ -809,6 +966,34 @@ export function applyChartFormat(
         if (!wanted.has(item.key)) continue;
         item.format = { ...item.format, ...definedOnly(patch) };
         wrote = true;
+      }
+      continue;
+    }
+
+    // A Gantt keeps its paint on the ITEM, and its row is the node above. Same
+    // promotion rule as a series — select every bar in a row and the ROW takes
+    // the colour, so a bar added there later matches — but the partial case
+    // writes to the item rather than to a `pointOverrides` record no placer
+    // would read.
+    if (isGanttSpec(chart.spec)) {
+      const wanted = new Set(mine.map((r) => r.point));
+      for (const row of chart.spec.rows) {
+        const all = chart.spec.items.filter((i) => i.row === row.key);
+        if (!all.length) continue;
+        const whole = all.every((i) => wanted.has(i.key));
+        if (whole) {
+          row.format = { ...row.format, ...definedOnly(patch) };
+          // Per-item fills would now shadow the row colour just set — the same
+          // rule the series branch below follows.
+          if (patch.fill) for (const item of all) delete item.format?.fill;
+          wrote = true;
+          continue;
+        }
+        for (const item of all) {
+          if (!wanted.has(item.key)) continue;
+          item.format = { ...item.format, ...definedOnly(patch) };
+          wrote = true;
+        }
       }
       continue;
     }
@@ -935,15 +1120,20 @@ export function legendEntryColor(spec: ChartSpec, entryKey: string): { fill?: Fi
 /**
  * The chart-spec half of a text-run patch.
  *
- * A run carries more than a chart knows how to keep — italic, underline, a
- * numeric weight — and there is nowhere in the spec to put those. Anything
- * unmappable comes back as `null` so the caller does nothing at all, rather
- * than writing a style onto the emitted element that the next recompile eats.
+ * A run carries more than a chart knows how to keep — underline, a numeric
+ * weight — and there is nowhere in the spec to put those. Anything unmappable
+ * comes back as `null` so the caller does nothing at all, rather than writing a
+ * style onto the emitted element that the next recompile eats.
+ *
+ * Italic used to be in that unmappable list. It now has a home on `LabelFont`,
+ * so ⌘I on a selected label reaches the spec exactly as ⌘B does — before, the
+ * keystroke was accepted, produced a `null` here, and silently did nothing.
  */
 export function chartFontFromRun(patch: Partial<TextRun>): LabelFont | null {
   const font: LabelFont = {};
   if (patch.sizePt !== undefined) font.sizePt = patch.sizePt;
   if (patch.bold !== undefined) font.bold = patch.bold;
+  if (patch.italic !== undefined) font.italic = patch.italic;
   if (patch.color !== undefined) font.color = patch.color;
   if (patch.font !== undefined) font.font = patch.font;
   return Object.keys(font).length ? font : null;
@@ -1143,6 +1333,22 @@ export function clearChartFormatting(spec: ChartSpec): boolean {
   drop(spec.decorations.totals, 'font');
   for (const line of spec.decorations.trendLines) drop(line, 'style');
   for (const line of spec.decorations.referenceLines) drop(line, 'style');
+
+  if (isGanttSpec(spec)) {
+    for (const item of spec.items) {
+      drop(item, 'format');
+      drop(item.labels, 'font');
+    }
+    drop(spec.today, 'style');
+    drop(spec.ruler?.rows, 'color');
+    drop(spec.ruler?.bands, 'color');
+    drop(spec.banding, 'color');
+    drop(spec.shading?.weekends, 'color');
+    for (const col of spec.columns) {
+      drop(col, 'font');
+      drop(col, 'headerFont');
+    }
+  }
 
   for (const series of seriesOf(spec)) {
     drop(series, 'format');

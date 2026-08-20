@@ -73,6 +73,34 @@ export interface SankeyLayoutInput {
 /** Crossing-reduction sweeps. Four is where the improvement flattens out. */
 const SWEEPS = 4;
 
+/**
+ * How much of the cross extent the gaps between stacked nodes may take.
+ *
+ * The padding is a fixed number of points, so it does NOT shrink with the
+ * chart — and a column of a dozen nodes carries eleven of them. Left alone,
+ * the gaps outgrow the space the flows have to share and the column is laid
+ * out taller than the frame it was solved for, so shrinking a Sankey pushes
+ * its own diagram out through the top and bottom of its box. Capping the
+ * gaps' TOTAL share is what keeps the column inside the frame at every size;
+ * a diagram squeezed until its gaps close is still a diagram, one drawn
+ * outside its own selection box is not.
+ */
+const PADDING_BUDGET = 0.4;
+
+/**
+ * How thick a column may be relative to the space along the flow.
+ *
+ * Same failure a quarter turn round. Node thickness is fixed in points too, so
+ * narrowing a multi-column Sankey eventually leaves the columns less than a
+ * bar apart — and then closer than nothing, at which point each ribbon's box
+ * collapses to zero width (it vanishes) and then inverts (it runs backwards
+ * through the column behind it). Capping the thickness so the gap between two
+ * columns is never smaller than a column keeps every ribbon travelling
+ * forwards, however narrow the frame gets.
+ */
+const columnThickness = (want: EMU, alongExtent: EMU, layers: number): EMU =>
+  Math.max(1, Math.min(want, Math.floor(alongExtent / Math.max(1, 2 * layers - 1))));
+
 export function layoutSankey(input: SankeyLayoutInput): SankeyLayout {
   const diagnostics: SankeyDiagnostic[] = [];
   const { data } = input;
@@ -116,7 +144,21 @@ export function layoutSankey(input: SankeyLayoutInput): SankeyLayout {
   const columns: string[][] = Array.from({ length: layers }, () => []);
   for (const k of order) columns[layerOf.get(k)!].push(k);
 
-  const scale = valueScale(columns, valueOf, input);
+  // Both of the spec's fixed sizes, brought inside what the frame can actually
+  // hold — see `PADDING_BUDGET` and `columnThickness`. Everything below reads
+  // these rather than the spec, so the scale and the positions can't disagree
+  // about how much room the gaps take.
+  const thickness = columnThickness(input.nodeThicknessEmu, input.alongExtent, layers);
+  const tallest = columns.reduce((n, c) => Math.max(n, c.length), 0);
+  const padding =
+    tallest > 1
+      ? Math.min(
+          input.nodePaddingEmu,
+          Math.floor((input.acrossExtent * PADDING_BUDGET) / (tallest - 1)),
+        )
+      : input.nodePaddingEmu;
+
+  const scale = valueScale(columns, valueOf, input.acrossExtent, padding);
 
   /* --- ordering within each column --- */
   reduceCrossings(columns, links, layerOf);
@@ -126,16 +168,15 @@ export function layoutSankey(input: SankeyLayoutInput): SankeyLayout {
   const placedByKey = new Map<string, PlacedSankeyNode>();
   // Columns are spread evenly, with the last one ending flush against the far
   // edge so the diagram fills its frame rather than trailing off.
-  const step =
-    layers > 1 ? (input.alongExtent - input.nodeThicknessEmu) / (layers - 1) : 0;
+  const step = layers > 1 ? (input.alongExtent - thickness) / (layers - 1) : 0;
 
   for (let layer = 0; layer < layers; layer++) {
     const column = columns[layer];
     const used = column.reduce((sum, k) => sum + valueOf.get(k)! * scale, 0);
-    const padding = input.nodePaddingEmu * Math.max(0, column.length - 1);
+    const gaps = padding * Math.max(0, column.length - 1);
     // Centre the column across the frame; a short column floating at the top
     // reads as a mistake rather than as a design.
-    let across = Math.round((input.acrossExtent - used - padding) / 2);
+    let across = Math.round((input.acrossExtent - used - gaps) / 2);
 
     for (const key of column) {
       const value = valueOf.get(key)!;
@@ -147,13 +188,13 @@ export function layoutSankey(input: SankeyLayoutInput): SankeyLayout {
         value,
         index: order.indexOf(key),
         along: Math.round(layer * step),
-        alongExtent: input.nodeThicknessEmu,
+        alongExtent: thickness,
         across,
         acrossExtent: extent,
       };
       nodes.push(placed);
       placedByKey.set(key, placed);
-      across += extent + input.nodePaddingEmu;
+      across += extent + padding;
     }
   }
 
@@ -339,18 +380,20 @@ function assignLayers(
 function valueScale(
   columns: string[][],
   valueOf: Map<string, number>,
-  input: SankeyLayoutInput,
+  acrossExtent: EMU,
+  padding: EMU,
 ): number {
   let scale = Infinity;
   for (const column of columns) {
     if (!column.length) continue;
     const total = column.reduce((sum, k) => sum + valueOf.get(k)!, 0);
     if (total <= 0) continue;
-    const padding = input.nodePaddingEmu * (column.length - 1);
-    // Never let padding eat more than half the frame: with many nodes in one
-    // column the gaps would otherwise leave no room for the flows themselves.
-    const usable = Math.max(input.acrossExtent * 0.5, input.acrossExtent - padding);
-    scale = Math.min(scale, usable / total);
+    // `padding` is already capped at a fraction of the extent (see
+    // `PADDING_BUDGET`), so what's left over is always a real share of the
+    // frame — no floor to apply here, and no way for the gaps plus the flows
+    // to add up to more than the column was given.
+    const usable = acrossExtent - padding * (column.length - 1);
+    scale = Math.min(scale, Math.max(0, usable) / total);
   }
   return Number.isFinite(scale) ? scale : 0;
 }

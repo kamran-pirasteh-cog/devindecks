@@ -152,7 +152,7 @@ export function EditorCanvas() {
   const nodeMap = useRef<Map<string, HTMLElement>>(new Map());
   // Bumped to re-render after `nodeMap` gains a node the current render needed
   // but couldn't see — see the layout effect below.
-  const [, setNodeTick] = useState(0);
+  const [nodeTick, setNodeTick] = useState(0);
 
   const [width, setWidth] = useState(900);
   // Selecto reads dragContainer once, when it is constructed, so the marquee
@@ -521,9 +521,15 @@ export function EditorCanvas() {
 
   // Keep the overlay glued to the element after ANY model change — inspector
   // edits, undo/redo, a drag commit — so handles never drift from the object.
+  //
+  // Also the first measurement of a freshly mounted control box: passing
+  // `container` (see the Moveable below) opts out of the mount-time measure
+  // Moveable does for itself, so every condition that mounts or unmounts it —
+  // opening an editor, entering crop, a node landing late in `nodeMap` — has
+  // to be a dep here or the box would come back unmeasured.
   useEffect(() => {
     moveableRef.current?.updateRect();
-  }, [selectedIds, width, zoom, deck]);
+  }, [selectedIds, width, zoom, deck, editingId, croppingId, nodeTick]);
 
   /**
    * The chart that IS the whole selection, if any.
@@ -2041,6 +2047,16 @@ export function EditorCanvas() {
           <Moveable
             ref={moveableRef}
             target={selectedNodes}
+            // The slide, which is also the control box's own parent — so this
+            // is the container Moveable would measure against anyway. Passed
+            // explicitly because `individualGroupable` below can't survive the
+            // default: each child Moveable measures itself on mount and asks
+            // its wrapper for the container, and the wrapper answers with its
+            // own control box — a node React only attaches AFTER its
+            // descendants' mount work, so the first child of a fresh
+            // individual group reads `undefined.parentElement` and the canvas
+            // dies on the press that selects the second object.
+            container={canvasRef.current}
             // Mid-turn the drawn box above replaces this one, which is stuck at
             // the angle the gesture started from. Hidden, not unmounted: it is
             // the thing tracking the pointer.

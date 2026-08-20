@@ -70,9 +70,12 @@ describe('makeEyebrow', () => {
     expect(body.rect.x).toBeGreaterThan(mark.rect.x + mark.rect.w);
     // Square.
     expect(mark.rect.w).toBe(mark.rect.h);
-    // Centred on the line of type rather than sitting on its top edge.
+    // Centred on the CAPS beside it: inside the line, but above the line box's
+    // own middle — the descender space under the baseline carries no ink.
     expect(mark.rect.y).toBeGreaterThan(body.rect.y);
     expect(mark.rect.y + mark.rect.h).toBeLessThan(body.rect.y + body.rect.h);
+    const markMid = mark.rect.y + mark.rect.h / 2;
+    expect(markMid).toBeLessThan(body.rect.y + body.rect.h / 2);
     // One line of type, running to the right margin.
     expect(body.rect.y).toBe(DEFAULT_MARGINS.top);
     expect(body.rect.x + body.rect.w).toBe(SLIDE_16x9.w - DEFAULT_MARGINS.right);
@@ -92,7 +95,8 @@ describe('makeEyebrow', () => {
     expect(run.text).toBe('');
     // Mono, regular and all caps — the label face, not the body face.
     expect(run.font).toBe('Geist Mono');
-    expect(run.bold).toBeFalsy();
+    // Explicitly regular, so text typed into the empty run inherits 400.
+    expect(run.bold).toBe(false);
     expect(run.caps).toBe(true);
     expect(run.sizePt).toBe(ds.type.caption.sizePt);
     // A fixed frame: a fit pass must not shrink-wrap it off the mark's spacing.

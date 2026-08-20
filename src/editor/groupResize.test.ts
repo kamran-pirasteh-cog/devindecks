@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { individualBox, resizeFactor } from './groupResize';
+import { groupMemberRect, groupScaleFactor, individualBox, resizeFactor } from './groupResize';
 
 describe('resizeFactor', () => {
   it('scales by the live size when Moveable measures the box correctly', () => {
@@ -48,5 +48,43 @@ describe('individualBox', () => {
   it('keeps a line a line and everything else grabbable', () => {
     expect(individualBox({ x: 0, y: 10, w: 300, h: 0 }, 0.5, 0.5, 1, 1, false).h).toBe(0);
     expect(individualBox(a, 0.001, 0.001, 1, 1, false)).toMatchObject({ w: 4, h: 4 });
+  });
+});
+
+describe('groupScaleFactor', () => {
+  it('turns an absolute step into the factor the box ended up with', () => {
+    expect(groupScaleFactor(300, 100, 10)).toBeCloseTo(4 / 3, 6);
+    expect(groupScaleFactor(300, -100, 10)).toBeCloseTo(2 / 3, 6);
+  });
+
+  it('holds the axis still when there is nothing to scale', () => {
+    expect(groupScaleFactor(0, 100, 10)).toBe(1);
+  });
+
+  it('stops at the floor rather than inverting the box', () => {
+    expect(groupScaleFactor(100, -400, 10)).toBeCloseTo(0.1, 6);
+  });
+});
+
+describe('groupMemberRect', () => {
+  const origin = { x: 100, y: 100 };
+
+  it('scales the offset from the origin as well as the size', () => {
+    const r = groupMemberRect(origin, { x: 200, y: 100, w: 50, h: 50 }, 2, 1);
+    expect(r).toEqual({ x: 300, y: 100, w: 100, h: 50 });
+  });
+
+  it('leaves an object sitting on the origin where it is', () => {
+    const r = groupMemberRect(origin, { x: 100, y: 100, w: 50, h: 50 }, 2, 2);
+    expect(r.x).toBe(100);
+    expect(r.y).toBe(100);
+  });
+
+  it('keeps a line flat on its cross axis', () => {
+    expect(groupMemberRect(origin, { x: 100, y: 100, w: 200, h: 0 }, 2, 2).h).toBe(0);
+  });
+
+  it('never rounds a member away to nothing', () => {
+    expect(groupMemberRect(origin, { x: 100, y: 100, w: 4, h: 4 }, 0.01, 0.01).w).toBe(1);
   });
 });

@@ -13,7 +13,7 @@
  *    reorder the categories and the arrow follows — which is the whole
  *    difference between a real chart annotation and a hand-drawn shape.
  */
-import type { EMU } from '../units';
+import type { EMU, EpochDay } from '../units';
 import type { ColorRef } from '../tokens';
 import type { FontFamily } from '../fonts';
 import type { DashStyle, Fill, Insets, Outline } from '../types';
@@ -33,12 +33,24 @@ export type ChartKind =
   | 'donut'
   | 'scatter'
   | 'bubble'
+  | 'dotplot'
   | 'waterfall'
   | 'sankey'
   | 'mekko'
-  | 'butterfly';
+  | 'butterfly'
+  | 'gantt';
 
 export type StackMode = 'clustered' | 'stacked' | 'stacked100';
+
+/**
+ * A unit of calendar time.
+ *
+ * One vocabulary for the whole codebase: it names a timescale band on a Gantt,
+ * and it is what `parseGrain` reports about a category label (as `DateGrain`,
+ * which aliases this). `'half'` exists for the timescale only — no label
+ * pattern produces it.
+ */
+export type GanttGrain = 'year' | 'half' | 'quarter' | 'month' | 'week' | 'day';
 
 /* ------------------------------------------------------------------ */
 /* Per-series and per-point formatting                                */
@@ -84,6 +96,17 @@ export interface LabelFont {
   /** Unset means the brand's size for this role — see `fontOver` in `theme.ts`. */
   sizePt?: number;
   bold?: boolean;
+  /**
+   * Italic. Carried here, next to `bold`, because emphasis on a SINGLE data
+   * label is a real editorial act — "this is the number the estimate is least
+   * sure about", "this one is pro-forma" — and a chart that can only bold has
+   * one voice for two different jobs.
+   *
+   * `false` is meaningful and distinct from unset: it turns italic OFF against
+   * an italic inherited from the series or the chart, which is why `fontOver`
+   * checks for `!== undefined` rather than truthiness.
+   */
+  italic?: boolean;
   color?: ColorRef;
   font?: FontFamily;
 }
@@ -106,6 +129,21 @@ export interface PointOverride {
   format?: SeriesFormat;
   label?: LabelSpec;
   hidden?: boolean;
+  /**
+   * A short caption for this one datum, printed BESIDE its data label rather
+   * than instead of it — "Jan '24" under a dot plot's baseline marker, say.
+   *
+   * It answers "as of when" (or "on what basis"), which is per-datum and not
+   * per-series: a progress chart's rows are often sampled at different times,
+   * and folding the date into the series name would claim they weren't. Blank
+   * or absent draws nothing.
+   *
+   * Only the dot plot draws it today — see `placeDotPlot`. It lives on
+   * `PointOverride` rather than on `DotPlotSpec` because it is a property of a
+   * datum, so a chart re-typed from a dot plot to a bar keeps its captions for
+   * whenever the other placers learn to print them.
+   */
+  note?: string;
   /**
    * Manual nudge from the computed anchor, applied AFTER the collision solve —
    * and it pins the label, so the solver routes other labels around it rather
@@ -254,6 +292,16 @@ export interface AxisSpec {
    */
   tickMarks?: 'none' | 'out' | 'in';
   /**
+   * The rule drawn along the axis, independent of its labels.
+   *
+   * Undefined means the chart kind's default — a category chart draws the
+   * baseline and lets gridlines carry the values, a scatter draws both — which
+   * is what every chart did before this knob existed. Set it to pin the line on
+   * or off: labelled axes with no rule, or a bare rule with no numbers, are
+   * both real house styles, and `show` alone couldn't say either.
+   */
+  line?: boolean;
+  /**
    * Per-chart type override for this axis's labels. The brand sets the size for
    * every chart; one chart on a crowded slide sometimes needs its own, and
    * without this the only way to get it was editing the design system.
@@ -302,6 +350,8 @@ export interface CagrArrow {
   numberFormat?: NumberFormat;
   label?: string;
   style?: ArrowStyle;
+  /** Type for the rate beside the arrow. Unset falls through to the brand's. */
+  font?: LabelFont;
 }
 
 export interface DifferenceArrow {
@@ -313,6 +363,8 @@ export interface DifferenceArrow {
   numberFormat?: NumberFormat;
   label?: string;
   style?: ArrowStyle;
+  /** Type for the delta beside the arrow. Unset falls through to the brand's. */
+  font?: LabelFont;
 }
 
 export interface TrendLine {
@@ -329,6 +381,8 @@ export interface ReferenceLine {
   value: number;
   label?: string;
   style?: LineStyle;
+  /** Type for the label riding the line. Unset falls through to the brand's. */
+  font?: LabelFont;
 }
 
 export interface Annotation {
@@ -337,6 +391,12 @@ export interface Annotation {
   text: string;
   offset: { dx: EMU; dy: EMU };
   connector?: boolean;
+  /**
+   * Type for the callout. Unset falls through to the brand's data-label role —
+   * the same escape hatch `AxisSpec.font` and `LegendSpec.font` are, and the
+   * reason a callout can be the loudest thing on the plot when it needs to be.
+   */
+  font?: LabelFont;
 }
 
 export interface Decorations {
@@ -456,6 +516,65 @@ export interface LineSpec extends SpecBase {
   data: GridData;
 }
 
+/**
+ * A dot plot — points on a line.
+ *
+ * Each category is a TRACK, and each series contributes one marker on it. It is
+ * the chart for "where does this sit between these other numbers": a current
+ * value against a baseline and a target, us against the peer set, this year
+ * against last. A clustered bar chart answers the same question with six inches
+ * of ink, and the bars' lengths invite a comparison of areas that nobody asked
+ * for; a dot plot spends its ink on the positions, which is the whole argument.
+ *
+ * Grid data, deliberately: the datasheet, the Devin contract and the type
+ * switcher all already know how to handle a category × series grid, so this
+ * kind arrives with a working editor rather than one of its own.
+ */
+export interface DotPlotSpec extends SpecBase {
+  kind: 'dotplot';
+  /**
+   * Unset means HORIZONTAL — the value axis runs left to right and the
+   * categories stack down the side, which is the opposite default to every
+   * other cartesian kind here. A dot plot's category labels are the row names
+   * of a small table ("Enterprise", "Peer median"), and standing those on end
+   * to save the reader nothing is how the chart stops being readable.
+   */
+  orientation?: 'vertical' | 'horizontal';
+  /**
+   * What is drawn THROUGH each track's points.
+   *
+   * - `range` — min to max, the reference line the markers sit on. The default:
+   *   it says "these numbers belong to one row" without adding a scale of its
+   *   own, and it is what makes a two-series dot plot read as a gap.
+   * - `axis` — a stem from the baseline to each point (a lollipop), for when the
+   *   distance from zero is the point rather than the spread.
+   * - `none` — bare markers.
+   */
+  connector?: 'range' | 'axis' | 'none';
+  /** Thickness of that connector across its own length. */
+  connectorWidthEmu?: EMU;
+  /**
+   * The series drawn as the SUBJECT: the top rung of the marker ladder — a
+   * filled accent disc at full size, its number set half again as large in the
+   * emphasis face. Every other series climbs towards it; see `RUNGS` in
+   * `place/dotPlot.ts`.
+   *
+   * Unset means the LAST series — the opposite of `LineSpec.emphasis`, and for
+   * a reason: a dot plot's rows are read left to right as a progression toward
+   * the number the slide is about ("was, is, target"), so the last marker is
+   * the one the reader came for. A series key names a different subject; `null`
+   * turns emphasis off and draws every marker alike.
+   */
+  emphasis?: string | null;
+  /**
+   * The SUBJECT's marker diameter, which the whole ladder is scaled from — the
+   * comparators keep their proportions to it rather than each needing a knob of
+   * their own. A series' own `format.marker.sizeEmu` still wins outright.
+   */
+  markerSizeEmu?: EMU;
+  data: GridData;
+}
+
 export interface AreaSpec extends SpecBase {
   kind: 'area';
   stack: StackMode;
@@ -541,6 +660,213 @@ export interface ButterflySpec extends SpecBase {
   centerLabelWidthEmu?: EMU;
 }
 
+/* ------------------------------------------------------------------ */
+/* Gantt                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One row of the schedule.
+ *
+ * Rows are a FLAT list with an explicit `level`, not a nested tree. Row order
+ * is layout order, so an in-order traversal of the tree is the array anyway;
+ * the datasheet rebuilds this on every keystroke, and reconstructing a tree
+ * from indentation while preserving stable keys is a graph rebuild per
+ * keypress. "The descendants of row i" is a forward scan while
+ * `level > level[i]`, which is the only place the tree is actually wanted.
+ */
+export interface GanttRow {
+  key: string;
+  label: string;
+  /** 0 is top-level; a row is a CHILD of the nearest row above with a smaller level. */
+  level: number;
+  /** Hide this row's descendants. The row itself always draws. */
+  collapsed?: boolean;
+  /**
+   * Paint every item in this row takes unless it names its own — the node
+   * "colour this whole workstream" writes to. Without it that gesture would
+   * litter the spec with one override per bar, and a bar added later would
+   * come back the wrong colour.
+   */
+  format?: SeriesFormat;
+  labels?: LabelSpec;
+  hidden?: boolean;
+}
+
+/**
+ * What an item is DRAWN as.
+ *
+ * A tagged union rather than a flat enum because three of the forms carry
+ * geometry of their own, and a `headEmu` sitting on every bar that will never
+ * read it is how a spec starts lying about itself.
+ */
+export type GanttItemShape =
+  | { form: 'bar'; rounded?: boolean }
+  /** A process arrow. `headEmu` is the point's length along the time axis. */
+  | { form: 'chevron'; headEmu?: EMU }
+  /** The flat-topped roll-up with tapered feet, drawn over a group of children. */
+  | { form: 'summary' }
+  /** A point in time. `to` is ignored. */
+  | { form: 'milestone'; marker?: MarkerShape }
+  /** A span brace, drawn clear of the bars rather than among them. */
+  | { form: 'bracket'; side?: 'above' | 'below' };
+
+export interface GanttItem {
+  key: string;
+  /** `GanttRow.key`. Several items may name the same row — that IS the feature. */
+  row: string;
+  label?: string;
+  /**
+   * Half-open `[from, to)` in epoch days: a task "ending 31 Mar" has `to` = 1
+   * Apr.
+   *
+   * Half-open because every piece of arithmetic a schedule does — duration,
+   * abutment, "does this overlap that" — is off by one under inclusive ends,
+   * and the one place the convention shows (the End column, the end label) is a
+   * single `to - 1` in the formatter. Getting this backwards is the single most
+   * common Gantt bug, so it is stated here rather than discovered later.
+   *
+   * `to` unset means a point in time, whatever shape the item carries.
+   */
+  from: EpochDay;
+  to?: EpochDay;
+  shape: GanttItemShape;
+  /** 0..1, drawn as a darker inner bar. */
+  progress?: number;
+  /** Stacking slot when two items in one row overlap in time; unset = solved. */
+  lane?: number;
+  format?: SeriesFormat;
+  labels?: LabelSpec;
+  hidden?: boolean;
+}
+
+/**
+ * One column of the description table beside the chart body.
+ *
+ * `side` and `order` together are the whole "reorder it relative to the chart"
+ * gesture: crossing the plot is a change to `side`, passing a neighbour is a
+ * change to `order`. Both survive an add or a remove because `key` never
+ * changes — the rule the rest of this file follows.
+ */
+export interface GanttColumn {
+  key: string;
+  header: string;
+  side: 'left' | 'right';
+  /** Ascending, left to right, WITHIN a side. Gaps are fine. */
+  order: number;
+  /**
+   * What fills the cells.
+   *
+   * - `label` — the row's own name, indented by its level. At most one.
+   * - `text` — authored per row, in `GanttSpec.cells`.
+   * - `start` / `end` / `duration` — DERIVED from the row's items, so a table
+   *   beside the chart can never contradict the bars it sits next to.
+   */
+  source: 'label' | 'text' | 'start' | 'end' | 'duration';
+  /** Unset means measured from the widest cell — see `solveGanttFrame`. */
+  widthEmu?: EMU;
+  align?: 'left' | 'center' | 'right';
+  /** For `start`/`end`: a pattern for `formatDate`, e.g. "d MMM ''yy". */
+  dateFormat?: string;
+  font?: LabelFont;
+  headerFont?: LabelFont;
+}
+
+/** One row of the multi-level timescale header. */
+export interface GanttTimescaleBand {
+  grain: GanttGrain;
+  /** Unset takes the grain's house pattern — see `DEFAULT_BAND_FORMAT`. */
+  format?: string;
+  font?: LabelFont;
+  /** Alternating cell tint, the way a printed calendar header is set. */
+  banded?: boolean;
+}
+
+export interface GanttShadedSpan {
+  id: string;
+  from: EpochDay;
+  to: EpochDay;
+  label?: string;
+  color?: ColorRef;
+  alpha?: number;
+}
+
+/** A dependency between two items, by item key. */
+export interface GanttLink {
+  id: string;
+  from: string;
+  to: string;
+  /** Finish-to-start by default, the only one most plans use. */
+  type?: 'FS' | 'SS' | 'FF' | 'SF';
+  style?: ArrowStyle;
+}
+
+/**
+ * A Gantt chart — the one kind here that answers "when", not "how big".
+ *
+ * Horizontal by construction and never turned: time runs left to right and the
+ * rows stack down the side. See `supportsTurn`, which excludes it explicitly —
+ * that predicate is permissive by default, so a Gantt would otherwise be handed
+ * a rotation handle that puts the calendar on its end.
+ *
+ * Its own data shape rather than a grid: a row holds SEVERAL items, each a span
+ * rather than a number, and the description table beside it is authored
+ * columns. See `dataShapeOf`.
+ */
+export interface GanttSpec extends SpecBase {
+  kind: 'gantt';
+  rows: GanttRow[];
+  items: GanttItem[];
+  /** Authored text for `source: 'text'` columns: rowKey -> columnKey -> text. */
+  cells?: Record<string, Record<string, string>>;
+  columns: GanttColumn[];
+
+  timescale: {
+    /** Unset = derived from the items and rounded out to whole calendar cells. */
+    min?: EpochDay;
+    max?: EpochDay;
+    /** Header rows, COARSEST first. Empty means no header at all. */
+    bands: GanttTimescaleBand[];
+    /** 0 = Sunday. Drives week bands and weekend shading. */
+    weekStart?: 0 | 1;
+    /** Days that count as working, 0..6. Unset means Mon–Fri. */
+    workdays?: number[];
+  };
+
+  /**
+   * The today line.
+   *
+   * `at` is REQUIRED when shown, and is NOT a default the compiler fills in.
+   * `compileChart` is pure by contract — same instance in, byte-identical
+   * elements out — which is what lets the canvas, an SSR thumbnail and a .pptx
+   * agree. A `Date.now()` inside a placer breaks that on the first render. The
+   * store stamps `at` when the chart is inserted and refreshes it on an
+   * explicit "move to today", so the deck's date is a fact about the deck.
+   */
+  today?: { show: boolean; at: EpochDay; label?: string; style?: LineStyle };
+
+  shading?: {
+    weekends?: { show: boolean; color?: ColorRef; alpha?: number };
+    spans?: GanttShadedSpan[];
+  };
+
+  ruler?: {
+    /** The rule between two rows. */
+    rows?: GridlineSpec;
+    /** The vertical rules dropped from the finest timescale band. */
+    bands?: GridlineSpec;
+  };
+
+  /** Alternating row tint, read under the bars. */
+  banding?: { show: boolean; color?: ColorRef; alpha?: number };
+
+  /** Unset = the plot's height divided by the visible rows. */
+  rowHeightEmu?: EMU;
+  /** How much of a row band a bar fills across. Unset = the house value. */
+  barHeightPct?: number;
+
+  links?: GanttLink[];
+}
+
 export type ChartSpec =
   | ColumnBarSpec
   | LineSpec
@@ -549,10 +875,12 @@ export type ChartSpec =
   | PieSpec
   | ScatterSpec
   | BubbleSpec
+  | DotPlotSpec
   | WaterfallSpec
   | SankeySpec
   | MekkoSpec
-  | ButterflySpec;
+  | ButterflySpec
+  | GanttSpec;
 
 /* ------------------------------------------------------------------ */
 /* Narrowing helpers                                                  */
@@ -565,7 +893,8 @@ export type GridSpec =
   | AreaSpec
   | ComboSpec
   | PieSpec
-  | MekkoSpec;
+  | MekkoSpec
+  | DotPlotSpec;
 
 export const isGridSpec = (s: ChartSpec): s is GridSpec =>
   s.kind === 'column' ||
@@ -575,18 +904,38 @@ export const isGridSpec = (s: ChartSpec): s is GridSpec =>
   s.kind === 'combo' ||
   s.kind === 'pie' ||
   s.kind === 'donut' ||
-  s.kind === 'mekko';
+  s.kind === 'mekko' ||
+  s.kind === 'dotplot';
 
 export const isXYSpec = (s: ChartSpec): s is ScatterSpec | BubbleSpec =>
   s.kind === 'scatter' || s.kind === 'bubble';
 
+/**
+ * Is this axis's rule drawn, once `AxisSpec.line` has had its say?
+ *
+ * The one place that knows the per-kind default, so the popover's toggle and
+ * the compiler can't disagree about what "on" looks like before anyone touches
+ * it: an XY chart draws both rules, a category chart draws the baseline under
+ * its labels and lets the gridlines carry the values.
+ */
+export function axisLineVisible(spec: ChartSpec, axis: AxisId): boolean {
+  const ax = spec.axes[axis];
+  if (ax?.line !== undefined) return ax.line;
+  if (isXYSpec(spec)) return axis !== 'y2';
+  return axis === 'x' && (ax?.show ?? true);
+}
+
 export const isWaterfallSpec = (s: ChartSpec): s is WaterfallSpec =>
   s.kind === 'waterfall';
+
+export const isDotPlotSpec = (s: ChartSpec): s is DotPlotSpec => s.kind === 'dotplot';
 
 export const isSankeySpec = (s: ChartSpec): s is SankeySpec => s.kind === 'sankey';
 
 export const isButterflySpec = (s: ChartSpec): s is ButterflySpec =>
   s.kind === 'butterfly';
+
+export const isGanttSpec = (s: ChartSpec): s is GanttSpec => s.kind === 'gantt';
 
 /** Does this kind stack its marks? Drives label content and totals. */
 export const isStacked = (s: ChartSpec): boolean =>
@@ -594,6 +943,34 @@ export const isStacked = (s: ChartSpec): boolean =>
 
 export const isStacked100 = (s: ChartSpec): boolean =>
   'stack' in s && s.stack === 'stacked100';
+
+/**
+ * Can this kind carry a SECOND value axis on the far side?
+ *
+ * The kinds whose series are measured quantities that might be measured in
+ * different units — a rate over a build, a headcount beside a cost. A pie has
+ * no value axis to pair, a mekko's is fixed at 100%, and a waterfall is one
+ * series by construction, so none of them can.
+ */
+export const supportsSecondaryAxis = (kind: ChartKind): boolean =>
+  kind === 'column' ||
+  kind === 'bar' ||
+  kind === 'line' ||
+  kind === 'area' ||
+  kind === 'combo';
+
+/**
+ * The series plotted against the secondary axis.
+ *
+ * The `axis` field is per series and authored — a combo's line is on the right
+ * only because someone (or `defaultChartSpec`) said so. Kinds that can't carry
+ * a second axis return nothing, so a stray `axis: 'secondary'` surviving a type
+ * change can't split a pie's scale in two.
+ */
+export const secondarySeriesKeys = (spec: ChartSpec): Set<string> =>
+  isGridSpec(spec) && supportsSecondaryAxis(spec.kind)
+    ? new Set(spec.data.series.filter((s) => s.axis === 'secondary').map((s) => s.key))
+    : new Set();
 
 /**
  * Horizontal value axis?
@@ -608,6 +985,10 @@ export const isHorizontal = (s: ChartSpec): boolean =>
   (s.kind === 'waterfall' && s.orientation === 'bar') ||
   ((s.kind === 'line' || s.kind === 'area' || s.kind === 'combo') &&
     s.orientation === 'horizontal') ||
+  // A dot plot is the other way up by default — see `DotPlotSpec.orientation`.
+  (s.kind === 'dotplot' && s.orientation !== 'vertical') ||
   // A Sankey flows left to right unless told otherwise — the opposite default
   // to everything else here, because that IS the canonical Sankey.
-  (s.kind === 'sankey' && s.orientation !== 'vertical');
+  (s.kind === 'sankey' && s.orientation !== 'vertical') ||
+  // A Gantt has no other way up: time runs left to right, always.
+  s.kind === 'gantt';

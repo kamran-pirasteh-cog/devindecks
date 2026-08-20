@@ -121,6 +121,18 @@ describe('chartResultContract', () => {
     expect(contractFor(defaultChartSpec('pie') as ColumnBarSpec).columns).toEqual(['label', 'value']);
   });
 
+  it("asks for a dot plot's captions as text, not as figures", () => {
+    const c = contractFor(defaultChartSpec('dotplot') as unknown as ColumnBarSpec);
+    expect(c.columns).toContain('s0_note');
+    const schema = c.jsonSchema as {
+      properties: { rows: { items: { properties: Record<string, { type?: string[] }> } } };
+    };
+    // A caption typed `number` would have the schema reject the date the prompt
+    // just asked for.
+    expect(schema.properties.rows.items.properties.s0_note.type).toEqual(['string', 'null']);
+    expect(schema.properties.rows.items.properties.s0_value.type).toEqual(['number', 'null']);
+  });
+
   it('carries the waterfall Kind through as a closed enum', () => {
     const c = contractFor(defaultChartSpec('waterfall') as unknown as ColumnBarSpec);
     expect(c.columns).toContain('role');
@@ -210,17 +222,34 @@ describe('buildDevinChartPrompt', () => {
     expect(t).toContain('2 decimal places');
   });
 
-  it('says the subject is unspecified rather than guessing one', () => {
+  it('asks which entity rather than guessing one', () => {
     const t = buildDevinChartPrompt(column(), {}).text;
-    expect(t).toContain('SUBJECT: not specified');
+    expect(t).toContain('Which entity is this about?');
   });
 
-  it('says the metric is unlabelled rather than writing a placeholder', () => {
+  it('treats a subject read out of a title as an assumption to confirm', () => {
+    const t = buildDevinChartPrompt(column(), { deckTitle: 'Q3 Board Review' }).text;
+    expect(t).toContain('_(assumed — confirm below)_');
+    expect(t).toContain('Is the subject Q3 Board Review?');
+  });
+
+  it('takes a deck tag as stated, with nothing to confirm', () => {
+    const t = buildDevinChartPrompt(column(), { deckTags: ['Acme Corp'], deckTitle: 'Q3' }).text;
+    expect(t).not.toContain('assumed — confirm below');
+    expect(t).not.toContain('Is the subject');
+  });
+
+  it('asks what the metric is rather than writing a placeholder', () => {
     const spec = column();
     spec.axes.y.title = undefined;
     const t = prompt(spec);
-    expect(t).toContain('METRIC: not labelled');
+    expect(t).toContain('What is being measured');
     expect(t).not.toContain('the metric shown');
+  });
+
+  it('will not start with a question outstanding', () => {
+    expect(prompt()).toContain('Ask before you research');
+    expect(prompt()).toContain('ask anything else you need');
   });
 
   it('does not read "Mid-Market" as the dimension "market"', () => {

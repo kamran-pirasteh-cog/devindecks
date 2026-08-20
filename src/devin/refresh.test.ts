@@ -33,6 +33,54 @@ const deckOf = (slides: Slide[], over: Partial<Deck> = {}): Deck => ({
 
 /* ------------------------------------------------------------------ */
 
+describe('clarifying questions', () => {
+  const withChart = () => {
+    const spec = defaultChartSpec('column', 'clustered') as ColumnBarSpec;
+    spec.data.categories = [
+      { key: 'c0', label: 'FY24' },
+      { key: 'c1', label: 'FY25' },
+    ];
+    spec.data.series = [
+      { key: 's0', name: 'Enterprise', values: [100, 120] },
+      { key: 's1', name: 'SMB', values: [40, 55] },
+    ];
+    return deckOf([{ id: 'sl_1', elements: [], charts: [chart('ch_1', spec)] }]);
+  };
+
+  it('asks before researching, and invites the questions it could not predict', () => {
+    const { text } = buildDeckRefreshPrompt(withChart());
+    expect(text).toContain('Ask these first');
+    expect(text).toContain('Ask before you research');
+    expect(text).toContain('ask anything else you need');
+  });
+
+  it('asks which entity, how the segments are cut and which calendar applies', () => {
+    const { clarifications } = buildDeckRefreshPrompt(withChart());
+    const topics = clarifications.map((c) => c.topic);
+    expect(topics).toContain('Subject');
+    expect(topics).toContain('Segmentation');
+    expect(topics).toContain('Timeframe');
+    expect(clarifications.find((c) => c.topic === 'Segmentation')?.question).toContain(
+      'Enterprise, SMB',
+    );
+  });
+
+  it('pools repeated questions instead of asking once per chart', () => {
+    const deck = withChart();
+    const twice = deckOf([deck.slides[0], { ...deck.slides[0], id: 'sl_2' }], { tags: deck.tags });
+    const subjects = buildDeckRefreshPrompt(twice).clarifications.filter(
+      (c) => c.topic === 'Subject',
+    );
+    expect(subjects).toHaveLength(1);
+  });
+
+  it('asks for every figure to be checked, not just the ones that look stale', () => {
+    const { text } = buildDeckRefreshPrompt(withChart());
+    expect(text).toContain('exhaustive verification, not a spot-check');
+    expect(text).toContain('Check every figure independently');
+  });
+});
+
 describe('collectDeckNumbers', () => {
   it('inventories one number per series × category, addressed by key', () => {
     const spec = defaultChartSpec('column', 'clustered') as ColumnBarSpec;

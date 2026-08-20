@@ -93,3 +93,33 @@ describe('stackTops', () => {
     expect(stackTops(d, 2)).toEqual([40, 20]);
   });
 });
+
+describe('deriveGrid — the secondary axis', () => {
+  const secondary = new Set(['s1']);
+
+  it('keeps a secondary series out of the primary extent, so the left axis fits the left data', () => {
+    const d = deriveGrid(grid([[400, 500], [18, 24]]), 'clustered', { secondary });
+    expect(d.extent).toEqual([0, 400, 0, 500]);
+    expect(d.extentSecondary).toEqual([0, 18, 0, 24]);
+  });
+
+  it('leaves it out of the totals — a rate is not part of the sum of its parts', () => {
+    const d = deriveGrid(grid([[400, 500], [18, 24]]), 'stacked', { secondary });
+    expect(d.totals).toEqual([400, 500]);
+  });
+
+  it('never stacks it, whatever the chart stacks', () => {
+    const d = deriveGrid(grid([[400], [18]]), 'stacked', { secondary });
+    expect(at(d, 1, 0)).toMatchObject({ base: 0, top: 18 });
+  });
+
+  it('keeps its own units under 100% stacking rather than becoming a share', () => {
+    const d = deriveGrid(grid([[300], [100], [18]]), 'stacked100', {
+      secondary: new Set(['s2']),
+    });
+    // The two primary series split the category between them…
+    expect(at(d, 0, 0).top).toBeCloseTo(0.75);
+    // …and the rate on the other axis is still 18.
+    expect(at(d, 2, 0)).toMatchObject({ base: 0, top: 18, labelValue: 18 });
+  });
+});

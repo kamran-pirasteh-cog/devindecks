@@ -22,6 +22,8 @@ import {
   emuToInches,
   emuToPoints,
   FONTS,
+  inchesToEmu,
+  ROUND_RECT_RADIUS_RATIO,
   pageNumberInk,
   pageNumberLabel,
   resolveColor,
@@ -131,11 +133,15 @@ function bodyBoxOpts(body: TextBody) {
     // Always explicit: unset insets mean flush text here (DEFAULT_TEXT_INSETS),
     // but PowerPoint's own default is 0.1in/0.05in — leaving `margin` off would
     // let the exported deck re-inset text the editor showed flush.
+    //
+    // ORDER IS [left, right, bottom, top] — pptxgenjs maps the array straight
+    // onto lIns/rIns/bIns/tIns in that sequence (not the CSS order), so a
+    // clockwise-from-top array silently swaps a box's left inset with its top.
     margin: [
-      emuToPoints(body.insets?.t ?? DEFAULT_TEXT_INSETS.t),
+      emuToPoints(body.insets?.l ?? DEFAULT_TEXT_INSETS.l),
       emuToPoints(body.insets?.r ?? DEFAULT_TEXT_INSETS.r),
       emuToPoints(body.insets?.b ?? DEFAULT_TEXT_INSETS.b),
-      emuToPoints(body.insets?.l ?? DEFAULT_TEXT_INSETS.l),
+      emuToPoints(body.insets?.t ?? DEFAULT_TEXT_INSETS.t),
     ],
   };
 }
@@ -226,9 +232,41 @@ function pictureCrop(el: Extract<SlideElement, { type: 'picture' }>) {
 
 // pptxgenjs slide typing is broad; keep the mapping loosely typed at the seam.
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * The width a box that must NOT wrap is given over its own measurement.
+ *
+ * `wrap: false` leaves as `<a:bodyPr wrap="none">`. PowerPoint honours it;
+ * Google Slides drops it on import and wraps every text box to its own width.
+ * That matters because the boxes carrying it are the ones measured to their
+ * string and given a single line of height — chart ticks, data labels, legend
+ * entries — so the moment Slides wraps one, the second line lands on top of
+ * whatever sits beneath it. A four-series legend paints over its own entries.
+ *
+ * So a no-wrap box leaves with headroom on the axis its text runs along, grown
+ * away from the edge its alignment pins it to (both edges when it's centred, or
+ * rotated, where the box turns about its own centre). The box is invisible —
+ * this only applies with no fill and no outline — and the text keeps its
+ * position on both renderers, so the slack costs nothing and buys a full
+ * substituted-font's worth of width error.
+ */
+const NOWRAP_HEADROOM = inchesToEmu(0.12);
+
+function nowrapHeadroom(el: TextElement) {
+  if (el.body.wrap !== false || el.fill || el.outline) return xywh(el);
+  const align = el.body.paragraphs[0]?.align ?? 'left';
+  const symmetric = el.rotation !== undefined || align === 'center' || align === 'justify';
+  const left = symmetric || align === 'right' ? NOWRAP_HEADROOM : 0;
+  const right = symmetric || align === 'left' ? NOWRAP_HEADROOM : 0;
+  return {
+    ...xywh(el),
+    x: emuToInches(el.rect.x - left),
+    w: emuToInches(el.rect.w + left + right),
+  };
+}
+
 function addTextElement(slide: any, el: TextElement, ds: DesignSystem) {
   slide.addText(textRuns(el.body, ds), {
-    ...xywh(el),
+    ...nowrapHeadroom(el),
     ...bodyBoxOpts(el.body),
     fill: fillOpts(el.fill, ds),
     line: outlineOpts(el.outline, ds),
@@ -241,7 +279,16 @@ function addShapeElement(slide: any, el: ShapeElement, ds: DesignSystem) {
     ...xywh(el),
     fill: fillOpts(el.fill, ds) ?? { type: 'none' },
     line: outlineOpts(el.outline, ds),
-    rectRadius: el.preset === 'pill' ? emuToInches(el.rect.h) / 2 : undefined,
+    // Both rounded presets ship their radius. `roundRect` without one takes
+    // OOXML's default adj of 1/6 of the shorter side — rounder than the 12% the
+    // canvas draws, and the difference reads as the shape having been altered
+    // on import.
+    rectRadius:
+      el.preset === 'pill'
+        ? emuToInches(el.rect.h) / 2
+        : el.preset === 'roundRect'
+          ? emuToInches(Math.min(el.rect.w, el.rect.h)) * ROUND_RECT_RADIUS_RATIO
+          : undefined,
   };
   if (el.body) {
     slide.addText(textRuns(el.body, ds), { ...opts, shape: shapeType, ...bodyBoxOpts(el.body) });
@@ -319,7 +366,16 @@ export function buildPptx(deck: Deck, ds: DesignSystem): PptxGenJS {
         case 'line':
           slide.addShape('line', {
             ...xywh(el),
-            line: outlineOpts(el.outline, ds),
+            line: {
+              ...outlineOpts(el.outline, ds),
+              // The model has carried these since the line element existed and
+              // nothing drew one until a Gantt's dependency links, where the
+              // head IS the direction of the dependency — a link exported
+              // headless says two tasks are related but not which follows which.
+              ...(el.startArrow ? { beginArrowType: 'triangle' as const } : {}),
+              ...(el.endArrow ? { endArrowType: 'triangle' as const } : {}),
+            },
+            flipV: el.flipV || undefined,
           });
           break;
         case 'path':

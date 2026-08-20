@@ -16,7 +16,13 @@ import type { ChartKind, LegendPosition } from './spec';
 
 /** A reference into `DesignSystem.type`, with local tweaks. */
 export interface TypeRoleRef {
-  role: 'title' | 'subtitle' | 'heading' | 'body' | 'caption' | 'kpiValue';
+  /**
+   * Any role id in `DesignSystem.type`, including one an admin added — the
+   * union this used to be couldn't name those. Resolve it through
+   * `resolveTypeRole`, never by bare index: the role it names may have been
+   * removed since this style was saved.
+   */
+  role: string;
   sizePt?: number;
   bold?: boolean;
   /**
@@ -89,7 +95,7 @@ export const DEFAULT_CHART_STYLE: ChartStyle = {
   fonts: {
     axis: { role: 'caption', sizePt: 8.5 },
     dataLabel: { role: 'caption', sizePt: 10.5, weight: 500 },
-    legend: { role: 'caption', sizePt: 9 },
+    legend: { role: 'caption', sizePt: 9, weight: 500 },
     title: { role: 'body', sizePt: 13, weight: 400 },
   },
   axis: {

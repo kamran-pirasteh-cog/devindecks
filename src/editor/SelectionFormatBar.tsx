@@ -27,7 +27,9 @@ import {
   resolveColor,
   token,
   type BulletKind,
+  type ChartRef,
   type ColorRef,
+  type FontFamily,
   type ColorToken,
   type DashStyle,
   type DesignSystem,
@@ -38,6 +40,8 @@ import {
 } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { CustomColorSwatch, customHexOf } from './color';
+import { CHART_FACES, CHART_TYPE_SIZES, partFontOf, resolvedType } from './chart/partFont';
+import { isStickyPart, STICKY_NOTE_ROLE } from './sticky';
 
 const DASHES: { value: DashStyle; label: string; pattern: string }[] = [
   { value: 'solid', label: 'Solid', pattern: '' },
@@ -59,6 +63,16 @@ const OUTLINE_FALLBACK: Outline = {
   widthEmu: pointsToEmu(1),
   dash: 'solid',
 };
+
+/**
+ * The size ladder with the part's CURRENT size folded in.
+ *
+ * The brand's roles land on halves — a tick is 8.5pt, a data label 10.5 — and a
+ * `<select>` whose value isn't among its options renders blank, which reads as
+ * "no size" for a part that plainly has one.
+ */
+const sizeOptions = (current: number): number[] =>
+  [...new Set([...CHART_TYPE_SIZES, current])].sort((a, b) => a - b);
 
 const Divider = () => <div className="mx-0.5 h-5 w-px bg-zinc-200 dark:bg-zinc-700" />;
 
@@ -342,9 +356,15 @@ function agreedOn<T extends string>(values: T[]): T | '' {
  * body carries text. An imported box with a fill lands as a shape rather than
  * a text element, and a caption in a rounded rect is still a caption: either
  * way the corner and border controls are noise next to the type controls.
+ *
+ * A sticky's parts count too. A sticky is a piece of paper you write on, not a
+ * shape you style: its corners, its border and its tape's transparency are the
+ * sticky's own look, derived and re-derived by `syncStickyGeometry`, so the bar
+ * offers the same controls a text box gets and nothing else.
  */
 function isTextBoxLike(el: SlideElement): boolean {
   if (el.type === 'text') return true;
+  if (isStickyPart(el)) return true;
   return el.type === 'shape' && !!el.body?.paragraphs.length;
 }
 
@@ -370,15 +390,34 @@ export function SelectionFormatBar({
 
   // A chart part is a shape or a text box, but offering "Font" and "List" for
   // a bar is nonsense — the chart cluster replaces them.
-  const chartRefs = selected.map((e) => e.chartRef).filter(Boolean);
+  const chartRefs = selected
+    .map((e) => e.chartRef)
+    .filter((r): r is ChartRef => r !== undefined);
   const isChart = chartRefs.length > 0 && chartRefs.length === selected.length;
   const chartId = isChart ? chartRefs[0]!.chartId : null;
 
   const hasText = !isChart && selected.some((e) => e.type === 'text' || (e.type === 'shape' && e.body));
   const hasFillable = selected.some((e) => e.type === 'text' || e.type === 'shape');
+  // Transparency rides with the border controls, not the type controls: a text
+  // box's fill is almost always flat or absent, so the dropdown is noise there.
+  const hasFillTransparency = selected.some(
+    (e) => (e.type === 'text' || e.type === 'shape') && !isTextBoxLike(e),
+  );
   if (isChart && chartId) {
+    // Drilled into a PART, or holding the whole chart? Same test the canvas
+    // uses for its control box (`wholeChartSelected`): selecting the chart
+    // selects all forty of its parts, and reading the first of those as "the
+    // selected part" would offer the type of whichever one happened to be
+    // painted first. Only a real drill-in carries a part to format.
+    const chartParts = slide?.elements.filter((e) => e.chartRef?.chartId === chartId) ?? [];
+    const wholeChart =
+      chartParts.length > 0 && chartParts.every((e) => selectedIds.includes(e.id));
     return (
-      <ChartFormatCluster chartId={chartId} onOpenData={onOpenChartData} />
+      <ChartFormatCluster
+        chartId={chartId}
+        refs={wholeChart ? [] : chartRefs}
+        onOpenData={onOpenChartData}
+      />
     );
   }
   // A picture answers to none of the controls below — no fill, no type — so it
@@ -395,7 +434,13 @@ export function SelectionFormatBar({
   const hasBorder = selected.some((e) => e.type !== 'picture' && !isTextBoxLike(e));
   if (!hasText && !hasFillable && !hasBorder) return null;
 
-  const fillPrimary = selected.find((e) => e.type === 'text' || e.type === 'shape');
+  // Fill on a sticky means the PAPER's fill: pushing it across the whole
+  // selection would repaint the tape (and the text box behind the words) in the
+  // same colour, and the tape's translucent grey is what makes it read as tape.
+  const stickyNotes = selected.filter((e) => e.role === STICKY_NOTE_ROLE);
+  const fillIds = stickyNotes.length ? stickyNotes.map((e) => e.id) : selectedIds;
+  const fillPrimary =
+    stickyNotes[0] ?? selected.find((e) => e.type === 'text' || e.type === 'shape');
   const fill = fillPrimary?.type === 'text' || fillPrimary?.type === 'shape' ? fillPrimary.fill : undefined;
   // Rounded because the model stores opacity: a value nudged elsewhere still
   // needs to land on an integer percentage to match an <option>.
@@ -615,36 +660,38 @@ export function SelectionFormatBar({
               // Recoloring keeps whatever transparency is already set — the two
               // are independent controls, so one shouldn't reset the other.
               onPick={(color) =>
-                store().setFill(selectedIds, {
+                store().setFill(fillIds, {
                   kind: 'solid',
                   color,
                   alpha: fill?.kind === 'solid' ? fill.alpha : undefined,
                 })
               }
-              onNone={() => store().setFill(selectedIds, { kind: 'none' })}
+              onNone={() => store().setFill(fillIds, { kind: 'none' })}
             />
           </Group>
-          <Group label="Transparency">
-            <select
-              value={fillTransparencyPct}
-              onChange={(e) =>
-                store().setFillAlpha(selectedIds, 1 - parseFloat(e.target.value) / 100)
-              }
-              aria-label="Fill transparency"
-              title="Fill transparency"
-              // Nothing to make see-through until there's a fill to see through.
-              disabled={fill?.kind !== 'solid'}
-              className={`${FIELD_CLASS} disabled:opacity-40`}
-            >
-              {[...new Set([...TRANSPARENCY_PCT, fillTransparencyPct])]
-                .sort((a, b) => a - b)
-                .map((p) => (
-                  <option key={p} value={p}>
-                    {p}%
-                  </option>
-                ))}
-            </select>
-          </Group>
+          {hasFillTransparency ? (
+            <Group label="Transparency">
+              <select
+                value={fillTransparencyPct}
+                onChange={(e) =>
+                  store().setFillAlpha(fillIds, 1 - parseFloat(e.target.value) / 100)
+                }
+                aria-label="Fill transparency"
+                title="Fill transparency"
+                // Nothing to make see-through until there's a fill to see through.
+                disabled={fill?.kind !== 'solid'}
+                className={`${FIELD_CLASS} disabled:opacity-40`}
+              >
+                {[...new Set([...TRANSPARENCY_PCT, fillTransparencyPct])]
+                  .sort((a, b) => a - b)
+                  .map((p) => (
+                    <option key={p} value={p}>
+                      {p}%
+                    </option>
+                  ))}
+              </select>
+            </Group>
+          ) : null}
         </>
       ) : null}
 
@@ -833,12 +880,16 @@ function CropIcon() {
  */
 function ChartFormatCluster({
   chartId,
+  refs,
   onOpenData,
 }: {
   chartId: string;
+  /** The parts selected inside the chart, if the drill-in is on a part. */
+  refs: ChartRef[];
   onOpenData?: (chartId: string) => void;
 }) {
   const store = useEditor.getState;
+  const ds = useEditor((s) => s.designSystem);
   const chart = useEditor((s) =>
     s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.charts?.find((c) => c.id === chartId),
   );
@@ -847,6 +898,25 @@ function ChartFormatCluster({
   const spec = chart.spec;
   const labels = spec.decorations.labels;
   const stacked = isStacked(spec);
+
+  /**
+   * The type the selected part carries, if it carries any.
+   *
+   * Same resolver the popover beside the part uses, so the two surfaces cannot
+   * disagree about which node a size lands on. Null for a bar or a gridline:
+   * those have no text, and the cluster stays out of the bar rather than
+   * offering a control that writes to nothing on screen.
+   */
+  const partFont = partFontOf(spec, refs);
+  /**
+   * What that part is drawn in NOW — the override where there is one, the
+   * brand's role behind it. Resolved rather than shown as "inherited": a
+   * dropdown reading "Brand" answers none of the question the reader opened it
+   * to ask, and the text-box cluster above has always resolved its own.
+   */
+  const shown = partFont ? resolvedType(spec, ds, partFont) : null;
+  const patchFont = (patch: Partial<NonNullable<typeof partFont>['font']>) =>
+    store().patchChart(chartId, (d) => partFont?.apply(d, patch ?? {}));
 
   return (
     <div
@@ -867,6 +937,68 @@ function ChartFormatCluster({
       </button>
 
       <Divider />
+
+      {/* Type for whatever part is selected — the same Font / Size / B / Text
+          quartet a text box gets, because "make this label bigger" is the same
+          question whether the text sits in a box or on a chart. Absent for a
+          part that carries none. */}
+      {partFont && shown ? (
+        <>
+          <Group label="Font">
+            <select
+              value={shown.font}
+              onChange={(e) => patchFont({ font: e.target.value as FontFamily })}
+              aria-label={`${partFont.name} font`}
+              title={partFont.name}
+              className={FIELD_CLASS}
+            >
+              {CHART_FACES.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.value}
+                </option>
+              ))}
+            </select>
+          </Group>
+          <Group label="Size">
+            <select
+              value={shown.sizePt}
+              onChange={(e) => patchFont({ sizePt: parseFloat(e.target.value) })}
+              aria-label={`${partFont.name} size`}
+              className={FIELD_CLASS}
+            >
+              {sizeOptions(shown.sizePt).map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </Group>
+          <ToggleButton
+            active={shown.bold}
+            label={`Bold ${partFont.name.toLowerCase()}`}
+            onClick={() => patchFont({ bold: !shown.bold })}
+          >
+            <span className="font-bold">B</span>
+          </ToggleButton>
+          <ToggleButton
+            active={shown.italic}
+            label={`Italic ${partFont.name.toLowerCase()}`}
+            onClick={() => patchFont({ italic: !shown.italic })}
+          >
+            <span className="italic">I</span>
+          </ToggleButton>
+          <ColorPicker
+            label="Text"
+            value={partFont.font?.color}
+            colors={ds.colors}
+            ds={ds}
+            onPick={(color) => patchFont({ color })}
+            onNone={() => patchFont({ color: undefined })}
+          />
+
+          <Divider />
+        </>
+      ) : null}
 
       <Group label="Stacking">
         <select

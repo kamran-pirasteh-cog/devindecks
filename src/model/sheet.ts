@@ -54,6 +54,30 @@ export interface SheetColumn {
   /** A blank here is a real defect (a scatter point with no Y isn't a point). */
   required?: boolean;
   widthPx?: number;
+  /** A short note printed beside the header — a combo's "Line", say. */
+  badge?: string;
+  /**
+   * Whether the HEADER can be retyped, and whether the column can be dropped.
+   *
+   * Unset means "as a series column does": a series column has always been
+   * renamable and removable, because renaming it renames the series. An
+   * author-defined column (a Gantt's description columns) is the first that is
+   * neither a series nor fixed by the kind, so it has to say so itself.
+   */
+  renamable?: boolean;
+  removable?: boolean;
+  /**
+   * What a `date` column stores.
+   *
+   * - `label` (the default, and every existing use) — the author's WORDING is
+   *   the value. A category axis reading "FY25" must still read "FY25" after a
+   *   round trip; `parseGrain` only decides what period it denotes.
+   * - `day` — the value is an actual calendar day, and a cell that cannot be
+   *   parsed into one is a defect rather than a label. See `parseDay`.
+   */
+  dateGrain?: 'day' | 'label';
+  /** A pattern for `formatDate`, for a `dateGrain: 'day'` column. */
+  dateFormat?: string;
 }
 
 /** A row band above or below the data, e.g. Mekko's column widths. */
@@ -111,6 +135,8 @@ export interface SheetSeries {
   key: string;
   name: string;
   color?: ColorRef;
+  /** Carried onto this series' columns — see `SheetColumn.badge`. */
+  badge?: string;
 }
 
 export interface SheetModel {
@@ -125,6 +151,21 @@ export interface SheetModel {
   series: SheetSeries[];
   rows: CellValue[][];
   bandValues: Record<string, CellValue[]>;
+  /**
+   * A short note per row, printed in its key cell. Set where a row is drawn
+   * differently from its neighbours — a combo's line series under the
+   * transposed layout, where a row IS a series.
+   */
+  rowMarks?: (string | undefined)[];
+  /**
+   * Indent depth per row, for a sheet whose rows form a tree.
+   *
+   * The same shape and the same reason as `rowMarks`: it belongs to the key
+   * cell rather than to a column of its own, because a column for it would be
+   * one more thing to keep in step with the tree it describes — and because
+   * indenting is a gesture on the name, not a number anybody wants to type.
+   */
+  rowIndent?: (number | undefined)[];
 }
 
 export interface CellAddress {
@@ -189,12 +230,19 @@ export function columnsFor(schema: SheetSchema, series: SheetSeries[]): SheetCol
     schema.perSeries.map((col) => ({
       ...col,
       key: `${s.key}.${col.key}`,
-      // A single value column per series is titled by the series; a multi-field
-      // series (scatter's X and Y) needs both names to stay legible.
-      header: schema.perSeries.length === 1 ? s.name : `${s.name} ${col.header}`,
+      // The series' VALUE column is titled by the series alone — that column is
+      // what the series IS, and "FY23 Value" beside "FY23 Note" makes the
+      // reader parse a header to find the numbers. Every other field says which
+      // one it is, so a scatter's X and Y stay legible and a dot plot's caption
+      // column can't be mistaken for the figure next to it.
+      header:
+        schema.perSeries.length === 1 || col.key === 'value'
+          ? s.name
+          : `${s.name} ${col.header}`,
       seriesKey: s.key,
       seriesIndex: i,
       field: col.key,
+      ...(s.badge ? { badge: s.badge } : {}),
     })),
   );
   return [...schema.keyColumns, ...perSeries, ...schema.extraColumns];

@@ -9,6 +9,7 @@
  * Cognition brand kit through the Admin view; the fonts, however, are final.
  */
 
+import type { SlideArchetype } from './archetype';
 import type { FontFamily } from './fonts';
 import { DEFAULT_PAGE_NUMBERS, type PageNumberStyle } from './pageNumbers';
 import { DEFAULT_CHART_STYLE, type ChartStyle, type ChartStyleVariant } from './chart/style';
@@ -33,7 +34,108 @@ export interface TypeRole {
    */
   weight?: number;
   colorToken: string;
+  /**
+   * Display name, for roles added in Admin. The six built-ins are named in the
+   * UI that knows them; a role somebody invents needs to carry its own name,
+   * because its id is a generated `custom.N` nobody would recognize.
+   */
+  label?: string;
 }
+
+/**
+ * The six roles CODE resolves through — `ds.type.body.sizePt` is the fallback
+ * size in a dozen places, callout slots and chart text name these ids, and
+ * `factories` builds a title out of `ds.type.title`. They're a contract, not
+ * data, which is why Admin can add and remove roles beside them but not delete
+ * one of them.
+ */
+export const BUILT_IN_TYPE_ROLES = [
+  'title',
+  'subtitle',
+  'heading',
+  'body',
+  'caption',
+  'kpiValue',
+] as const;
+
+export type BuiltInTypeRole = (typeof BUILT_IN_TYPE_ROLES)[number];
+
+/** The built-ins, guaranteed; anything else an admin has added, by id. */
+export type TypeRoles = { [K in BuiltInTypeRole]: TypeRole } & {
+  [id: string]: TypeRole;
+};
+
+/**
+ * Where a logo sits on a slide. `title-hero` is the large centred lockup a
+ * title slide gets; the corners are the small mark everything else gets.
+ */
+export type LogoPlacement =
+  | 'none'
+  | 'title-hero'
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right';
+
+export const LOGO_PLACEMENTS: readonly LogoPlacement[] = [
+  'none',
+  'title-hero',
+  'top-left',
+  'top-right',
+  'bottom-left',
+  'bottom-right',
+];
+
+/**
+ * The brand's mark, and the rule for where it goes.
+ *
+ * Sized by HEIGHT alone: a logo has a fixed aspect ratio it must never be
+ * stretched out of, and height is the dimension that has to agree with the type
+ * around it. Width follows from the asset.
+ *
+ * `srcLight`/`srcDark` are the mark for light and dark grounds — the same asset
+ * in two inks, not two different logos. Either may be absent: a brand with only
+ * a dark-ground mark still works, and a design system with NEITHER is the
+ * normal starting state, which is why `logoSlot` renders a placeholder rather
+ * than treating an unset logo as "no logo wanted".
+ */
+export interface BrandLogo {
+  /** For light backgrounds. Absent ⇒ a placeholder is drawn instead. */
+  srcLight?: string;
+  /** For dark backgrounds. Absent ⇒ `srcLight` is used on every ground. */
+  srcDark?: string;
+  /** Rendered height in inches. Width follows the asset's aspect ratio. */
+  heightIn: number;
+  /**
+   * Aspect ratio (w / h) of the asset, recorded when it was uploaded so layout
+   * can reserve the right width without loading the image. 1 until measured.
+   */
+  aspect: number;
+  /** Placement per archetype, falling back to `default`. */
+  placement: Partial<Record<SlideArchetype, LogoPlacement>> & { default: LogoPlacement };
+}
+
+export const DEFAULT_BRAND_LOGO: BrandLogo = {
+  heightIn: 0.28,
+  aspect: 1,
+  placement: {
+    // A title slide carries the lockup as its own element of the design; a
+    // section divider is deliberately bare, so the mark doesn't punctuate every
+    // few slides.
+    title: 'title-hero',
+    section: 'none',
+    // Full-bleed artwork has nowhere safe for a mark.
+    image: 'none',
+    default: 'bottom-right',
+  },
+};
+
+/** Where the logo goes on a slide of this archetype. */
+export const logoPlacementFor = (
+  logo: BrandLogo | undefined,
+  archetype: SlideArchetype,
+): LogoPlacement =>
+  logo ? (logo.placement[archetype] ?? logo.placement.default) : 'none';
 
 export interface DesignSystem {
   id: string;
@@ -49,15 +151,12 @@ export interface DesignSystem {
     mono: FontFamily;
   };
 
-  /** Semantic text roles templates and defaults resolve through. */
-  type: {
-    title: TypeRole;
-    subtitle: TypeRole;
-    heading: TypeRole;
-    body: TypeRole;
-    caption: TypeRole;
-    kpiValue: TypeRole;
-  };
+  /**
+   * Semantic text roles templates and defaults resolve through. Open-shaped on
+   * purpose: a brand with a pull-quote or a legal line can add the role here
+   * rather than have every deck set it by hand. See `BUILT_IN_TYPE_ROLES`.
+   */
+  type: TypeRoles;
 
   /** How page numbers look on any deck that turns them on. */
   pageNumbers: PageNumberStyle;
@@ -85,6 +184,14 @@ export interface DesignSystem {
    * `model/chart/previewData.ts`. Unset means the built-in sample.
    */
   previewData?: ChartPreviewData;
+
+  /**
+   * The brand's mark and where it belongs. Optional because every design system
+   * stored before logos existed has no such field — and because an unset logo
+   * is a real state with real behaviour (a visible placeholder), not a missing
+   * value to be defaulted away.
+   */
+  logo?: BrandLogo;
 }
 
 /** A color reference on any element. Prefer tokens; hex is an escape hatch. */
@@ -113,6 +220,29 @@ export function resolveColor(ref: ColorRef | undefined, ds: DesignSystem): strin
   const t = ds.colors.find((c) => c.id === ref.token) ?? ds.colors.find((c) => c.id === id);
   return t?.hex ?? '#000000';
 }
+
+export const isBuiltInTypeRole = (id: string): id is BuiltInTypeRole =>
+  (BUILT_IN_TYPE_ROLES as readonly string[]).includes(id);
+
+/**
+ * Every role, built-ins first and added ones in the order they were added.
+ * Object key order would already give this for a system created today, but not
+ * for one stored before a built-in existed and backfilled since — so the order
+ * is stated here rather than inherited from however the record got built.
+ */
+export const typeRoleIds = (ds: DesignSystem): string[] => [
+  ...BUILT_IN_TYPE_ROLES,
+  ...Object.keys(ds.type).filter((id) => !isBuiltInTypeRole(id)),
+];
+
+/**
+ * The role an id names, or body. Anything resolving a role by STRING goes
+ * through here: a chart slot or an element can name a role that has since been
+ * removed, and the readable answer to that is the deck's default text, not a
+ * crash on `undefined.sizePt`.
+ */
+export const resolveTypeRole = (ds: DesignSystem, id: string | undefined): TypeRole =>
+  (id ? ds.type[id] : undefined) ?? ds.type.body;
 
 /** Placeholder design system. Real brand kit arrives via Admin. */
 export const DEFAULT_DESIGN_SYSTEM: DesignSystem = {

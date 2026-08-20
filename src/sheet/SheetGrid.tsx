@@ -63,6 +63,7 @@ import {
 } from './gridExtent';
 import {
   advance,
+  isSingleCell,
   move,
   reconcileSelection,
   selectColumn,
@@ -87,6 +88,14 @@ export interface SheetGridProps {
   onLiveEdit?: (next: SheetModel) => void;
   diagnostics?: SheetDiagnostic[];
   onPickSeriesColor?: (seriesKey: string) => void;
+  /**
+   * Indent or outdent a row, for a sheet whose rows form a tree.
+   *
+   * A callback rather than a column, because the depth is a property of the ROW
+   * and lives on the spec — the sheet only carries it (see
+   * `SheetModel.rowIndent`). The owner clamps it; this only reports the gesture.
+   */
+  onIndentRow?: (r: number, delta: 1 | -1) => void;
 }
 
 const HISTORY_LIMIT = 50;
@@ -110,6 +119,42 @@ const MIN_COL_W = 56;
  */
 const ROW_H = 26;
 
+/**
+ * The "Line" chip a combo's non-column series carries, in a header or in a row's
+ * key cell. Small, uppercase and outlined rather than filled: it has to be
+ * legible next to a series name without competing with the numbers.
+ */
+function RenderBadge({ mark }: { mark: string }) {
+  return (
+    <span
+      title={`Drawn as a ${mark.toLowerCase()}, not a bar`}
+      className="shrink-0 rounded border border-indigo-300 px-1 text-[9px] font-medium uppercase leading-[14px] tracking-wide text-indigo-600 dark:border-indigo-500/50 dark:text-indigo-300"
+    >
+      {mark}
+    </span>
+  );
+}
+
+/**
+ * The two-cell range a single-cell fill acts on — the active cell plus the one
+ * it copies from. Null at the top row or the first column, where there is no
+ * neighbour to copy.
+ */
+const fromNeighbour = (
+  addr: CellAddress,
+  dir: 'down' | 'right',
+): { anchor: CellAddress; focus: CellAddress } | null => {
+  const prev =
+    dir === 'down'
+      ? addr.r > 0
+        ? { r: addr.r - 1, c: addr.c }
+        : null
+      : addr.c > 0
+        ? { r: addr.r, c: addr.c - 1 }
+        : null;
+  return prev ? { anchor: prev, focus: addr } : null;
+};
+
 /** Phantom columns have no model key, so they need one for the width map. */
 const widthKey = (sheet: SheetModel, extent: GridExtent, c: number): string =>
   c < extent.realCols ? (sheet.columns[c]?.key ?? `c${c}`) : `phantom:${c - extent.realCols}`;
@@ -127,6 +172,19 @@ interface Menu {
   y: number;
 }
 
+/**
+ * What is being dragged, and by what address.
+ *
+ * A discriminated union rather than one `{from, to}` pair, because the two
+ * kinds are not indexed the same way: a row drag carries ROW indices and a
+ * series drag carries SERIES indices. They happened to be interchangeable
+ * numbers, which is exactly the sort of thing that stays correct right up until
+ * a third kind is added and silently reorders the wrong axis.
+ */
+type Drag =
+  | { kind: 'row'; from: number; to: number }
+  | { kind: 'series'; from: number; to: number };
+
 export function SheetGrid({
   sheet,
   ds,
@@ -134,10 +192,11 @@ export function SheetGrid({
   onLiveEdit,
   diagnostics = [],
   onPickSeriesColor,
+  onIndentRow,
 }: SheetGridProps) {
   const [sel, setSel] = useState<SheetSelection>(() => singleCell({ r: 0, c: 0 }));
   const [editing, setEditing] = useState<{ addr: CellAddress; text: string } | null>(null);
-  const [drag, setDrag] = useState<{ kind: 'row' | 'series'; from: number; to: number } | null>(null);
+  const [drag, setDrag] = useState<Drag | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [widths, setWidths] = useState<Record<string, number>>({});
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -241,6 +300,38 @@ export function SheetGrid({
     setSel((s) => reconcileSelection(next, s, gridExtent(next, { minRows })));
   }, [minRows, sheet, onChange]);
 
+  /**
+   * Bring the pane with the caret. Arrow keys, Tab and Enter can walk the
+   * active cell off the visible edge, and a grid that leaves the viewport
+   * behind feels broken — so every move re-checks the active cell against the
+   * scroll port and nudges it back in. `scrollIntoView` isn't usable here: the
+   * header is sticky, so it would park the row underneath it, and it would also
+   * scroll the page around the panel. Hence the manual delta, insetting the top
+   * by the header's own height.
+   */
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const cell = el.querySelector<HTMLElement>('[data-active-cell]');
+    if (!cell) return;
+
+    const head = el.querySelector('thead');
+    const inset = head?.getBoundingClientRect().height ?? 0;
+    const view = el.getBoundingClientRect();
+    const box = cell.getBoundingClientRect();
+
+    let left = 0;
+    if (box.left < view.left) left = box.left - view.left;
+    else if (box.right > view.right) left = Math.min(box.right - view.right, box.left - view.left);
+
+    let top = 0;
+    if (box.top < view.top + inset) top = box.top - (view.top + inset);
+    else if (box.bottom > view.bottom)
+      top = Math.min(box.bottom - view.bottom, box.top - (view.top + inset));
+
+    if (left || top) el.scrollBy({ left, top });
+  }, [sel.active.r, sel.active.c]);
+
   /* ---- editing ---- */
 
   const beginEdit = useCallback(
@@ -279,7 +370,7 @@ export function SheetGrid({
       editorOpen.current = false;
       if (editing && open) {
         const col = columnAt(sheet, extent, editing.addr.c);
-        const { value, warning } = coerceCell(editing.text, col?.type ?? 'text');
+        const { value, warning } = coerceCell(editing.text, col ?? 'text');
         if (warning) setNotice(warning.message);
 
         // Tabbing through blank cells must not litter the sheet with rows and
@@ -394,6 +485,15 @@ export function SheetGrid({
       return;
     }
 
+    // ⌥←/⌥→ indent, which is where the gesture lives in every outliner. Tab is
+    // taken by `advance`, and rebinding it here would break moving across a
+    // row — the thing people do a thousand times more often.
+    if (onIndentRow && e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      onIndentRow(sel.range.focus.r, e.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
+
     const dir =
       e.key === 'ArrowUp'
         ? 'up'
@@ -445,14 +545,17 @@ export function SheetGrid({
         return;
     }
 
-    if (meta && e.key.toLowerCase() === 'd') {
+    // Excel's fill chords. Both stop propagating: ⌘D on the canvas duplicates
+    // the selected chart, and ⌘R would reload the page — neither is what the
+    // keystroke means with the keyboard in a grid.
+    if (meta && (e.key.toLowerCase() === 'd' || e.key.toLowerCase() === 'r')) {
       e.preventDefault();
-      apply(fillRange(sheet, sel.range, 'down'));
-      return;
-    }
-    if (meta && e.key.toLowerCase() === 'r') {
-      e.preventDefault();
-      apply(fillRange(sheet, sel.range, 'right'));
+      e.stopPropagation();
+      const dir = e.key.toLowerCase() === 'd' ? 'down' : 'right';
+      // A single cell fills FROM its neighbour, as Excel does: ⌘D on one cell
+      // means "same as the row above", not "fill nothing".
+      const range = isSingleCell(sel) ? fromNeighbour(sel.active, dir) : sel.range;
+      if (range) apply(fillRange(sheet, range, dir));
       return;
     }
 
@@ -734,8 +837,19 @@ export function SheetGrid({
                       if (real) setDrag({ kind: 'row', from: r, to: r });
                     }}
                     onMouseEnter={() => setDrag((d) => (d?.kind === 'row' && real ? { ...d, to: r } : d))}
+                    // A row's name lives in its first cell, so renaming from the
+                    // gutter is just opening that cell's editor.
+                    onDoubleClick={() => {
+                      setDrag(null);
+                      setSel(singleCell({ r, c: 0 }));
+                      beginEdit({ r, c: 0 });
+                    }}
                     onContextMenu={openMenu('row', r, 0)}
-                    title={real ? 'Drag to reorder · right-click for row actions' : undefined}
+                    title={
+                      real
+                        ? 'Double-click to rename · drag to reorder · right-click for row actions'
+                        : undefined
+                    }
                     className={`select-none border-b border-r border-zinc-200 bg-zinc-50 text-center align-middle text-[10px] font-normal dark:border-zinc-700 dark:bg-zinc-800 ${
                       real
                         ? 'cursor-grab text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-700'
@@ -761,11 +875,14 @@ export function SheetGrid({
                         onDoubleClick={() => beginEdit({ r, c })}
                         onContextMenu={openMenu('cell', r, c)}
                         title={problem?.message}
+                        data-active-cell={isActive || undefined}
                         className={[
                           // No vertical padding: the row height is fixed, so
                           // padding would just let a tall cell fight it.
                           'relative border-b border-r border-zinc-100 px-1.5 align-middle dark:border-zinc-800',
-                          col?.type === 'number' ? 'text-right tabular-nums' : 'text-left',
+                          col?.type === 'number' || col?.dateGrain === 'day'
+                            ? 'text-right tabular-nums'
+                            : 'text-left',
                           selected ? 'bg-indigo-50 dark:bg-indigo-950/40' : '',
                           isActive ? 'outline outline-2 -outline-offset-2 outline-indigo-500' : '',
                           invalid || problem?.severity === 'error' ? 'text-red-600' : '',
@@ -784,7 +901,7 @@ export function SheetGrid({
                               // blank area: there's no cell to preview into
                               // until the edit is committed.
                               if (onLiveEdit && !isPhantom(extent, editing.addr)) {
-                                const { value: v } = coerceCell(text, col?.type ?? 'text');
+                                const { value: v } = coerceCell(text, col ?? 'text');
                                 onLiveEdit(setCell(sheet, editing.addr.r, editing.addr.c, v));
                               }
                             }}
@@ -807,8 +924,31 @@ export function SheetGrid({
                               </option>
                             ))}
                           </select>
+                        ) : c === 0 && sheet.rowMarks?.[r] ? (
+                          // A combo's line row says so in its own key cell:
+                          // this row is on a different axis from the bars
+                          // above it, and nothing else in the grid shows that.
+                          <span className="flex items-center gap-1">
+                            <span className="truncate">
+                              {formatCell(value, col?.format, col?.dateFormat)}
+                            </span>
+                            <RenderBadge mark={sheet.rowMarks[r]!} />
+                          </span>
                         ) : (
-                          <span className="block truncate">{formatCell(value, col?.format)}</span>
+                          <span
+                            className="block truncate"
+                            // Indent belongs to the key cell, not to a column of
+                            // its own — a column for it would be one more thing
+                            // to keep in step with the tree it describes, and
+                            // the gesture people reach for is on the NAME.
+                            style={
+                              c === 0 && sheet.rowIndent?.[r]
+                                ? { paddingLeft: sheet.rowIndent[r]! * 12 }
+                                : undefined
+                            }
+                          >
+                            {formatCell(value, col?.format, col?.dateFormat)}
+                          </span>
                         )}
                         {(problem || invalid) && !isActive ? (
                           <span
@@ -882,6 +1022,7 @@ export function SheetGrid({
               return next;
             })
           }
+          onIndentRow={onIndentRow}
         />
       ) : null}
     </div>
@@ -953,19 +1094,40 @@ function HeaderCell({
   const owns = series !== undefined && col.field === sheet.schema.perSeries[0]?.key;
   const canDelete = owns && sheet.series.length > 1;
 
+  // The name is a label until it's being renamed, so a plain click on the
+  // header selects the column the way it does in a spreadsheet. Double-click
+  // — or the column menu's Rename — swaps in the input.
+  const [editingName, setEditingName] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
+  /** The name as it stood when the edit opened, so Escape can put it back. */
+  const nameBefore = useRef('');
+
+  const beginRename = useCallback(() => {
+    if (!owns) return;
+    nameBefore.current = series!.name;
+    setEditingName(true);
+  }, [owns, series]);
+
   useEffect(() => {
-    if (!renaming || !nameRef.current) return;
+    if (renaming) {
+      beginRename();
+      onRenamed();
+    }
+  }, [renaming, beginRename, onRenamed]);
+
+  useEffect(() => {
+    if (!editingName || !nameRef.current) return;
     nameRef.current.focus();
     nameRef.current.select();
-    onRenamed();
-  }, [renaming, onRenamed]);
+  }, [editingName]);
 
   return (
     <th
       onMouseDown={(e) => (e.button === 2 ? undefined : onSelect())}
       onMouseEnter={() => (dragging ? onDragOver(seriesIndex) : undefined)}
+      onDoubleClick={beginRename}
       onContextMenu={onContextMenu}
+      title={owns ? 'Double-click to rename this series' : undefined}
       className={`relative border-b border-r border-zinc-200 bg-zinc-50 px-1.5 py-1 text-left font-medium dark:border-zinc-700 dark:bg-zinc-800 ${
         dragging && dragging.to === seriesIndex && seriesIndex >= 0 ? 'bg-indigo-100 dark:bg-indigo-950' : ''
       }`}
@@ -994,17 +1156,36 @@ function HeaderCell({
           />
         ) : null}
 
-        {owns ? (
+        {owns && editingName ? (
           <input
             ref={nameRef}
             value={series!.name}
             onMouseDown={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
             onChange={(e) => onRename(e.target.value)}
+            onBlur={() => setEditingName(false)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                setEditingName(false);
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onRename(nameBefore.current);
+                setEditingName(false);
+              }
+              e.stopPropagation();
+            }}
             className="w-full min-w-0 bg-transparent text-xs font-medium outline-none"
           />
+        ) : owns ? (
+          <span className="w-full min-w-0 cursor-text truncate text-xs font-medium">
+            {series!.name}
+          </span>
         ) : (
           <span className="truncate text-[11px] text-zinc-500">{col.header}</span>
         )}
+
+        {owns && col.badge ? <RenderBadge mark={col.badge} /> : null}
 
         {canDelete ? (
           <button
@@ -1084,6 +1265,7 @@ function ContextMenu({
   onClearColumn,
   onRenameColumn,
   onAutoWidth,
+  onIndentRow,
 }: {
   menu: Menu;
   sheet: SheetModel;
@@ -1097,6 +1279,7 @@ function ContextMenu({
   onClearColumn: (c: number) => void;
   onRenameColumn: (columnKey: string) => void;
   onAutoWidth: (c: number) => void;
+  onIndentRow?: (r: number, delta: 1 | -1) => void;
 }) {
   const { caps } = sheet.schema;
   const items: { label: string; run: () => void; danger?: boolean }[] = [];
@@ -1115,6 +1298,11 @@ function ContextMenu({
         label: 'Insert row below',
         run: () => onInsertRow(realRow ? r + 1 : extent.realRows),
       });
+    }
+    // Where people look for it, since ⌥←/⌥→ is not discoverable on its own.
+    if (realRow && onIndentRow) {
+      if (r > 0) items.push({ label: 'Indent', run: () => onIndentRow(r, 1) });
+      items.push({ label: 'Outdent', run: () => onIndentRow(r, -1) });
     }
     if (realRow && sheet.rows.length > (caps.minRows ?? 1)) {
       items.push({ label: 'Delete row', run: () => onDeleteRow(r), danger: true });

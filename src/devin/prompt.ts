@@ -14,6 +14,12 @@
 import { WATERFALL_ROLE_OPTIONS, sheetSchemaFor, sheetSeriesFor, type ChartSpec } from '@/model';
 import { chartResultContract, type ChartResultContract } from './contract';
 import { inferChartMeta, periodPhrase, type ChartMeta, type DeckContext } from './meta';
+import {
+  ASK_FIRST_RULES,
+  chartClarifications,
+  clarificationLines,
+  type Clarification,
+} from './questions';
 
 export interface DevinPromptContext extends DeckContext {
   /** Stamped in the footer so an answer can be matched to its question. */
@@ -27,6 +33,8 @@ export interface DevinPrompt {
   text: string;
   meta: ChartMeta;
   contract: ChartResultContract;
+  /** What the chart couldn't say, surfaced so a caller can count or show it. */
+  clarifications: Clarification[];
 }
 
 const KIND_NOUN: Record<string, string> = {
@@ -41,7 +49,9 @@ const KIND_NOUN: Record<string, string> = {
   bubble: 'bubble chart',
   waterfall: 'waterfall (bridge) chart',
   mekko: 'Mekko chart',
+  dotplot: 'dot plot',
   butterfly: 'butterfly chart',
+  gantt: 'Gantt chart (a project timeline)',
 };
 
 export function buildDevinChartPrompt(
@@ -61,35 +71,34 @@ export function buildDevinChartPrompt(
   /* 1 — the task */
   lines.push('# Research task');
   lines.push('');
-  // Two things can be missing — what's being measured, and who it's about —
-  // and both are called out rather than papered over. A confident brief built
-  // on a guessed metric or a guessed company produces confident wrong numbers,
-  // which is far worse than a brief that asks one question first.
+  // A subject read out of a title is marked as provisional right here, in the
+  // one sentence that gets skimmed. A confident brief built on a guessed
+  // company produces confident wrong numbers, which is far worse than a brief
+  // that asks one question first.
   lines.push(
     [
       `Find the data for a **${noun}**`,
       meta.measure ? ` showing **${meta.measure}**` : '',
       subject ? ` for **${subject}**` : '',
+      subject && meta.subjectSource !== 'tag' ? ' _(assumed — confirm below)_' : '',
       '.',
     ].join(''),
   );
-  const gaps: string[] = [];
-  if (!meta.measure) {
-    gaps.push(
-      "**METRIC: not labelled.** The chart's value axis has no title and the series names don't share one, so what is being measured has to be confirmed before starting.",
-    );
-  }
-  if (!subject) {
-    gaps.push(
-      '**SUBJECT: not specified.** The chart does not say which company, market or entity this is about.',
-    );
-  }
-  if (gaps.length) {
-    lines.push('');
-    lines.push(`Ask before starting — ${gaps.length > 1 ? 'two things are' : 'this is'} unstated:`);
-    lines.push('');
-    lines.push(gaps.map((g) => `- ${g}`).join('\n'));
-  }
+  lines.push('');
+
+  /* 1a — the questions, before any research happens */
+  const clarifications = chartClarifications(meta);
+  lines.push('## Ask these first');
+  lines.push('');
+  lines.push(
+    'A chart says what it plots, not what was meant by it. Confirm every point below before looking anything up:',
+  );
+  lines.push('');
+  lines.push(clarificationLines(clarifications));
+  lines.push('');
+  lines.push('How to ask:');
+  lines.push('');
+  lines.push(ASK_FIRST_RULES.join('\n'));
   lines.push('');
 
   /* 2 — units */
@@ -126,6 +135,16 @@ export function buildDevinChartPrompt(
   if (schema.perSeries.length > 1) {
     lines.push(
       `- Each series needs ${schema.perSeries.map((c) => `**${c.header}**`).join(' and ')}.`,
+    );
+    lines.push('');
+  }
+
+  // The caption column asks for prose, not a figure, so it needs saying what
+  // for: without this the note comes back as a repeat of the number, or as a
+  // sentence too long to print under a dot.
+  if (schema.perSeries.some((c) => c.key === 'note')) {
+    lines.push(
+      '- **Note** is a short caption printed beside that figure on the chart — the date or period it is measured at ("Jan 2024", "Q2 FY26", "FY27 target"). A few words at most, and leave it blank rather than guessing at one.',
     );
     lines.push('');
   }
@@ -203,7 +222,7 @@ export function buildDevinChartPrompt(
       .join(' · '),
   );
 
-  return { text: lines.join('\n'), meta, contract };
+  return { text: lines.join('\n'), meta, contract, clarifications };
 }
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

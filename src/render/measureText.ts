@@ -19,6 +19,16 @@ export interface TextStyleMetrics {
   sizePt: number;
   bold?: boolean;
   /**
+   * Italic. Only the canvas measurer can act on this — a real italic face has
+   * its own advance widths — and it must be part of the cache key there, or the
+   * roman measurement of the same string would be served for the italic one.
+   *
+   * `metricMeasurer` ignores it deliberately: its width table is per character
+   * class, and across the three shipped faces the italics track their romans
+   * closely enough that inventing a factor would be a guess dressed as data.
+   */
+  italic?: boolean;
+  /**
    * Small-caps-free all-caps: the label is uppercased before it's measured and
    * before it's emitted. It has to be BOTH, or the axis gutter gets sized for
    * "FY24 revenue" and then renders "FY24 REVENUE" over the plot.
@@ -157,7 +167,7 @@ export function canvasMeasurer(): TextMeasurer {
   return {
     measure(text, style) {
       const shown = displayText(String(text ?? ''), style);
-      const key = `${style.font}|${style.bold ? 'b' : 'n'}|${shown}`;
+      const key = `${style.font}|${style.bold ? 'b' : 'n'}${style.italic ? 'i' : ''}|${shown}`;
       let widthAt100 = cache.get(key);
       if (widthAt100 === undefined) {
         let stack = stacks.get(style.font);
@@ -167,7 +177,11 @@ export function canvasMeasurer(): TextMeasurer {
         }
         // Measure once at a fixed size and scale — advance width is linear in
         // font size, so this turns N sizes into one measurement per string.
-        const font = `${style.bold ? 700 : 400} ${MEASURE_PX}px ${stack}`;
+        // Order matters: CSS `font` shorthand wants style before weight, and a
+        // context silently REFUSES a malformed value — leaving the previous
+        // font in place, which is the failure mode `resolveFontStack` above
+        // exists to avoid.
+        const font = `${style.italic ? 'italic ' : ''}${style.bold ? 700 : 400} ${MEASURE_PX}px ${stack}`;
         ctx.font = font;
         // An assignment the context refused leaves `ctx.font` unchanged; if
         // that happened, the measurement would be meaningless.

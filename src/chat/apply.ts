@@ -14,6 +14,7 @@
 import {
   inchesToEmu,
   pointsToEmu,
+  resolveTypeRole,
   type BulletKind,
   type ColorRef,
   type DesignSystem,
@@ -32,6 +33,16 @@ import {
 } from '@/model';
 import { newId, useEditor, type EditorState } from '@/store/editorStore';
 import { describeSlide } from './context';
+import { getAttachment } from './attachments';
+import {
+  bodyWithNumber,
+  describePlan,
+  parseRefreshCsv,
+  planRefresh,
+  writeToSpec,
+  type PlanEntry,
+  type RefreshPlan,
+} from '@/devin/applyRefresh';
 
 export interface ToolOutcome {
   text: string;
@@ -92,12 +103,14 @@ function retext(body: TextBody, text: string): TextBody {
   };
 }
 
-/** The design system's own type role, so an added title matches the deck's. */
+/**
+ * The design system's own type role, so an added title matches the deck's. The
+ * name the agent hands us is looked up rather than matched against a hardcoded
+ * five: roles an admin adds are exactly the ones no list here would know, and a
+ * slot role that names no type role (`decoration`) still falls back to body.
+ */
 function runStyleFor(role: string | undefined, ds: DesignSystem): Omit<TextRun, 'text'> {
-  const key = ({ title: 'title', subtitle: 'subtitle', heading: 'heading', body: 'body', caption: 'caption' } as const)[
-    role ?? 'body'
-  ];
-  const spec = key ? ds.type[key] : ds.type.body;
+  const spec = resolveTypeRole(ds, role);
   return {
     font: spec.font,
     sizePt: spec.sizePt,
@@ -435,6 +448,35 @@ function run(name: string, input: Input, get: () => EditorState): ToolOutcome {
       return ok(`Deleted ${found.join(', ')}.`);
     }
 
+    /* ---- refreshing figures ---- */
+
+    case 'preview_number_refresh':
+    case 'apply_number_refresh': {
+      const id = str(input.csv_id);
+      if (!id) return err(`${name} needs csv_id — the id from the attachment marker in the message.`);
+      const attachment = getAttachment(id);
+      if (!attachment) {
+        return err(`No attachment "${id}". Use the id exactly as the marker in the user's message writes it.`);
+      }
+      const { rows, problems } = parseRefreshCsv(attachment.text);
+      if (!rows.length) {
+        return err(`Couldn't read that CSV. ${problems.join(' ')}`);
+      }
+      const plan = planRefresh(s.deck, rows);
+      const preamble = problems.length ? `${problems.join(' ')}\n\n` : '';
+
+      if (name === 'preview_number_refresh') {
+        return ok(`${preamble}Nothing has been changed yet.\n${describePlan(plan)}`);
+      }
+
+      const only = strs(input.refs);
+      const applied = applyRefreshPlan(plan, only.length ? new Set(only) : undefined, get);
+      return ok(
+        `${preamble}${describePlan({ ...plan, entries: applied.entries, counts: applied.counts }, { applied: true })}` +
+          `\n\nAll of it is one undo step (⌘Z).`,
+      );
+    }
+
     case 'set_deck_title': {
       const title = str(input.title);
       if (!title) return err('set_deck_title needs a title.');
@@ -445,4 +487,56 @@ function run(name: string, input: Input, get: () => EditorState): ToolOutcome {
     default:
       return err(`No such tool "${name}".`);
   }
+}
+
+/**
+ * Writing a plan into the deck.
+ *
+ * Every edit is `transient`, so the whole refresh banks ONE undo entry: the
+ * closing `beginChange(false)` pushes the deck as it stood before the first
+ * figure moved. Ten pages of numbers then step back with a single ⌘Z, which is
+ * the only sane behaviour for an edit nobody watched happen.
+ *
+ * The open slide is restored afterwards — the store's chart and element actions
+ * work on whichever slide is current, so applying has to walk the deck, and
+ * leaving the user on page 14 would read as a bug.
+ */
+function applyRefreshPlan(
+  plan: RefreshPlan,
+  only: Set<string> | undefined,
+  get: () => EditorState,
+): { entries: PlanEntry[]; counts: RefreshPlan['counts'] } {
+  const wanted = plan.entries.filter(
+    (e) => e.status === 'change' && e.target && (!only || only.has(e.ref)),
+  );
+  const skipped = only
+    ? plan.entries
+        .filter((e) => e.status === 'change' && !only.has(e.ref))
+        .map((e) => ({ ...e, status: 'unchanged' as const, reason: 'Not in the refs you asked for.' }))
+    : [];
+
+  const startedOn = get().currentSlideId;
+  let wrote = 0;
+  for (const entry of wanted) {
+    const target = entry.target!;
+    get().setCurrentSlide(target.slideId);
+    if (target.kind === 'chart') {
+      get().patchChart(target.chartId, (spec) => void writeToSpec(spec, target.parts, entry.next!), true);
+    } else {
+      const el = get().currentSlide().elements.find((e) => e.id === target.elementId);
+      if (el?.type !== 'text') continue;
+      const body = bodyWithNumber(el, target.site, target.text);
+      if (!body) continue;
+      get().updateElement(target.elementId, { body } as Partial<SlideElement>, true);
+    }
+    wrote += 1;
+  }
+  // Only close the burst if something opened it; `beginChange` with no
+  // transient base would bank an undo entry for a no-op.
+  if (wrote) get().beginChange(false);
+  get().setCurrentSlide(startedOn);
+
+  const entries = [...plan.entries.filter((e) => !skipped.some((s) => s.ref === e.ref)), ...skipped];
+  const counts = { ...plan.counts, change: wrote, unchanged: plan.counts.unchanged + skipped.length };
+  return { entries, counts };
 }

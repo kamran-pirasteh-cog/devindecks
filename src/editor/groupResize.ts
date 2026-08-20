@@ -59,3 +59,42 @@ export function individualBox(
     h: start.h === 0 ? 0 : Math.max(4, start.h * sy),
   };
 }
+
+/**
+ * The factor a GROUP's axis takes when the keyboard grows it by `delta`.
+ *
+ * The step is absolute (⇧ + arrow is one nudge, whatever is selected), so the
+ * group's own box is what takes it, and its members take the factor that box
+ * ended up with. A group that is 4" wide and one that is 1" wide therefore both
+ * grow by the same step, exactly as PowerPoint's ⇧ + arrow does on a group.
+ */
+export function groupScaleFactor(size: number, delta: number, minSize: number): number {
+  if (!(size > 0)) return 1;
+  return Math.max(minSize, size + delta) / size;
+}
+
+/**
+ * Where one member of a group lands when the group box scales by `sx`/`sy`
+ * about `origin` — its top-left, so a keyboard resize pins the same corner an
+ * individual one does.
+ *
+ * Both the member's SIZE and its OFFSET from the origin scale: that is the
+ * difference between a group and a multi-selection. Inflating each member by
+ * the step instead (what this used to do) left the offsets alone, so the parts
+ * of a group grew into each other and the group's own proportions were lost.
+ */
+export function groupMemberRect(
+  origin: { x: number; y: number },
+  rect: { x: number; y: number; w: number; h: number },
+  sx: number,
+  sy: number,
+): { x: number; y: number; w: number; h: number } {
+  return {
+    x: Math.round(origin.x + (rect.x - origin.x) * sx),
+    y: Math.round(origin.y + (rect.y - origin.y) * sy),
+    // A line is 0 on its cross axis by definition and must stay 0; everything
+    // else keeps at least a sliver so rounding can't erase it.
+    w: rect.w === 0 ? 0 : Math.max(1, Math.round(rect.w * sx)),
+    h: rect.h === 0 ? 0 : Math.max(1, Math.round(rect.h * sy)),
+  };
+}

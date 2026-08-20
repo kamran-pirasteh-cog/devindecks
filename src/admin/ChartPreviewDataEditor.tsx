@@ -18,6 +18,7 @@ import {
   DEFAULT_CHART_PREVIEW_DATA,
   removePreviewCategory,
   removePreviewSeries,
+  setPreviewSecondary,
   setPreviewValue,
   type ChartPreviewData,
 } from '@/model';
@@ -30,14 +31,22 @@ const BTN =
 export function ChartPreviewDataEditor({
   data,
   onChange,
+  showSecondary = false,
 }: {
   /** The stored data, or undefined for the built-in sample. */
   data: ChartPreviewData | undefined;
   /** `undefined` clears the override and goes back to the built-in sample. */
   onChange: (next: ChartPreviewData | undefined) => void;
+  /**
+   * Show the right-hand axis row. Only the previews that HAVE a second axis —
+   * a combo's line — read it, and offering the row beside a pie is offering a
+   * control that does nothing.
+   */
+  showSecondary?: boolean;
 }) {
   const d = data ?? DEFAULT_CHART_PREVIEW_DATA;
   const custom = data !== undefined;
+  const secondary = d.secondary ?? DEFAULT_CHART_PREVIEW_DATA.secondary;
 
   const setCategory = (i: number, label: string) =>
     onChange({ ...d, categories: d.categories.map((c, x) => (x === i ? label : c)) });
@@ -144,7 +153,52 @@ export function ChartPreviewDataEditor({
         </table>
       </div>
 
+      {showSecondary ? (
+        <div className="mt-2 mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+          Right axis (the line)
+        </div>
+      ) : null}
+      {showSecondary ? (
+        <div className="mt-0 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+          <table className="w-full border-collapse text-left">
+            <tbody>
+              <tr>
+                <td className="w-28 px-1 py-0.5">
+                  <input
+                    value={secondary?.name ?? ''}
+                    onChange={(e) =>
+                      onChange(setPreviewSecondary(d, { name: e.target.value }))
+                    }
+                    aria-label="Right axis series name"
+                    className={`${CELL} font-medium`}
+                  />
+                </td>
+                {d.categories.map((cat, c) => (
+                  <td key={c} className="min-w-[6rem] px-1 py-0.5">
+                    <input
+                      value={secondary?.values[c] ?? ''}
+                      inputMode="decimal"
+                      onChange={(e) => {
+                        const raw = e.target.value.trim();
+                        const n = raw === '' ? null : Number(raw);
+                        if (n !== null && !Number.isFinite(n)) return;
+                        onChange(setPreviewSecondary(d, { at: c, value: n }));
+                      }}
+                      aria-label={`Right axis, ${cat}`}
+                      className={`${CELL} text-right tabular-nums`}
+                    />
+                  </td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
       <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
+        {showSecondary
+          ? 'The second row is the line, on its own axis down the right — a rate or a margin, in its own units. '
+          : ''}
         Preview numbers only — no chart on a slide reads these. A waterfall takes
         the first series, with the first row as its base and the last as a
         computed total; scatter, bubble and Sankey keep their own sample.

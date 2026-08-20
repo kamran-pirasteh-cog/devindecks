@@ -29,6 +29,7 @@ import {
 import { metricMeasurer } from '@/render/measureText';
 import { contrastRatio, hexToOklch, relativeLuminance } from './color';
 import { compileChart } from './compile';
+import { resolveChartTheme } from './theme';
 
 const FRAME = { x: inchesToEmu(1), y: inchesToEmu(1), w: inchesToEmu(8), h: inchesToEmu(4.5) };
 
@@ -225,6 +226,40 @@ describe('compileChart — axis scale and ticks', () => {
       (e) => e.chartRef?.part === 'mark',
     );
     expect(ticked).toEqual(bare);
+  });
+
+  const axisLines = (els: SlideElement[], axis: 'x' | 'y') =>
+    els.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'line' && e.chartRef.axis === axis,
+    );
+
+  it('draws the category baseline and no value rule by default', () => {
+    const els = compile(chart()).elements;
+    expect(axisLines(els, 'x')).toHaveLength(1);
+    expect(axisLines(els, 'y')).toHaveLength(0);
+  });
+
+  it('hides the axis rule on its own, leaving the numbers beside it', () => {
+    const els = compile(chart((s) => (s.axes.x.line = false))).elements;
+    expect(axisLines(els, 'x')).toHaveLength(0);
+    // The category names are still there — `line` is not `show`.
+    expect(
+      els.filter(
+        (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick' && e.chartRef.axis === 'x',
+      ),
+    ).not.toHaveLength(0);
+  });
+
+  it('draws a value rule when asked, though the house style has none', () => {
+    expect(axisLines(compile(chart((s) => (s.axes.y.line = true))).elements, 'y')).toHaveLength(1);
+  });
+
+  it('keeps the category rule when the labels are switched off', () => {
+    const els = compile(chart((s) => {
+      s.axes.x.show = false;
+      s.axes.x.line = true;
+    })).elements;
+    expect(axisLines(els, 'x')).toHaveLength(1);
   });
 
   it('ticks the category axis too, when that axis asks', () => {
@@ -969,6 +1004,14 @@ describe('compileChart — combo', () => {
     spec.render = render;
     return compile({ id: 'c1', groupId: 'g1', frame: FRAME, spec });
   };
+  /** The same chart with every series on the left axis. */
+  const oneAxis = (render: Record<string, 'column' | 'line' | 'area'>) => {
+    const spec = defaultChartSpec('combo', 'stacked') as ComboSpec;
+    spec.render = render;
+    spec.data.series = spec.data.series.map((s) => ({ ...s, axis: undefined }));
+    spec.axes = { ...spec.axes, y2: undefined };
+    return compile({ id: 'c1', groupId: 'g1', frame: FRAME, spec });
+  };
   const marksFor = (els: SlideElement[], series: string) =>
     els.filter((e) => e.chartRef?.part === 'mark' && e.chartRef.series === series);
   const pointOf = (el: SlideElement) =>
@@ -990,6 +1033,11 @@ describe('compileChart — combo', () => {
 
   it('keeps its line out of the column stack — stack covers the columns only', () => {
     const spec = defaultChartSpec('combo', 'stacked') as ComboSpec;
+    // On the LEFT axis, so this is about stacking alone: the line plots its own
+    // value from zero rather than riding on the stack. The right-hand axis it
+    // ships on is a separate question — see 'secondary value axis'.
+    spec.data.series = spec.data.series.map((s) => ({ ...s, axis: undefined }));
+    spec.axes = { ...spec.axes, y2: undefined };
     const data = spec.data;
     // The line plots its own value from zero, so its lowest point sits below
     // the columns it annotates rather than riding on top of them.
@@ -999,7 +1047,7 @@ describe('compileChart — combo', () => {
     const lineValue = data.series.find((s) => s.key === 's2')?.values[0] ?? 0;
     expect(lineValue).toBeLessThan(stackTop);
 
-    const els = combo({ s2: 'line' }).elements;
+    const els = oneAxis({ s2: 'line' }).elements;
     const line = marksFor(els, 's2')[0];
     const columns = els.filter(
       (e) => e.chartRef?.part === 'mark' && e.chartRef.series !== 's2',
@@ -1007,6 +1055,127 @@ describe('compileChart — combo', () => {
     const columnTop = Math.min(...columns.map((e) => e.rect.y));
     // Smaller y is higher up, so a line below the stack top has the larger y.
     expect(line.rect.y + line.rect.h).toBeGreaterThan(columnTop);
+  });
+});
+
+describe('compileChart — secondary value axis', () => {
+  const comboSpec = (mutate: (s: ComboSpec) => void = () => {}) => {
+    const spec = defaultChartSpec('combo', 'clustered') as ComboSpec;
+    mutate(spec);
+    return spec;
+  };
+  const run = (spec: ChartSpec) => compile({ id: 'c1', groupId: 'g1', frame: FRAME, spec });
+  const axisTicks = (els: SlideElement[], axis: string) =>
+    els.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.axis === axis && e.chartRef.sub === 'tick',
+    );
+
+  it('draws a right-hand axis for the combo line, in the line\'s own units', () => {
+    const { elements } = run(comboSpec());
+    const right = axisTicks(elements, 'y2');
+    expect(right.length).toBeGreaterThan(1);
+    // The rate is in per cent; the columns are absolute. Each axis says so.
+    expect(texts(right).every((t) => t.endsWith('%'))).toBe(true);
+    expect(texts(axisTicks(elements, 'y')).some((t) => t.endsWith('%'))).toBe(false);
+  });
+
+  it('puts it on the far side of the plot from the left axis', () => {
+    const { elements } = run(comboSpec());
+    const left = Math.max(...axisTicks(elements, 'y').map((e) => e.rect.x));
+    const right = Math.min(...axisTicks(elements, 'y2').map((e) => e.rect.x));
+    expect(right).toBeGreaterThan(left);
+    // And inside the chart, not hanging off the slide.
+    const far = Math.max(...axisTicks(elements, 'y2').map((e) => e.rect.x + e.rect.w));
+    expect(far).toBeLessThanOrEqual(FRAME.x + FRAME.w);
+  });
+
+  it('shares the tick count, so one set of gridlines is honest for both axes', () => {
+    const { elements } = run(comboSpec());
+    expect(axisTicks(elements, 'y2')).toHaveLength(axisTicks(elements, 'y').length);
+  });
+
+  it('scales the line against its own axis, not against the columns', () => {
+    const onOwnAxis = run(comboSpec());
+    const onLeftAxis = run(
+      comboSpec((s) => {
+        s.data.series = s.data.series.map((x) => ({ ...x, axis: undefined }));
+        s.axes = { ...s.axes, y2: undefined };
+      }),
+    );
+    const lineOf = (r: ReturnType<typeof compile>) =>
+      r.elements.find((e) => e.chartRef?.part === 'mark' && e.chartRef.series === 's2')!;
+    // A rate read against a revenue axis lies along the floor of the plot; its
+    // own axis lifts it into the picture.
+    expect(lineOf(onOwnAxis).rect.y).toBeLessThan(lineOf(onLeftAxis).rect.y);
+    expect(axisTicks(onLeftAxis.elements, 'y2')).toHaveLength(0);
+  });
+
+  it('draws no second axis while nothing is plotted against one', () => {
+    const { elements } = run(
+      comboSpec((s) => {
+        s.data.series = s.data.series.map((x) => ({ ...x, axis: undefined }));
+      }),
+    );
+    // The spec still carries a `y2` — an axis with no series on it draws nothing.
+    expect(axisTicks(elements, 'y2')).toHaveLength(0);
+  });
+
+  it('titles it in its own gutter, outside the numbers', () => {
+    const { elements } = run(comboSpec((s) => (s.axes = { ...s.axes, y2: { ...s.axes.y2!, title: 'Margin' } })));
+    const title = elements.find(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'y2' && e.chartRef.sub === 'title',
+    )!;
+    const ticks = axisTicks(elements, 'y2');
+    expect(title).toBeDefined();
+    // Rotated, so it is laid out flat and turned about its centre — the centre
+    // is the thing to compare, and it sits outside the numbers.
+    const centre = (e: SlideElement) => e.rect.x + e.rect.w / 2;
+    expect(centre(title)).toBeGreaterThan(Math.max(...ticks.map(centre)));
+  });
+
+  it('works on a column chart too — a rate beside its absolutes', () => {
+    const spec = defaultChartSpec('column', 'clustered') as ColumnBarSpec;
+    spec.data.series[2] = { ...spec.data.series[2], values: [4, 5, 6], axis: 'secondary' };
+    const { elements } = run(spec);
+    expect(axisTicks(elements, 'y2').length).toBeGreaterThan(1);
+    // Its bars are drawn against the right-hand scale, so a value a fortieth of
+    // the left axis's top is still a bar you can see.
+    const bars = elements.filter(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.series === 's2',
+    );
+    expect(bars).toHaveLength(3);
+    expect(Math.max(...bars.map((b) => b.rect.h))).toBeGreaterThan(inchesToEmu(1));
+  });
+});
+
+describe('compileChart — clustered combo band', () => {
+  const barsOf = (els: SlideElement[]) =>
+    els.filter((e) => e.chartRef?.part === 'mark' && e.chartRef.series !== 's2');
+
+  it('centres the cluster on its category, with no empty slot for the line', () => {
+    const combo = defaultChartSpec('combo', 'clustered') as ComboSpec;
+    const { elements } = compile({ id: 'c1', groupId: 'g1', frame: FRAME, spec: combo });
+    const bars = barsOf(elements);
+    expect(bars).toHaveLength(6);
+
+    // The first category's two bars, against the category label under them.
+    const first = bars.filter((b) => b.chartRef && 'point' in b.chartRef && b.chartRef.point === 'c0');
+    expect(first).toHaveLength(2);
+    const clusterCentre =
+      (Math.min(...first.map((b) => b.rect.x)) +
+        Math.max(...first.map((b) => b.rect.x + b.rect.w))) /
+      2;
+    const label = elements.find(
+      (e) =>
+        e.chartRef?.part === 'axis' &&
+        e.chartRef.axis === 'x' &&
+        e.chartRef.sub === 'tick' &&
+        e.chartRef.i === 0,
+    )!;
+    const labelCentre = label.rect.x + label.rect.w / 2;
+    // A cluster holding a slot open for the line sits half a bar to the left of
+    // its own category.
+    expect(Math.abs(clusterCentre - labelCentre)).toBeLessThan(first[0].rect.w / 10);
   });
 });
 
@@ -1434,5 +1603,111 @@ describe('compileChart — turned charts', () => {
         compile(instance).elements,
       );
     }
+  });
+});
+
+describe('compileChart — type on the decorations', () => {
+  /**
+   * A callout, a difference arrow and a reference line all put text on the
+   * plot, and until they carried a `font` the only way to change any of it was
+   * to edit the brand. These assert the override reaches the RUN, since that is
+   * what both the canvas and the pptx export read.
+   */
+  // Case-insensitive on purpose: the annotation role sets small caps, so the
+  // string on the slide is 'PEAK' even though the spec says 'Peak'.
+  const runOf = (els: SlideElement[], text: string) =>
+    els
+      .filter(isText)
+      .find((e) =>
+        e.body.paragraphs[0].runs[0].text.toLowerCase().includes(text.toLowerCase()),
+      )?.body.paragraphs[0].runs[0];
+
+  it('gives a callout its own face, size, weight and ink', () => {
+    const els = compile(
+      chart((s) => {
+        s.decorations.annotations = [
+          {
+            id: 'a1',
+            anchor: { at: 'point', series: s.data.series[0].key, point: s.data.categories[0].key },
+            text: 'Peak',
+            offset: { dx: 0, dy: 0 },
+            font: {
+              sizePt: 18,
+              bold: true,
+              font: 'Source Serif 4',
+              color: { kind: 'hex', hex: '#FF00FF' },
+            },
+          },
+        ];
+      }),
+    ).elements;
+    expect(runOf(els, 'Peak')).toMatchObject({
+      sizePt: 18,
+      bold: true,
+      font: 'Source Serif 4',
+      color: { kind: 'hex', hex: '#FF00FF' },
+    });
+  });
+
+  it('gives a difference arrow’s delta its own type', () => {
+    const els = compile(
+      chart((s) => {
+        s.decorations.differences = [
+          {
+            id: 'd1',
+            from: { at: 'point', series: s.data.series[0].key, point: s.data.categories[0].key },
+            to: { at: 'point', series: s.data.series[0].key, point: s.data.categories[1].key },
+            mode: 'absolute',
+            label: 'Growth',
+            font: { sizePt: 16, bold: true },
+          },
+        ];
+      }),
+    ).elements;
+    expect(runOf(els, 'Growth')).toMatchObject({ sizePt: 16, bold: true });
+  });
+
+  it('gives a reference line’s label its own type, ink included', () => {
+    const els = compile(
+      chart((s) => {
+        s.decorations.referenceLines = [
+          {
+            id: 'r1',
+            axis: 'y',
+            value: 100,
+            label: 'Target',
+            font: { sizePt: 14, color: { kind: 'hex', hex: '#00FF00' } },
+          },
+        ];
+      }),
+    ).elements;
+    expect(runOf(els, 'Target')).toMatchObject({
+      sizePt: 14,
+      color: { kind: 'hex', hex: '#00FF00' },
+    });
+  });
+
+  it('leaves the brand’s type in place when no override is set', () => {
+    const spec = defaultChartSpec('column', 'stacked') as ColumnBarSpec;
+    spec.decorations.annotations = [
+      {
+        id: 'a1',
+        anchor: {
+          at: 'point',
+          series: spec.data.series[0].key,
+          point: spec.data.categories[0].key,
+        },
+        text: 'Peak',
+        offset: { dx: 0, dy: 0 },
+      },
+    ];
+    const run = runOf(
+      compile({ id: 'c1', groupId: 'g1', frame: FRAME, spec }).elements,
+      'Peak',
+    );
+    const brand = resolveChartTheme(spec, DEFAULT_DESIGN_SYSTEM).text.dataLabel;
+    expect(run?.sizePt).toBe(brand.sizePt);
+    expect(run?.font).toBe(brand.font);
+    expect(run?.bold).not.toBe(true);
   });
 });

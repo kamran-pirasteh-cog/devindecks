@@ -135,3 +135,16 @@ export function marginGuides(
     horizontal: [m.top, m.contentTop, slideSize.h - m.bottom],
   };
 }
+
+/**
+ * A `roundRect`'s corner radius, as a fraction of its shorter side.
+ *
+ * The model records a preset, not a radius, so both renderers have to agree on
+ * one number — and OOXML's own default for the preset is `adj = 16667` (1/6),
+ * a heavier rounding than the deck's look. An exported shape that leaves the
+ * radius unset therefore arrives in PowerPoint and Google Slides visibly
+ * rounder than the canvas drew it, which reads as the shape having been
+ * redrawn on import. Shared between `ShapeGeom` and the exporter's
+ * `rectRadius` so it can't drift again.
+ */
+export const ROUND_RECT_RADIUS_RATIO = 0.12;

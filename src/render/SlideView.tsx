@@ -332,6 +332,25 @@ export function ElementVisual({
             strokeWidth={Math.max(strokeW, 10)}
             pointerEvents="stroke"
           />
+          {/* Arrowheads, when the line carries them. The marker is defined
+              per line rather than once per slide because a marker inherits
+              nothing: it has to be filled in this line's own colour, and a
+              shared def would paint every arrow on the slide the same. */}
+          {el.startArrow || el.endArrow ? (
+            <defs>
+              <marker
+                id={`ah-${el.id}`}
+                markerWidth={4}
+                markerHeight={4}
+                refX={3.4}
+                refY={2}
+                orient="auto"
+                markerUnits="strokeWidth"
+              >
+                <path d="M0,0 L4,2 L0,4 z" fill={resolveColor(el.outline.color, ds)} />
+              </marker>
+            </defs>
+          ) : null}
           <line
             x1={0}
             y1={y1}
@@ -341,6 +360,8 @@ export function ElementVisual({
             strokeWidth={strokeW}
             strokeDasharray={dashArray(el.outline.dash, strokeW)}
             strokeLinecap="round"
+            markerStart={el.startArrow ? `url(#ah-${el.id})` : undefined}
+            markerEnd={el.endArrow ? `url(#ah-${el.id})` : undefined}
           />
         </svg>
       );

@@ -354,6 +354,38 @@ export function createDoc(templateId = 'blank', title?: string): Deck {
   return deck;
 }
 
+/**
+ * Create a document from slides that came from OUTSIDE the app — an uploaded
+ * .pptx or PDF, imported as-is or converted to the brand.
+ *
+ * Deliberately does NOT go through `createDoc`: there is no template behind
+ * these slides, so `deckTemplateId` stays unset and `templateDrift` will never
+ * claim this deck has drifted from a master it was never made from.
+ *
+ * Slides arrive already carrying their own ids (the conversion engine's
+ * diagnostics reference them, so they must survive), but they are re-keyed here
+ * anyway — the same upload may be imported twice, and two decks sharing element
+ * ids would have the comments store pinning one deck's threads to the other's
+ * objects.
+ */
+export function createDocFromSlides(
+  slides: Slide[],
+  title: string,
+  opts: { pageNumbers?: boolean; designSystemId?: string; designSystemVersion?: number } = {},
+): Deck {
+  const deck = newDeck(title.trim() || 'Untitled presentation', slides.map((s) => rekeySlide(s)));
+  const next: Deck = {
+    ...deck,
+    ...(opts.pageNumbers !== undefined ? { pageNumbers: opts.pageNumbers } : {}),
+    ...(opts.designSystemId ? { designSystemId: opts.designSystemId } : {}),
+    ...(opts.designSystemVersion !== undefined
+      ? { designSystemVersion: opts.designSystemVersion }
+      : {}),
+  };
+  saveDoc(next);
+  return next;
+}
+
 function untitledName(templateName: string): string {
   return templateName === 'Blank' ? 'Untitled presentation' : templateName;
 }

@@ -14,8 +14,12 @@
  * border; a line gets weight, dash and dots; anything carrying TEXT gets size,
  * weight and colour — and never the other two sets, because a control that
  * writes to the spec and moves nothing on screen is worse than a missing one.
- * `seriesRender` is what answers "which of those is this?", since a combo
- * chart's series are not all drawn the same way.
+ * `markRender` and `markCapabilities` are what answer "which of those is
+ * this?", since a combo chart's series are not all drawn the same way — and
+ * since which PLACER drew a mark decides its text just as much: only
+ * `placeColumnBar` honours a label placement, and a line's only label is the
+ * name at its end. A part with nothing to offer gets no panel rather than an
+ * empty one.
  *
  * The hard rule, inherited from `ChartRef`: every control here writes to the
  * SPEC, never to the rectangle it is pointing at. A fill set on the emitted
@@ -28,12 +32,24 @@
  * starts a marquee.
  */
 import {
+  DEFAULT_AXIS,
+  axisLineVisible,
   emuToPoints,
-  FONTS,
   hex as hexRef,
+  addGanttColumn,
+  elementIdFor,
+  isGanttSpec,
+  moveGanttColumn,
+  nudgeGanttColumn,
+  removeGanttColumn,
   isGridSpec,
+  toEpochDay,
+  type EMU,
+  type GanttColumn,
+  type GanttSpec,
   legendSeriesKey,
   pointsToEmu,
+  supportsSecondaryAxis,
   token,
   type ChartInstance,
   type ChartRef,
@@ -41,7 +57,6 @@ import {
   type ColorRef,
   type DashStyle,
   type DesignSystem,
-  type FontFamily,
   type GridSeries,
   type LabelContent,
   type LabelFont,
@@ -52,11 +67,26 @@ import {
   type Outline,
   type Slide,
 } from '@/model';
-import { legendEntryColor, recolorLegendEntry } from '@/store/chartActions';
+import {
+  labelHomeFor,
+  labelSpecAt,
+  legendEntryColor,
+  patchLabelAt,
+  recolorLegendEntry,
+} from '@/store/chartActions';
 import { useEditor } from '@/store/editorStore';
 import { CustomColorSwatch, customHexOf } from '../color';
 import { MOVEABLE_Z } from '../layers';
-import { seriesRender } from './ChartPartOptions';
+import { ganttItemFormLabel } from '@/model/chart/roles';
+import { markCapabilities, markRender } from './markCaps';
+import {
+  CHART_FACES,
+  CHART_TYPE_SIZES,
+  findTextDeco,
+  partFontOf,
+  textDecoName,
+  type TextDecoDraft,
+} from './partFont';
 
 /** Where the panel hangs, in canvas px. */
 export interface Anchor {
@@ -68,12 +98,15 @@ export interface Anchor {
 
 const PANEL_W = 236;
 const GAP = 10;
+/** Never squeeze the panel below this, even on a very short slide: at that
+ *  point it scrolls, and a scrolling panel beats a clipped one. */
+const MIN_PANEL_H = 120;
 
 const FIELD =
   'h-6 w-full min-w-0 rounded border border-zinc-200 bg-white px-1 text-[11px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200';
 
 /** Type sizes offered anywhere in the panel. Blank means "the brand's". */
-const SIZES = [7, 8, 9, 10, 11, 12, 14, 16, 18, 24];
+const SIZES = CHART_TYPE_SIZES;
 
 const LABEL_CONTENTS: { value: LabelContent['kind']; label: string }[] = [
   { value: 'value', label: 'Value' },
@@ -82,14 +115,33 @@ const LABEL_CONTENTS: { value: LabelContent['kind']; label: string }[] = [
   { value: 'seriesName', label: 'Series name' },
 ];
 
-const PLACEMENTS: { value: LabelPlacement; label: string }[] = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'insideEnd', label: 'Inside end' },
-  { value: 'insideCenter', label: 'Center' },
-  { value: 'insideBase', label: 'Inside base' },
-  { value: 'outsideEnd', label: 'Outside end' },
-  { value: 'above', label: 'Above' },
-  { value: 'below', label: 'Below' },
+/**
+ * The placements a column or bar actually distinguishes.
+ *
+ * `above`, `below`, `left` and `right` are in the type but `labelPosition` in
+ * `columnBar.ts` folds every one of them into `outsideEnd`, so offering them is
+ * four ways to pick the same result. Every other placer ignores placement
+ * entirely — see `markCapabilities`, which is what decides whether this row
+ * appears at all.
+ */
+const PLACEMENT_LABELS: Record<LabelPlacement, string> = {
+  auto: 'Auto',
+  outsideEnd: 'Outside end',
+  insideEnd: 'Inside end',
+  insideCenter: 'Center',
+  insideBase: 'Inside base',
+  above: 'Above',
+  below: 'Below',
+  left: 'Left',
+  right: 'Right',
+};
+
+const PLACEMENTS: LabelPlacement[] = [
+  'auto',
+  'outsideEnd',
+  'insideEnd',
+  'insideCenter',
+  'insideBase',
 ];
 
 const DASHES: { value: DashStyle; label: string; glyph: string }[] = [
@@ -110,17 +162,6 @@ const DEFAULT_MARKER_PT = 5;
 const DEFAULT_BORDER_PT = 1;
 /** Line weights in points — a scale, not a spinner: nobody wants 2.37pt. */
 const WEIGHTS = [0.75, 1, 1.5, 2, 3, 4];
-
-/**
- * The three allowed faces — see `fonts.ts`, where the tiny list is the point.
- * Pressing the active one clears the override rather than doing nothing, so a
- * face set by accident goes back to the brand's without a trip to the menu.
- */
-const FACES: { value: FontFamily; label: string; css: string }[] = [
-  { value: 'Geist', label: 'Sans', css: FONTS.Geist.cssStack },
-  { value: 'Source Serif 4', label: 'Serif', css: FONTS['Source Serif 4'].cssStack },
-  { value: 'Geist Mono', label: 'Mono', css: FONTS['Geist Mono'].cssStack },
-];
 
 /**
  * The legend's six parking spots. The arrows are the four gutters; the corner
@@ -314,13 +355,23 @@ function TextRows({
         <MiniButton
           active={font?.bold ?? false}
           onClick={() => onPatch({ bold: !font?.bold })}
-          title="Bold"
+          title="Bold (⌘B)"
         >
           <span className="font-bold">B</span>
         </MiniButton>
+        {/* Italic sits beside bold rather than in its own row: on a data label
+            they are the same decision — how do I mark THIS number out from its
+            neighbours — and bold alone left one voice doing two jobs. */}
+        <MiniButton
+          active={font?.italic ?? false}
+          onClick={() => onPatch({ italic: !font?.italic })}
+          title="Italic (⌘I)"
+        >
+          <span className="italic">I</span>
+        </MiniButton>
       </Row>
       <Row label="Font">
-        {FACES.map((f) => (
+        {CHART_FACES.map((f) => (
           <MiniButton
             key={f.value}
             active={font?.font === f.value}
@@ -344,23 +395,129 @@ function TextRows({
   );
 }
 
+/**
+ * Show / weight / dash / ink for anything drawn as a RULE.
+ *
+ * One block, four consumers: the gridlines it was written for, and a Gantt's
+ * row dividers, band rules and today line. They are the same four questions
+ * about the same four fields (`GridlineSpec` and `LineStyle` differ only in
+ * carrying `show`), and keeping four copies is how the two format panels
+ * drifted apart in the first place.
+ */
+function LineRows({
+  ds,
+  showLabel,
+  show,
+  style,
+  onToggle,
+  onPatch,
+}: {
+  ds: DesignSystem;
+  showLabel: string;
+  show: boolean;
+  style: { color?: ColorRef; widthEmu?: EMU; dash?: DashStyle } | undefined;
+  onToggle: () => void;
+  onPatch: (fn: (s: { color?: ColorRef; widthEmu?: EMU; dash?: DashStyle }) => void) => void;
+}) {
+  return (
+    <>
+      <Row label={showLabel}>
+        <MiniButton active={show} onClick={onToggle}>
+          Show
+        </MiniButton>
+      </Row>
+      <Row label="Weight">
+        <select
+          value={style?.widthEmu ? Number(emuToPoints(style.widthEmu).toFixed(2)) : ''}
+          onChange={(e) =>
+            onPatch((g) => {
+              g.widthEmu =
+                e.target.value === '' ? undefined : pointsToEmu(parseFloat(e.target.value));
+            })
+          }
+          aria-label={`${showLabel} weight`}
+          className={FIELD}
+        >
+          <option value="">Auto</option>
+          {WEIGHTS.map((w) => (
+            <option key={w} value={w}>
+              {w} pt
+            </option>
+          ))}
+        </select>
+      </Row>
+      <Row label="Dash">
+        {DASHES.map((d) => (
+          <MiniButton
+            key={d.value}
+            active={(style?.dash ?? 'solid') === d.value}
+            title={d.label}
+            onClick={() => onPatch((g) => (g.dash = d.value))}
+          >
+            {d.glyph}
+          </MiniButton>
+        ))}
+      </Row>
+      <Row label="Ink">
+        <Swatches
+          ds={ds}
+          size="h-4 w-4"
+          current={style?.color}
+          onPick={(color) => onPatch((g) => (g.color = color))}
+          onClear={() => onPatch((g) => (g.color = undefined))}
+        />
+      </Row>
+    </>
+  );
+}
+
+/**
+ * Today, as an epoch day.
+ *
+ * THE one place in the chart path allowed to read a clock, and it is here
+ * rather than in the compiler on purpose: `compileChart` is pure by contract —
+ * same instance in, byte-identical elements out — which is what lets the
+ * canvas, an SSR thumbnail and a .pptx agree. A `Date.now()` in a placer breaks
+ * that on the first render. So the date is STAMPED into the spec by a gesture,
+ * and the deck's "today" is a fact about the deck rather than about when it was
+ * last opened. `Date` is used only to ask the host what day it is; the civil
+ * fields go straight to `toEpochDay`, so no timezone survives the call.
+ */
+function todayEpochDay(): number {
+  const now = new Date();
+  return toEpochDay(now.getFullYear(), now.getMonth() + 1, now.getDate());
+}
+
 /** Human name for what the drill-in landed on, for the panel's header. */
 function describe(spec: ChartSpec, refs: ChartRef[]): string {
   if (!refs.length) return 'Chart';
   const ref = refs[0]!;
   const many = refs.length > 1;
 
+  // Every kind must resolve its own keys. A kind that falls through prints
+  // nanoids at the reader — "g-a4Kd1 · r-9xQ2p" — which is worse than a generic
+  // noun, because it looks like a bug rather than like a heading.
   const categoryLabel = (key: string): string => {
     if (isGridSpec(spec)) return spec.data.categories.find((c) => c.key === key)?.label ?? key;
     if (spec.kind === 'waterfall') return spec.data.items.find((i) => i.key === key)?.label ?? key;
+    if (isGanttSpec(spec)) {
+      const item = spec.items.find((i) => i.key === key);
+      return item?.label ?? (item ? ganttItemFormLabel(item.shape.form) : key);
+    }
     return key;
   };
   const seriesName = (key: string): string =>
-    (isGridSpec(spec) ? spec.data.series.find((s) => s.key === key)?.name : undefined) ?? key;
+    (isGridSpec(spec)
+      ? spec.data.series.find((s) => s.key === key)?.name
+      : isGanttSpec(spec)
+        ? spec.rows.find((r) => r.key === key)?.label
+        : undefined) ?? key;
+  const columnHeader = (key: string): string =>
+    (isGanttSpec(spec) ? spec.columns.find((c) => c.key === key)?.header : undefined) ?? key;
 
   switch (ref.part) {
     case 'mark':
-      if (many) return `${seriesName(ref.series)} · ${refs.length} points`;
+      if (many) return `${seriesName(ref.series)} · ${refs.length} bars`;
       return spec.kind === 'waterfall'
         ? categoryLabel(ref.point)
         : `${seriesName(ref.series)} · ${categoryLabel(ref.point)}`;
@@ -382,10 +539,30 @@ function describe(spec: ChartSpec, refs: ChartRef[]): string {
       return 'Legend';
     case 'title':
       return 'Chart title';
-    case 'decoration':
-      return 'Annotation';
+    case 'decoration': {
+      const found = findTextDeco(spec, ref.decoId);
+      return found ? textDecoName(found.kind) : 'Annotation';
+    }
     case 'plot':
       return 'Plot area';
+    case 'gantt.row':
+      return ref.sub === 'label'
+        ? `Task · ${seriesName(ref.row)}`
+        : ref.sub === 'divider'
+          ? (many ? `${refs.length} row dividers` : 'Row divider')
+          : 'Row band';
+    case 'gantt.column':
+      return ref.sub === 'header'
+        ? `Column · ${columnHeader(ref.column)}`
+        : many
+          ? `${columnHeader(ref.column)} · ${refs.length} cells`
+          : `${columnHeader(ref.column)} · ${seriesName(ref.row ?? '')}`;
+    case 'gantt.band':
+      return ref.sub === 'today'
+        ? 'Today line'
+        : ref.sub === 'weekend'
+          ? 'Non-working days'
+          : 'Holiday';
   }
 }
 
@@ -438,8 +615,12 @@ export function ChartPartPopover({
    * Not `spec.kind`: a combo chart's second series is a line over the columns,
    * and offering it a fill and a border formats nothing anybody can see.
    */
-  const render = seriesKey ? seriesRender(spec, seriesKey) : null;
-  const isStroked = render === 'line' || render === 'area';
+  // Through the REF, not the series key: a kind whose marks differ within one
+  // series has no series-level answer to give — see `markRender`. Still gated
+  // on a single series, so a mixed selection offers nothing, as before.
+  const render = seriesKey && dataRefs[0] ? markRender(spec, dataRefs[0]) : null;
+  const caps = render ? markCapabilities(spec, render) : null;
+  const isStroked = !!caps?.stroked;
 
   /** Every mark of a series, for the "select the whole series" action. */
   const seriesMarkIds = (key: string): string[] =>
@@ -453,49 +634,23 @@ export function ChartPartPopover({
       .map((e) => e.id);
 
   /**
-   * The label spec actually in force for the selected point(s).
+   * Which spec node owns the labels of this selection, and the two functions
+   * that read and write it.
    *
-   * Resolved over the WHOLE selection, not just its first member: select three
-   * bars, turn labels on, and the override lands on all three — reading only
-   * one point (or skipping straight to the series) would leave the toggle
-   * showing "off" for labels that are visibly on. A selection whose points
-   * disagree has no single answer, so it falls back to the series' setting.
+   * `labelHomeFor` rather than a series lookup here, for the reason its own
+   * comment gives: a waterfall has ITEMS instead of series, so a series lookup
+   * came back empty and this whole section — the toggle, the content, the
+   * placement, the type — disappeared for a selected waterfall label. The
+   * keyboard path already asked it; now the panel it was named for does too.
    */
-  const effectiveLabel = (): LabelSpec => {
-    const base = series?.labels ?? spec.decorations.labels;
-    const perPoint = pointKeys.map((k) => series?.pointOverrides?.[k]?.label);
-    const first = perPoint[0];
-    if (!first || !perPoint.every((l) => l?.show === first.show)) return base;
-    return first;
-  };
+  const labelHome = labelHomeFor(spec, refs);
+  const effectiveLabel = (): LabelSpec =>
+    labelHome ? labelSpecAt(spec, labelHome) : spec.decorations.labels;
 
-  /**
-   * Write a label change to the narrowest node that owns it: the series when the
-   * whole series is selected, otherwise a per-point override. Same rule as
-   * `applyChartFormat`, so color and labels never disagree about scope.
-   */
   const patchLabel = (patch: Partial<LabelSpec>) => {
-    if (!seriesKey) return;
+    if (!labelHome) return;
     store().patchChart(chart.id, (draft) => {
-      if (!isGridSpec(draft)) return;
-      const ser = draft.data.series.find((s) => s.key === seriesKey);
-      if (!ser) return;
-      if (wholeSeries) {
-        ser.labels = { ...(ser.labels ?? draft.decorations.labels), ...patch };
-        // Per-point labels would now shadow the series setting just made.
-        for (const key of Object.keys(ser.pointOverrides ?? {})) {
-          delete ser.pointOverrides![key]!.label;
-        }
-        return;
-      }
-      ser.pointOverrides ??= {};
-      for (const key of pointKeys) {
-        const prior = ser.pointOverrides[key] ?? {};
-        ser.pointOverrides[key] = {
-          ...prior,
-          label: { ...(prior.label ?? ser.labels ?? draft.decorations.labels), ...patch },
-        };
-      }
+      patchLabelAt(draft, labelHome, patch);
     });
   };
 
@@ -517,6 +672,46 @@ export function ChartPartPopover({
    * dotting the third point of it — so unlike fill, these have no per-point
    * scope to resolve and write straight through `patchChart`.
    */
+  /**
+   * Which value axis this series is read against.
+   *
+   * On the series, like the stroke settings above it: a series is on one axis
+   * or the other for all of its points. The `y2` spec is created on the way in
+   * and dropped when the last series leaves, so a chart never draws an axis
+   * with nothing on it.
+   */
+  const seriesAxis = series?.axis === 'secondary' ? 'secondary' : 'primary';
+  const setSeriesAxis = (axis: 'primary' | 'secondary') => {
+    if (!seriesKey) return;
+    store().patchChart(chart.id, (draft) => {
+      if (!isGridSpec(draft)) return;
+      const ser = draft.data.series.find((s) => s.key === seriesKey);
+      if (!ser) return;
+      ser.axis = axis === 'secondary' ? 'secondary' : undefined;
+      if (axis === 'secondary') {
+        draft.axes.y2 ??= { ...DEFAULT_AXIS };
+      } else if (!draft.data.series.some((s) => s.axis === 'secondary')) {
+        draft.axes.y2 = undefined;
+      }
+    });
+  };
+
+  /** Shown only where a second value axis is a thing this kind can have. */
+  const axisRow =
+    series && supportsSecondaryAxis(spec.kind) ? (
+      <Row label="Axis">
+        <select
+          value={seriesAxis}
+          onChange={(e) => setSeriesAxis(e.target.value as 'primary' | 'secondary')}
+          aria-label="Value axis"
+          className={FIELD}
+        >
+          <option value="primary">Left</option>
+          <option value="secondary">Right</option>
+        </select>
+      </Row>
+    ) : null;
+
   const patchSeriesFormat = (fn: (f: NonNullable<GridSeries['format']>) => void) => {
     if (!seriesKey) return;
     store().patchChart(chart.id, (draft) => {
@@ -550,8 +745,53 @@ export function ChartPartPopover({
     });
   };
 
+  const rowRef = refs.find(
+    (r): r is Extract<ChartRef, { part: 'gantt.row' }> => r.part === 'gantt.row',
+  );
+  const colRef = refs.find(
+    (r): r is Extract<ChartRef, { part: 'gantt.column' }> => r.part === 'gantt.column',
+  );
+  const bandRef = refs.find(
+    (r): r is Extract<ChartRef, { part: 'gantt.band' }> => r.part === 'gantt.band',
+  );
+  const gantt = isGanttSpec(spec) ? spec : null;
+  const column = gantt && colRef ? gantt.columns.find((c) => c.key === colRef.column) : undefined;
+
+  /** Patch the Gantt spec, seeding the node if it isn't there yet. */
+  const patchGantt = (mutate: (g: GanttSpec) => void) =>
+    store().patchChart(chart.id, (d) => {
+      if (isGanttSpec(d)) mutate(d);
+    });
+
   const totalRef = refs.find((r): r is Extract<ChartRef, { part: 'total' }> => r.part === 'total');
   const titleRef = refs.find((r): r is Extract<ChartRef, { part: 'title' }> => r.part === 'title');
+
+  /**
+   * The decoration a `decoration` ref names, when that decoration carries TEXT.
+   *
+   * A callout, a CAGR rate, a difference delta and a reference-line label are
+   * four different nodes that all put a string on the plot, so they all answer
+   * the same three questions — what does it say, in what type, in what ink. A
+   * trend line carries no text and so still gets no panel.
+   */
+  const decoRef = refs.find(
+    (r): r is Extract<ChartRef, { part: 'decoration' }> => r.part === 'decoration',
+  );
+  const deco = decoRef ? findTextDeco(spec, decoRef.decoId) : undefined;
+
+  /**
+   * Edit the decoration the popover is open on.
+   *
+   * By kind and id rather than by object identity: `spec` here is the rendered
+   * snapshot and the draft is a fresh tree, so the node has to be found again.
+   */
+  const patchDeco = (mutate: (node: TextDecoDraft) => void) => {
+    if (!deco) return;
+    store().patchChart(chart.id, (d) => {
+      const found = findTextDeco(d, deco.node.id);
+      if (found) mutate(found.node);
+    });
+  };
 
   /**
    * Which axis carries numbers, and so has a range and a step to set.
@@ -573,11 +813,33 @@ export function ChartPartPopover({
     });
   };
 
-  /** Merge a font patch onto whatever the node already had. */
-  const withFont = (cur: LabelFont | undefined, patch: Partial<LabelFont>): LabelFont => ({
-    ...cur,
-    ...patch,
-  });
+  /**
+   * The major gridlines, and the one place that edits them.
+   *
+   * Absent means "never touched", not "off", so the node is minted on first
+   * write — `show: false` so that the toggle's flip below reads as turning them
+   * ON rather than off.
+   */
+  const gridline = spec.decorations.gridlines.major;
+  const patchGrid = (
+    mutate: (g: NonNullable<ChartSpec['decorations']['gridlines']['major']>) => void,
+  ) => {
+    store().patchChart(chart.id, (d) => {
+      d.decorations.gridlines.major ??= { show: false };
+      mutate(d.decorations.gridlines.major);
+    });
+  };
+
+  /**
+   * The type this selection edits, and the one place that writes it.
+   *
+   * Shared with the format bar over the slide — see `partFontOf`. Every
+   * `TextRows` below reads from it, so the panel no longer decides per section
+   * which node a size lands on: the selection already decided.
+   */
+  const partFont = partFontOf(spec, refs);
+  const applyFont = (patch: Partial<LabelFont>) =>
+    store().patchChart(chart.id, (d) => partFont?.apply(d, patch));
 
   /**
    * The border in force on the selection, for the swatch's "current" ring.
@@ -621,6 +883,36 @@ export function ChartPartPopover({
   const nudged =
     pointKeys.length > 0 &&
     pointKeys.some((k) => series?.pointOverrides?.[k]?.labelOffset !== undefined);
+  /** Is there per-point formatting to drop? Nothing to reset TO otherwise. */
+  const overridden =
+    pointKeys.length > 0 && pointKeys.some((k) => series?.pointOverrides?.[k] !== undefined);
+
+  /**
+   * Does any section have something to say about this selection?
+   *
+   * The plot area, a trend line and a reference line are all selectable and none
+   * of them is formattable here, so without this the drill-in answered a click
+   * with a panel containing nothing but its own title — which reads as a broken
+   * panel rather than as "this part has no options".
+   */
+  const hasControls =
+    (markRefs.length > 0 && (caps?.stroked || caps?.filled)) ||
+    (!!labelHome &&
+      !!caps &&
+      caps.labels !== 'none' &&
+      (markRefs.length > 0 || labelRefs.length > 0)) ||
+    !!axisRef ||
+    !!totalRef ||
+    !!titleRef ||
+    (!!legendRef && markRefs.length === 0) ||
+    // Every new part must be named here, or clicking a divider opens NO panel
+    // — which reads as the editor being broken rather than as "this part has
+    // no options".
+    !!rowRef ||
+    !!colRef ||
+    !!bandRef ||
+    !!deco;
+  if (!hasControls) return null;
 
   // Beside the part, never on top of it: the whole point is to recolor the thing
   // you are looking at, and a panel parked over it hides the result of every
@@ -640,18 +932,37 @@ export function ChartPartPopover({
   if (anchor.x + anchor.w + GAP + PANEL_W <= canvas.w) style.left = anchor.x + anchor.w + GAP;
   else if (anchor.x - GAP - PANEL_W >= 0) style.right = canvas.w - anchor.x + GAP;
   else style.left = Math.min(Math.max(GAP, anchor.x), Math.max(GAP, canvas.w - PANEL_W - GAP));
-  if (anchor.y + anchor.h / 2 < canvas.h / 2) style.top = Math.max(GAP, anchor.y);
-  else style.bottom = Math.max(GAP, canvas.h - anchor.y - anchor.h);
+  //
+  // The edge it pins is the one with more room, and it caps its own height to
+  // that room: pinning the BOTTOM to a part low on the slide grew the panel
+  // upwards past y=0, so a tall selection's panel hung off the top of the page
+  // with its header and first rows unreachable. `max-h` in percent didn't save
+  // it — 85% of the slide measured from the part's bottom edge still starts
+  // above the slide when the part is near the foot of it.
+  const roomBelow = canvas.h - anchor.y - GAP;
+  const roomAbove = anchor.y + anchor.h - GAP;
+  if (roomBelow >= roomAbove) {
+    const top = Math.max(GAP, Math.min(anchor.y, canvas.h - GAP));
+    style.top = top;
+    style.maxHeight = Math.max(MIN_PANEL_H, canvas.h - top - GAP);
+  } else {
+    const bottom = Math.max(GAP, canvas.h - anchor.y - anchor.h);
+    style.bottom = bottom;
+    style.maxHeight = Math.max(MIN_PANEL_H, canvas.h - bottom - GAP);
+  }
 
   return (
     <div
-      className="dd-format-bar absolute flex max-h-[85%] flex-col gap-2 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+      className="dd-format-bar absolute flex flex-col gap-2 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
       style={style}
       role="dialog"
       aria-label="Format chart part"
       onContextMenu={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center justify-between gap-2">
+      {/* Sticky, because the panel now scrolls when the slide is too short for
+          it: the one line saying WHICH bar you are formatting is the last thing
+          that should be allowed to scroll out of view. */}
+      <div className="sticky top-0 -mx-2 -mt-2 flex items-center justify-between gap-2 bg-white px-2 pb-1 pt-2 dark:bg-zinc-900">
         <span className="truncate text-[11px] font-semibold text-zinc-700 dark:text-zinc-200">
           {describe(spec, refs)}
         </span>
@@ -670,6 +981,7 @@ export function ChartPartPopover({
       {/* --- a line or an area: the stroke is the mark --- */}
       {markRefs.length && isStroked ? (
         <>
+          {axisRow}
           <Row label="Color">
             <Swatches
               ds={ds}
@@ -719,6 +1031,7 @@ export function ChartPartPopover({
               </MiniButton>
             ))}
           </Row>
+          {caps?.marker ? (
           <Row label="Dots">
             {MARKERS.map((m) => (
               <MiniButton
@@ -742,12 +1055,14 @@ export function ChartPartPopover({
               </MiniButton>
             ))}
           </Row>
+          ) : null}
         </>
       ) : null}
 
       {/* --- a segment, a slice, a bar: fill and border --- */}
-      {markRefs.length && !isStroked ? (
+      {markRefs.length && caps?.filled ? (
         <>
+          {axisRow}
           <Row label="Fill">
             <Swatches
               ds={ds}
@@ -755,39 +1070,50 @@ export function ChartPartPopover({
               onPick={(color) => store().setFill(selectedIds, { kind: 'solid', color })}
             />
           </Row>
+          {/* Thickness FIRST, and present whether or not a border is set: the
+              weight is what people come here to change, and hiding it until a
+              colour was picked made "give these bars a hairline" a two-step
+              gesture whose first step looked like the only one on offer. Picking
+              a weight mints the border in the brand's darkest ink; "None" is how
+              it goes away again. */}
           <Row label="Border">
-            <Swatches
-              ds={ds}
-              size="h-4 w-4"
-              current={currentOutline?.color}
-              onPick={(color) => setOutline({ color })}
-              onClear={() => setOutline(null)}
-            />
+            <select
+              value={currentOutline ? Number(emuToPoints(currentOutline.widthEmu).toFixed(2)) : ''}
+              onChange={(e) =>
+                e.target.value === ''
+                  ? setOutline(null)
+                  : setOutline({ widthEmu: pointsToEmu(parseFloat(e.target.value)) })
+              }
+              aria-label="Border weight"
+              className={FIELD}
+            >
+              <option value="">None</option>
+              {WEIGHTS.map((w) => (
+                <option key={w} value={w}>
+                  {w} pt
+                </option>
+              ))}
+            </select>
+            {DASHES.map((d) => (
+              <MiniButton
+                key={d.value}
+                active={currentOutline?.dash === d.value}
+                title={d.label}
+                onClick={() => setOutline({ dash: d.value })}
+              >
+                {d.glyph}
+              </MiniButton>
+            ))}
           </Row>
           {currentOutline ? (
-            <Row label="Edge">
-              <select
-                value={Number(emuToPoints(currentOutline.widthEmu).toFixed(2))}
-                onChange={(e) => setOutline({ widthEmu: pointsToEmu(parseFloat(e.target.value)) })}
-                aria-label="Border weight"
-                className={FIELD}
-              >
-                {WEIGHTS.map((w) => (
-                  <option key={w} value={w}>
-                    {w} pt
-                  </option>
-                ))}
-              </select>
-              {DASHES.map((d) => (
-                <MiniButton
-                  key={d.value}
-                  active={currentOutline.dash === d.value}
-                  title={d.label}
-                  onClick={() => setOutline({ dash: d.value })}
-                >
-                  {d.glyph}
-                </MiniButton>
-              ))}
+            <Row label="Edge ink">
+              <Swatches
+                ds={ds}
+                size="h-4 w-4"
+                current={currentOutline.color}
+                onPick={(color) => setOutline({ color })}
+                onClear={() => setOutline(null)}
+              />
             </Row>
           ) : null}
         </>
@@ -801,8 +1127,10 @@ export function ChartPartPopover({
         </Row>
       ) : null}
 
-      {/* --- the number on the mark --- */}
-      {series && (markRefs.length || labelRefs.length) ? (
+      {/* --- the number on the mark. Only where a placer draws one: a line's
+              points carry no label, so `labels: 'none'` gets this whole block
+              and its three text rows out of the way. --- */}
+      {labelHome && caps?.labels === 'point' && (markRefs.length || labelRefs.length) ? (
         <>
           <Row label="Label">
             <MiniButton
@@ -812,69 +1140,419 @@ export function ChartPartPopover({
             >
               123
             </MiniButton>
-            <select
-              value={label.content.kind}
-              disabled={!label.show}
-              onChange={(e) => patchLabel({ content: { kind: e.target.value } as LabelContent })}
-              aria-label="Label content"
-              className={`${FIELD} disabled:opacity-40`}
+            {caps.content ? (
+              <select
+                value={label.content.kind}
+                disabled={!label.show}
+                onChange={(e) => patchLabel({ content: { kind: e.target.value } as LabelContent })}
+                aria-label="Label content"
+                className={`${FIELD} disabled:opacity-40`}
+              >
+                {LABEL_CONTENTS.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </Row>
+          {caps.placement && label.show ? (
+            <Row label="Place">
+              <select
+                value={label.placement}
+                onChange={(e) => patchLabel({ placement: e.target.value as LabelPlacement })}
+                aria-label="Label placement"
+                className={FIELD}
+              >
+                {(caps.placements ?? PLACEMENTS).map((p) => (
+                  <option key={p} value={p}>
+                    {PLACEMENT_LABELS[p]}
+                  </option>
+                ))}
+              </select>
+            </Row>
+          ) : null}
+          {/* Type controls follow the text: with the label off there is nothing
+              on screen for a size, a face or an ink to change. */}
+          {label.show ? (
+            <TextRows
+              ds={ds}
+              label="Number"
+              font={partFont?.font}
+              onPatch={applyFont}
+            />
+          ) : null}
+        </>
+      ) : null}
+
+      {/* --- a line chart's series labels, which are the only text a stroked
+              series has: one name at the right-hand end, not one per point. --- */}
+      {series && caps?.labels === 'end' && (markRefs.length || labelRefs.length) ? (
+        <>
+          <Row label="Names">
+            <MiniButton
+              active={spec.kind === 'line' && (spec.endLabels ?? false)}
+              title="Name each line at its right-hand end, so the chart needs no legend."
+              onClick={() =>
+                store().patchChart(chart.id, (d) => {
+                  if (d.kind === 'line') d.endLabels = !d.endLabels;
+                })
+              }
             >
-              {LABEL_CONTENTS.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label}
-                </option>
-              ))}
+              End labels
+            </MiniButton>
+          </Row>
+          {spec.kind === 'line' && spec.endLabels ? (
+            <TextRows
+              ds={ds}
+              label="Name"
+              font={partFont?.font}
+              onPatch={applyFont}
+            />
+          ) : null}
+        </>
+      ) : null}
+
+      {/* --- a Gantt's row furniture --- */}
+      {gantt && rowRef && rowRef.sub === 'divider' ? (
+        <LineRows
+          ds={ds}
+          showLabel="Divider"
+          show={gantt.ruler?.rows?.show ?? false}
+          style={gantt.ruler?.rows}
+          onToggle={() =>
+            patchGantt((g) => {
+              g.ruler ??= {};
+              g.ruler.rows = { ...g.ruler.rows, show: !(g.ruler.rows?.show ?? false) };
+            })
+          }
+          onPatch={(fn) =>
+            patchGantt((g) => {
+              g.ruler ??= {};
+              g.ruler.rows ??= { show: true };
+              fn(g.ruler.rows);
+            })
+          }
+        />
+      ) : null}
+
+      {gantt && rowRef && rowRef.sub === 'band' ? (
+        <>
+          <Row label="Banding">
+            <MiniButton
+              active={gantt.banding?.show ?? false}
+              onClick={() =>
+                patchGantt((g) => {
+                  g.banding = { ...g.banding, show: !(g.banding?.show ?? false) };
+                })
+              }
+            >
+              Show
+            </MiniButton>
+          </Row>
+          <Row label="Fill">
+            <Swatches
+              ds={ds}
+              size="h-4 w-4"
+              current={gantt.banding?.color}
+              onPick={(color) =>
+                patchGantt((g) => {
+                  g.banding = { show: true, ...g.banding, color };
+                })
+              }
+              onClear={() =>
+                patchGantt((g) => {
+                  if (g.banding) delete g.banding.color;
+                })
+              }
+            />
+          </Row>
+        </>
+      ) : null}
+
+      {gantt && rowRef && rowRef.sub === 'label' ? (
+        <Row label="Scope">
+          <MiniButton
+            title="Select every bar in this row"
+            onClick={() =>
+              store().selectExact(
+                gantt.items
+                  .filter((i) => i.row === rowRef.row)
+                  .map((i) =>
+                    elementIdFor({ chartId: chart.id, part: 'mark', series: i.row, point: i.key }),
+                  ),
+              )
+            }
+          >
+            Bars in row
+          </MiniButton>
+        </Row>
+      ) : null}
+
+      {/* --- the today line and the non-working stripes --- */}
+      {gantt && bandRef && bandRef.sub === 'today' ? (
+        <>
+          <LineRows
+            ds={ds}
+            showLabel="Today"
+            show={gantt.today?.show ?? false}
+            style={gantt.today?.style}
+            onToggle={() =>
+              patchGantt((g) => {
+                // `at` is required when shown, and the compiler is pure — so
+                // the date can only be stamped here. See `GanttSpec.today`.
+                g.today = {
+                  at: g.today?.at ?? todayEpochDay(),
+                  ...g.today,
+                  show: !(g.today?.show ?? false),
+                };
+              })
+            }
+            onPatch={(fn) =>
+              patchGantt((g) => {
+                g.today ??= { show: true, at: todayEpochDay() };
+                g.today.style ??= {};
+                fn(g.today.style);
+              })
+            }
+          />
+          <Row label="Date">
+            <MiniButton
+              title="Move the line to today's date"
+              onClick={() =>
+                patchGantt((g) => {
+                  g.today = { show: true, ...g.today, at: todayEpochDay() };
+                })
+              }
+            >
+              Move to today
+            </MiniButton>
+          </Row>
+          <Row label="Caption">
+            <input
+              value={gantt.today?.label ?? ''}
+              placeholder="Today"
+              onChange={(e) =>
+                patchGantt((g) => {
+                  g.today ??= { show: true, at: todayEpochDay() };
+                  g.today.label = e.target.value || undefined;
+                })
+              }
+              className={FIELD}
+            />
+          </Row>
+        </>
+      ) : null}
+
+      {gantt && bandRef && bandRef.sub !== 'today' ? (
+        <>
+          <Row label="Non-working">
+            <MiniButton
+              active={gantt.shading?.weekends?.show ?? false}
+              onClick={() =>
+                patchGantt((g) => {
+                  g.shading ??= {};
+                  g.shading.weekends = {
+                    ...g.shading.weekends,
+                    show: !(g.shading.weekends?.show ?? false),
+                  };
+                })
+              }
+            >
+              Show
+            </MiniButton>
+          </Row>
+          <Row label="Fill">
+            <Swatches
+              ds={ds}
+              size="h-4 w-4"
+              current={gantt.shading?.weekends?.color}
+              onPick={(color) =>
+                patchGantt((g) => {
+                  g.shading ??= {};
+                  g.shading.weekends = { show: true, ...g.shading.weekends, color };
+                })
+              }
+              onClear={() =>
+                patchGantt((g) => {
+                  if (g.shading?.weekends) delete g.shading.weekends.color;
+                })
+              }
+            />
+          </Row>
+        </>
+      ) : null}
+
+      {/* --- a description column: which side of the chart, and how wide --- */}
+      {gantt && column ? (
+        <>
+          <Row label="Heading">
+            <input
+              value={column.header}
+              onChange={(e) =>
+                patchGantt((g) => {
+                  const c = g.columns.find((x: GanttColumn) => x.key === column.key);
+                  if (c) c.header = e.target.value;
+                })
+              }
+              className={FIELD}
+            />
+          </Row>
+          {/* The side, and the order within it. Between them they are the whole
+              "move it relative to the chart" gesture — crossing the plot is a
+              change of side, passing a neighbour is a change of order. */}
+          <Row label="Side">
+            <MiniButton
+              active={column.side === 'left'}
+              title="Left of the chart"
+              onClick={() => patchGantt((g) => moveGanttColumn(g, column.key, 'left'))}
+            >
+              ◀ Left
+            </MiniButton>
+            <MiniButton
+              active={column.side === 'right'}
+              title="Right of the chart"
+              onClick={() => patchGantt((g) => moveGanttColumn(g, column.key, 'right'))}
+            >
+              Right ▶
+            </MiniButton>
+          </Row>
+          <Row label="Order">
+            <MiniButton
+              title="Move one column toward the chart"
+              onClick={() => patchGantt((g) => nudgeGanttColumn(g, column.key, -1))}
+            >
+              ←
+            </MiniButton>
+            <MiniButton
+              title="Move one column away from the chart"
+              onClick={() => patchGantt((g) => nudgeGanttColumn(g, column.key, 1))}
+            >
+              →
+            </MiniButton>
+          </Row>
+          <Row label="Shows">
+            <select
+              value={column.source}
+              onChange={(e) =>
+                patchGantt((g) => {
+                  const c = g.columns.find((x: GanttColumn) => x.key === column.key);
+                  if (c) c.source = e.target.value as GanttColumn['source'];
+                })
+              }
+              aria-label="Column contents"
+              className={FIELD}
+            >
+              <option value="text">Typed in</option>
+              <option value="label">Task name</option>
+              {/* Computed from the bars, so the table can never contradict the
+                  chart beside it. */}
+              <option value="start">Start date</option>
+              <option value="end">End date</option>
+              <option value="duration">Duration</option>
             </select>
           </Row>
-          <Row label="Place">
-            <select
-              value={label.placement}
-              disabled={!label.show}
-              onChange={(e) => patchLabel({ placement: e.target.value as LabelPlacement })}
-              aria-label="Label placement"
-              className={`${FIELD} disabled:opacity-40`}
+          <Row label="Column">
+            <MiniButton
+              title="Add a column beside this one"
+              onClick={() => patchGantt((g) => addGanttColumn(g, { after: column.key }))}
             >
-              {PLACEMENTS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
+              + Add
+            </MiniButton>
+            <MiniButton
+              title="Remove this column"
+              onClick={() => patchGantt((g) => removeGanttColumn(g, column.key))}
+            >
+              − Remove
+            </MiniButton>
+          </Row>
+          <Row label="Align">
+            {(['left', 'center', 'right'] as const).map((a) => (
+              <MiniButton
+                key={a}
+                active={(column.align ?? 'left') === a}
+                title={a}
+                onClick={() =>
+                  patchGantt((g) => {
+                    const c = g.columns.find((x: GanttColumn) => x.key === column.key);
+                    if (c) c.align = a;
+                  })
+                }
+              >
+                {a === 'left' ? '⇤' : a === 'center' ? '↔' : '⇥'}
+              </MiniButton>
+            ))}
+          </Row>
+        </>
+      ) : null}
+
+      {/* --- an axis. Which PIECE of it was clicked decides the controls: the
+              rule, the numbers, the gridlines and the title are four different
+              things that happen to share a `part`. --- */}
+      {axisRef && axisRef.sub === 'grid' ? (
+        <LineRows
+          ds={ds}
+          showLabel="Grid"
+          show={spec.decorations.gridlines.major?.show ?? false}
+          style={gridline}
+          onToggle={() => patchGrid((g) => (g.show = !g.show))}
+          onPatch={(fn) => patchGrid(fn)}
+        />
+      ) : null}
+
+      {/* --- the axis title, and the "in $M" note beside the numbers: text, and
+              the string itself. Neither has a range, a tick or a rule. --- */}
+      {axisRef && (axisRef.sub === 'title' || axisRef.sub === 'unitNote') ? (
+        <>
+          <Row label={axisRef.sub === 'title' ? 'Title' : 'Units'}>
+            <input
+              value={
+                (axisRef.sub === 'title'
+                  ? spec.axes[axisRef.axis]?.title
+                  : spec.axes[axisRef.axis]?.unitNote) ?? ''
+              }
+              placeholder="(none)"
+              onChange={(e) =>
+                patchAxis((a) => {
+                  const v = e.target.value || undefined;
+                  if (axisRef.sub === 'title') a.title = v;
+                  else a.unitNote = v;
+                })
+              }
+              aria-label={axisRef.sub === 'title' ? 'Axis title' : 'Axis unit note'}
+              className={FIELD}
+            />
           </Row>
           <TextRows
             ds={ds}
-            label="Number"
-            font={label.font}
-            onPatch={(p) => patchLabel({ font: withFont(label.font, p) })}
+            font={partFont?.font}
+            onPatch={applyFont}
           />
         </>
       ) : null}
 
-      {/* --- an axis: its rule, its grid, its numbers --- */}
-      {axisRef ? (
+      {/* --- the rule and its numbers --- */}
+      {axisRef && (axisRef.sub === 'line' || axisRef.sub === 'tick' || axisRef.sub === 'tickMark') ? (
         <>
           <Row label="Axis">
             <MiniButton
               active={spec.axes[axisRef.axis]?.show ?? true}
-              onClick={() =>
-                store().patchChart(chart.id, (d) => {
-                  const ax = d.axes[axisRef.axis];
-                  if (ax) ax.show = !ax.show;
-                })
-              }
+              onClick={() => patchAxis((a) => (a.show = !a.show))}
             >
               Visible
             </MiniButton>
             <MiniButton
-              active={spec.decorations.gridlines.major?.show ?? false}
+              active={axisLineVisible(spec, axisRef.axis)}
+              title="The rule along the axis, apart from its numbers."
               onClick={() =>
-                store().patchChart(chart.id, (d) => {
-                  d.decorations.gridlines.major = {
-                    ...d.decorations.gridlines.major,
-                    show: !d.decorations.gridlines.major?.show,
-                  };
-                })
+                patchAxis((a) => (a.line = !axisLineVisible(spec, axisRef.axis)))
               }
+            >
+              Line
+            </MiniButton>
+            <MiniButton
+              active={spec.decorations.gridlines.major?.show ?? false}
+              onClick={() => patchGrid((g) => (g.show = !g.show))}
             >
               Grid
             </MiniButton>
@@ -918,16 +1596,14 @@ export function ChartPartPopover({
               </MiniButton>
             ))}
           </Row>
-          <TextRows
-            ds={ds}
-            font={spec.axes[axisRef.axis]?.font}
-            onPatch={(p) =>
-              store().patchChart(chart.id, (d) => {
-                const ax = d.axes[axisRef.axis];
-                if (ax) ax.font = withFont(ax.font, p);
-              })
-            }
-          />
+          {/* The rule itself carries no type; only the numbers beside it do. */}
+          {axisRef.sub === 'tick' ? (
+            <TextRows
+              ds={ds}
+              font={partFont?.font}
+              onPatch={applyFont}
+            />
+          ) : null}
         </>
       ) : null}
 
@@ -951,15 +1627,8 @@ export function ChartPartPopover({
           {spec.decorations.totals?.show ? (
             <TextRows
               ds={ds}
-              font={spec.decorations.totals.font}
-              onPatch={(p) =>
-                store().patchChart(chart.id, (d) => {
-                  if (d.decorations.totals) d.decorations.totals.font = withFont(
-                    d.decorations.totals.font,
-                    p,
-                  );
-                })
-              }
+              font={partFont?.font}
+              onPatch={applyFont}
             />
           ) : null}
         </>
@@ -981,10 +1650,8 @@ export function ChartPartPopover({
           </Row>
           <TextRows
             ds={ds}
-            font={spec.titleFont}
-            onPatch={(p) =>
-              store().patchChart(chart.id, (d) => (d.titleFont = withFont(d.titleFont, p)))
-            }
+            font={partFont?.font}
+            onPatch={applyFont}
           />
         </>
       ) : null}
@@ -1026,10 +1693,8 @@ export function ChartPartPopover({
           </Row>
           <TextRows
             ds={ds}
-            font={spec.legend.font}
-            onPatch={(p) =>
-              store().patchChart(chart.id, (d) => (d.legend.font = withFont(d.legend.font, p)))
-            }
+            font={partFont?.font}
+            onPatch={applyFont}
           />
           {legendRef.part === 'legend.item' ? (
             <Row label="Series">
@@ -1043,7 +1708,48 @@ export function ChartPartPopover({
         </>
       ) : null}
 
-      {series && !wholeSeries && (markRefs.length || labelRefs.length) ? (
+      {/* --- text on the plot: a callout, or the label on an arrow or a rule.
+              An arrow's label is DERIVED — the rate, the delta — so blank there
+              means "keep computing it", which is why the placeholder says auto
+              rather than empty. --- */}
+      {deco ? (
+        <>
+          <Row label={deco.kind === 'annotation' ? 'Note' : 'Label'}>
+            <input
+              value={deco.kind === 'annotation' ? deco.node.text : (deco.node.label ?? '')}
+              placeholder={deco.kind === 'annotation' ? '(empty)' : '(auto)'}
+              onChange={(e) =>
+                patchDeco((n) => {
+                  if (deco.kind === 'annotation') n.text = e.target.value;
+                  else n.label = e.target.value || undefined;
+                })
+              }
+              aria-label={deco.kind === 'annotation' ? 'Annotation text' : 'Decoration label'}
+              className={FIELD}
+            />
+          </Row>
+          {deco.kind === 'annotation' ? (
+            <Row label="Leader">
+              <MiniButton
+                active={deco.node.connector ?? false}
+                title="Draw a line from the note to the point it is about."
+                onClick={() =>
+                  patchDeco((n) => (n.connector = !n.connector))
+                }
+              >
+                Line
+              </MiniButton>
+            </Row>
+          ) : null}
+          <TextRows
+            ds={ds}
+            font={partFont?.font}
+            onPatch={applyFont}
+          />
+        </>
+      ) : null}
+
+      {series && !wholeSeries && (overridden || nudged) ? (
         <div className="flex gap-1 border-t border-zinc-100 pt-1.5 dark:border-zinc-800">
           <MiniButton onClick={resetPoints} title="Drop this point's own formatting">
             Reset to series

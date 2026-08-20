@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * Admin view — Kamran's control room:
@@ -14,12 +14,13 @@
  *
  * In Playground this route gets gated to a template-admin Okta group.
  */
-import { useEffect, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import Link from 'next/link';
+import { useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
   ALLOWED_FONTS,
   EMU_PER_INCH,
+  isBuiltInTypeRole,
   EMU_PER_POINT,
   FONT_CHOICES,
   FONTS,
@@ -29,15 +30,20 @@ import {
   pageNumberInk,
   pageNumberLabel,
   runWeight,
+  typeRoleIds,
+  type BuiltInTypeRole,
   type ColorToken,
   type DesignSystem,
   type FontFamily,
   type PageNumberPosition,
   type PageNumberStyle,
   type TypeRole,
-} from '@/model';
-import { FitSlideView } from '@/render/FitSlideView';
-import { CATEGORY_BLURBS, type SlideLayoutCategory } from '@/templates/registry';
+} from "@/model";
+import { FitSlideView } from "@/render/FitSlideView";
+import {
+  CATEGORY_BLURBS,
+  type SlideLayoutCategory,
+} from "@/templates/registry";
 import {
   addCustomFolder,
   createLayout,
@@ -46,22 +52,23 @@ import {
   listLayouts,
   seedLayoutsIfFirstRun,
   type StoredLayout,
-} from '@/templates/layoutRepository';
+} from "@/templates/layoutRepository";
 import {
   getDraftDesignSystem,
   hasDesignDraft,
   publishDesignSystem,
   resetDesignSystem,
   saveDesignDraft,
-} from '@/design/repository';
-import { PrimaryTabs, SubTabs } from '@/nav/PrimaryTabs';
-import { useToast } from '@/ui/Toast';
-import { ChartStyleSection } from './ChartStyleSection';
-import { ChartTemplates } from './ChartTemplates';
-import { ChartVariants } from './ChartVariants';
-import { DeckTemplates } from './DeckTemplates';
-import { Artifacts } from './Artifacts';
-import { LayoutCard } from './LayoutCard';
+} from "@/design/repository";
+import { PrimaryTabs, SubTabs } from "@/nav/PrimaryTabs";
+import { useToast } from "@/ui/Toast";
+import { ChartStyleSection } from "./ChartStyleSection";
+import { ChartTemplates } from "./ChartTemplates";
+import { ChartVariants } from "./ChartVariants";
+import { DeckTemplates } from "./DeckTemplates";
+import { Artifacts } from "./Artifacts";
+import { LayoutCard } from "./LayoutCard";
+import { LogoSection } from './LogoSection';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 
@@ -74,20 +81,11 @@ const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
  * through is caught by the check in `uploadLayout`.
  */
 const LAYOUT_IMAGE_ACCEPT =
-  'image/*,.png,.jpg,.jpeg,.gif,.webp,.avif,.svg,.bmp,.ico,.heic,.heif,.tif,.tiff';
+  "image/*,.png,.jpg,.jpeg,.gif,.webp,.avif,.svg,.bmp,.ico,.heic,.heif,.tif,.tiff";
 
 /** Extensions the accept list admits but a browser may still refuse to decode. */
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico|heic|heif|tiff?)$/i;
-const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
-  'title',
-  'subtitle',
-  'heading',
-  'body',
-  'caption',
-  'kpiValue',
-];
-
-type Tab = 'design' | 'templates' | 'charts' | 'layouts' | 'artifacts';
+type Tab = "design" | "templates" | "charts" | "layouts" | "artifacts";
 
 /**
  * Order matters: Templates sits directly after the design system because it's
@@ -95,14 +93,20 @@ type Tab = 'design' | 'templates' | 'charts' | 'layouts' | 'artifacts';
  * with the finer-grained libraries (charts, single slide layouts, assets)
  * behind it.
  */
-const ADMIN_TABS: Tab[] = ['design', 'templates', 'charts', 'layouts', 'artifacts'];
+const ADMIN_TABS: Tab[] = [
+  "design",
+  "templates",
+  "charts",
+  "layouts",
+  "artifacts",
+];
 
 const TAB_LABELS: Record<Tab, string> = {
-  design: 'Design system',
-  templates: 'Templates',
-  charts: 'Charts',
-  layouts: 'Layouts',
-  artifacts: 'Artifacts',
+  design: "Design system",
+  templates: "Templates",
+  charts: "Charts",
+  layouts: "Layouts",
+  artifacts: "Artifacts",
 };
 
 /**
@@ -110,7 +114,7 @@ const TAB_LABELS: Record<Tab, string> = {
  * The chart style lives on `DesignSystem`, so its tab shares the header's Save
  * — the template library below it auto-persists, exactly like Layouts.
  */
-const SAVEABLE_TABS: Tab[] = ['design', 'charts'];
+const SAVEABLE_TABS: Tab[] = ["design", "charts"];
 
 /**
  * The Charts tab's two halves.
@@ -118,15 +122,15 @@ const SAVEABLE_TABS: Tab[] = ['design', 'charts'];
  * `styles` is design-system state and rides the header's Save/Publish;
  * `templates` is its own library with its own instant persistence.
  */
-type ChartSection = 'styles' | 'templates';
+type ChartSection = "styles" | "templates";
 
 const CHART_SECTIONS: { value: ChartSection; label: string }[] = [
-  { value: 'styles', label: 'Chart styles' },
-  { value: 'templates', label: 'House templates' },
+  { value: "styles", label: "Chart styles" },
+  { value: "templates", label: "House templates" },
 ];
 
 function stripExt(filename: string): string {
-  return filename.replace(/\.[^./]+$/, '');
+  return filename.replace(/\.[^./]+$/, "");
 }
 
 export function Admin() {
@@ -136,10 +140,12 @@ export function Admin() {
   // design system. Read once, at mount: the tab strip owns it from there.
   const searchParams = useSearchParams();
   const [tab, setTab] = useState<Tab>(() => {
-    const requested = searchParams.get('tab');
-    return (ADMIN_TABS as string[]).includes(requested ?? '') ? (requested as Tab) : 'design';
+    const requested = searchParams.get("tab");
+    return (ADMIN_TABS as string[]).includes(requested ?? "")
+      ? (requested as Tab)
+      : "design";
   });
-  const [chartSection, setChartSection] = useState<ChartSection>('styles');
+  const [chartSection, setChartSection] = useState<ChartSection>("styles");
   // Admin edits the DRAFT; the rest of the app renders the published copy.
   const [ds, setDs] = useState<DesignSystem>(() => getDraftDesignSystem());
   const [dirty, setDirty] = useState(false);
@@ -151,16 +157,19 @@ export function Admin() {
   // null = album shelf; otherwise we're inside one album.
   const [album, setAlbum] = useState<string | null>(null);
   // Non-empty search takes over the shelf: albums first, then single layouts.
-  const [layoutQuery, setLayoutQuery] = useState('');
+  const [layoutQuery, setLayoutQuery] = useState("");
   // A new layout has to land somewhere, so both entry points ask for a folder
   // first; the file dialog only opens once "upload" has one.
-  const [pendingNew, setPendingNew] = useState<'build' | 'upload' | null>(null);
+  const [pendingNew, setPendingNew] = useState<"build" | "upload" | null>(null);
   const [uploadFolder, setUploadFolder] = useState<string | null>(null);
   // Palette drag-to-reorder. `armed` gates `draggable` on the row so the name
   // and hex inputs keep normal text selection until the grip is pressed.
   const [colorDragArmed, setColorDragArmed] = useState<number | null>(null);
   const [colorDragFrom, setColorDragFrom] = useState<number | null>(null);
-  const [colorDragOver, setColorDragOver] = useState<{ index: number; after: boolean } | null>(null);
+  const [colorDragOver, setColorDragOver] = useState<{
+    index: number;
+    after: boolean;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
@@ -179,10 +188,10 @@ export function Admin() {
   const startInFolder = (category: string) => {
     const action = pendingNew;
     setPendingNew(null);
-    if (action === 'build') {
-      const l = createLayout({ name: 'Untitled layout', category });
+    if (action === "build") {
+      const l = createLayout({ name: "Untitled layout", category });
       router.push(`/admin/layouts/${l.id}`);
-    } else if (action === 'upload') {
+    } else if (action === "upload") {
       setUploadFolder(category);
       fileInputRef.current?.click();
     }
@@ -190,33 +199,40 @@ export function Admin() {
 
   const uploadLayout = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = '';
+    e.target.value = "";
     const category = uploadFolder;
     setUploadFolder(null);
     if (!file || !category) return;
     // The picker's filter is deliberately loose, so the real check is here.
     // Type can be empty for a file the OS didn't recognise, hence the fallback
     // to the extension rather than a straight `type.startsWith('image/')`.
-    if (!(file.type.startsWith('image/') || IMAGE_EXT.test(file.name))) {
+    if (!(file.type.startsWith("image/") || IMAGE_EXT.test(file.name))) {
       toast(
         `“${file.name}” isn't an image. A layout reference is a picture — export a PDF or deck page to PNG first.`,
-        { tone: 'danger' },
+        { tone: "danger" },
       );
       return;
     }
     const reader = new FileReader();
     reader.onload = () => {
-      const l = createLayoutFromImage(reader.result as string, stripExt(file.name), category);
+      const l = createLayoutFromImage(
+        reader.result as string,
+        stripExt(file.name),
+        category,
+      );
       router.push(`/admin/layouts/${l.id}`);
     };
-    reader.onerror = () => toast(`Couldn't read “${file.name}”.`, { tone: 'danger' });
+    reader.onerror = () =>
+      toast(`Couldn't read “${file.name}”.`, { tone: "danger" });
     reader.readAsDataURL(file);
   };
 
   // Search spans the whole library, so it overrides whichever album is open.
   const q = layoutQuery.trim().toLowerCase();
   const searching = q.length > 0;
-  const matchedFolders = searching ? folders.filter((f) => f.toLowerCase().includes(q)) : [];
+  const matchedFolders = searching
+    ? folders.filter((f) => f.toLowerCase().includes(q))
+    : [];
   const matchedLayouts = searching
     ? layouts.filter((l) => l.name.toLowerCase().includes(q))
     : [];
@@ -227,14 +243,24 @@ export function Admin() {
   };
 
   const setColor = (i: number, next: Partial<ColorToken>) =>
-    patch({ colors: ds.colors.map((c, idx) => (idx === i ? { ...c, ...next } : c)) });
+    patch({
+      colors: ds.colors.map((c, idx) => (idx === i ? { ...c, ...next } : c)),
+    });
 
   const addColor = () =>
     patch({
-      colors: [...ds.colors, { id: `custom.${ds.colors.length + 1}`, name: 'New color', hex: '#888888' }],
+      colors: [
+        ...ds.colors,
+        {
+          id: `custom.${ds.colors.length + 1}`,
+          name: "New color",
+          hex: "#888888",
+        },
+      ],
     });
 
-  const removeColor = (i: number) => patch({ colors: ds.colors.filter((_, idx) => idx !== i) });
+  const removeColor = (i: number) =>
+    patch({ colors: ds.colors.filter((_, idx) => idx !== i) });
 
   /**
    * Palette order is meaningful: every swatch row in the editor renders
@@ -249,8 +275,39 @@ export function Admin() {
     patch({ colors: next });
   };
 
-  const setRole = (role: keyof DesignSystem['type'], next: Partial<TypeRole>) =>
+  const setRole = (role: string, next: Partial<TypeRole>) =>
     patch({ type: { ...ds.type, [role]: { ...ds.type[role], ...next } } });
+
+  /**
+   * A role starts as a copy of body, the way a new colour starts grey: the
+   * point of adding one is usually that some text needs to differ from the
+   * default in one respect, and starting from the default makes that one
+   * respect the only thing there is to set.
+   *
+   * Ids are `custom.N` for the first N free, not `count + 1` — roles are
+   * OBJECT KEYS, so a count-derived id after a removal wouldn't sit beside an
+   * existing role, it would silently overwrite it.
+   */
+  const addRole = () => {
+    let n = 1;
+    while (`custom.${n}` in ds.type) n += 1;
+    const id = `custom.${n}`;
+    patch({
+      type: { ...ds.type, [id]: { ...ds.type.body, label: `New role ${n}` } },
+    });
+  };
+
+  /**
+   * Built-ins are not removable and the UI doesn't offer it — `ds.type.body` is
+   * the fallback size in a dozen call sites and templates name these ids — so
+   * this guard is about the model, not the button.
+   */
+  const removeRole = (role: string) => {
+    if (isBuiltInTypeRole(role)) return;
+    const next = { ...ds.type };
+    delete next[role];
+    patch({ type: next });
+  };
 
   const setPageNumbers = (next: Partial<PageNumberStyle>) =>
     patch({ pageNumbers: { ...ds.pageNumbers, ...next } });
@@ -294,7 +351,8 @@ export function Admin() {
    * section split exists to remove.
    */
   const saveable =
-    SAVEABLE_TABS.includes(tab) && !(tab === 'charts' && chartSection === 'templates');
+    SAVEABLE_TABS.includes(tab) &&
+    !(tab === "charts" && chartSection === "templates");
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -307,7 +365,11 @@ export function Admin() {
               already say where you are, so no "/ Admin" crumb. */}
           <Link href="/" className="flex items-center gap-2 hover:opacity-70">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/devin-logo.svg" alt="" className="h-6 w-6 shrink-0 dark:invert" />
+            <img
+              src="/devin-logo.svg"
+              alt=""
+              className="h-6 w-6 shrink-0 dark:invert"
+            />
             <span className="text-xl font-semibold tracking-tight">Decks</span>
           </Link>
           {/* shrink-0 so a long design-system name can't squeeze the logo
@@ -325,7 +387,7 @@ export function Admin() {
               onClick={reset}
               disabled={!saveable}
               className={`rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 ${
-                saveable ? '' : 'invisible'
+                saveable ? "" : "invisible"
               }`}
             >
               Reset
@@ -334,17 +396,17 @@ export function Admin() {
               onClick={save}
               disabled={!dirty || !saveable}
               className={`rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black ${
-                saveable ? '' : 'invisible'
+                saveable ? "" : "invisible"
               }`}
             >
-              {dirty ? 'Save draft' : savedAt ? 'Saved' : 'Saved'}
+              {dirty ? "Save changes" : "Saved"}
             </button>
             <button
               onClick={publish}
               disabled={(!dirty && !unpublished) || !saveable}
               title="Make this the live brand for every deck"
               className={`rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40 ${
-                saveable ? '' : 'invisible'
+                saveable ? "" : "invisible"
               }`}
             >
               Publish
@@ -364,155 +426,194 @@ export function Admin() {
       </header>
 
       <main className="px-8 py-6">
-        {tab === 'design' ? (
+        {tab === "design" ? (
           <div>
             <div className="space-y-6">
-              {/* Colors */}
-              <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="mb-4 flex items-start justify-between gap-4">
-                  <div>
+              {/* Palette and type are the two halves of one decision — which
+                  ink, and how it's set — so they sit side by side on wide
+                  screens and stack below lg. */}
+              <div className="grid items-start gap-6 lg:grid-cols-2">
+                {/* Colors */}
+                <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className="mb-4 flex items-center justify-between gap-4">
                     <h3 className="text-sm font-semibold">Brand palette</h3>
-                    <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-500">
-                      Elements reference these by token id, so editing a hex here
-                      recolours every deck at once. Drag a row to reorder — this
-                      order is the order swatches appear in the editor.
-                    </p>
-                  </div>
-                  <button
-                    onClick={addColor}
-                    className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                  >
-                    + Add color
-                  </button>
-                </div>
-                <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                  {ds.colors.map((c, i) => (
-                    <div
-                      key={i}
-                      className={`relative flex items-center gap-3 py-2 first:pt-0 last:pb-0 ${
-                        colorDragFrom === i ? 'opacity-40' : ''
-                      }`}
-                      draggable={colorDragArmed === i}
-                      onDragStart={(e) => {
-                        setColorDragFrom(i);
-                        e.dataTransfer.effectAllowed = 'move';
-                        e.dataTransfer.setData('text/plain', c.id);
-                      }}
-                      onDragEnd={() => {
-                        setColorDragArmed(null);
-                        setColorDragFrom(null);
-                        setColorDragOver(null);
-                      }}
-                      onDragOver={(e) => {
-                        if (colorDragFrom === null || colorDragFrom === i) return;
-                        e.preventDefault();
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        setColorDragOver({
-                          index: i,
-                          after: e.clientY - rect.top > rect.height / 2,
-                        });
-                      }}
-                      onDragLeave={() => {
-                        setColorDragOver((cur) => (cur?.index === i ? null : cur));
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        if (colorDragFrom !== null && colorDragOver) {
-                          // Splice-out shifts everything after `from` down one,
-                          // so an insert point past it loses an index.
-                          const raw = colorDragOver.index + (colorDragOver.after ? 1 : 0);
-                          moveColor(colorDragFrom, raw > colorDragFrom ? raw - 1 : raw);
-                        }
-                        setColorDragArmed(null);
-                        setColorDragFrom(null);
-                        setColorDragOver(null);
-                      }}
+                    <button
+                      onClick={addColor}
+                      className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                     >
-                      {colorDragOver?.index === i ? (
-                        <div
-                          className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-indigo-500 ${
-                            colorDragOver.after ? 'bottom-0' : 'top-0'
-                          }`}
-                        />
-                      ) : null}
-                      {/* Grip, not a whole-row drag target: the row is mostly
+                      + Add color
+                    </button>
+                  </div>
+                  <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                    {ds.colors.map((c, i) => (
+                      <div
+                        key={i}
+                        className={`relative flex items-center gap-3 py-2 first:pt-0 last:pb-0 ${
+                          colorDragFrom === i ? "opacity-40" : ""
+                        }`}
+                        draggable={colorDragArmed === i}
+                        onDragStart={(e) => {
+                          setColorDragFrom(i);
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("text/plain", c.id);
+                        }}
+                        onDragEnd={() => {
+                          setColorDragArmed(null);
+                          setColorDragFrom(null);
+                          setColorDragOver(null);
+                        }}
+                        onDragOver={(e) => {
+                          if (colorDragFrom === null || colorDragFrom === i)
+                            return;
+                          e.preventDefault();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          setColorDragOver({
+                            index: i,
+                            after: e.clientY - rect.top > rect.height / 2,
+                          });
+                        }}
+                        onDragLeave={() => {
+                          setColorDragOver((cur) =>
+                            cur?.index === i ? null : cur,
+                          );
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (colorDragFrom !== null && colorDragOver) {
+                            // Splice-out shifts everything after `from` down one,
+                            // so an insert point past it loses an index.
+                            const raw =
+                              colorDragOver.index +
+                              (colorDragOver.after ? 1 : 0);
+                            moveColor(
+                              colorDragFrom,
+                              raw > colorDragFrom ? raw - 1 : raw,
+                            );
+                          }
+                          setColorDragArmed(null);
+                          setColorDragFrom(null);
+                          setColorDragOver(null);
+                        }}
+                      >
+                        {colorDragOver?.index === i ? (
+                          <div
+                            className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-indigo-500 ${
+                              colorDragOver.after ? "bottom-0" : "top-0"
+                            }`}
+                          />
+                        ) : null}
+                        {/* Grip, not a whole-row drag target: the row is mostly
                           inputs, and making those draggable kills click-to-place
                           the caret and drag-to-select inside them. */}
-                      <button
-                        onPointerDown={() => setColorDragArmed(i)}
-                        onPointerUp={() => setColorDragArmed(null)}
-                        aria-label={`Reorder ${c.name}`}
-                        title="Drag to reorder"
-                        className="grid size-5 shrink-0 cursor-grab place-items-center text-zinc-300 hover:text-zinc-500 active:cursor-grabbing dark:text-zinc-600 dark:hover:text-zinc-400"
-                      >
-                        <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true">
-                          <g fill="currentColor">
-                            {[2, 7, 12].map((y) =>
-                              [2, 8].map((x) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1" />),
-                            )}
-                          </g>
-                        </svg>
-                      </button>
-                      {/* Square, not a pill: a swatch reads as the flat fill it
+                        <button
+                          onPointerDown={() => setColorDragArmed(i)}
+                          onPointerUp={() => setColorDragArmed(null)}
+                          aria-label={`Reorder ${c.name}`}
+                          title="Drag to reorder"
+                          className="grid size-5 shrink-0 cursor-grab place-items-center text-zinc-300 hover:text-zinc-500 active:cursor-grabbing dark:text-zinc-600 dark:hover:text-zinc-400"
+                        >
+                          <svg
+                            width="10"
+                            height="14"
+                            viewBox="0 0 10 14"
+                            aria-hidden="true"
+                          >
+                            <g fill="currentColor">
+                              {[2, 7, 12].map((y) =>
+                                [2, 8].map((x) => (
+                                  <circle
+                                    key={`${x}-${y}`}
+                                    cx={x}
+                                    cy={y}
+                                    r="1"
+                                  />
+                                )),
+                              )}
+                            </g>
+                          </svg>
+                        </button>
+                        {/* Square, not a pill: a swatch reads as the flat fill it
                           will become on a slide, and rounded corners next to a
                           rounded input made both look like buttons. */}
-                      <input
-                        type="color"
-                        value={c.hex}
-                        onChange={(e) => setColor(i, { hex: e.target.value })}
-                        aria-label={`${c.name} hex`}
-                        className="size-9 shrink-0 cursor-pointer rounded-none border border-zinc-200 p-0 dark:border-zinc-700"
-                      />
-                      <input
-                        value={c.name}
-                        onChange={(e) => setColor(i, { name: e.target.value })}
-                        aria-label="Color name"
-                        className="w-40 shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-                      />
-                      <input
-                        value={c.hex}
-                        onChange={(e) => setColor(i, { hex: e.target.value })}
-                        aria-label="Hex"
-                        className="w-24 shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1.5 font-mono text-xs uppercase dark:border-zinc-700 dark:bg-zinc-800"
-                      />
-                      <code className="truncate font-mono text-[11px] text-zinc-400">{c.id}</code>
-                      <button
-                        onClick={() => removeColor(i)}
-                        className="ml-auto grid size-7 shrink-0 place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-red-500 dark:hover:bg-zinc-800"
-                        title="Remove"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </section>
+                        <input
+                          type="color"
+                          value={c.hex}
+                          onChange={(e) => setColor(i, { hex: e.target.value })}
+                          aria-label={`${c.name} hex`}
+                          className="size-9 shrink-0 cursor-pointer rounded-none border border-zinc-200 p-0 dark:border-zinc-700"
+                        />
+                        <input
+                          value={c.name}
+                          onChange={(e) =>
+                            setColor(i, { name: e.target.value })
+                          }
+                          aria-label="Color name"
+                          className="min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                        <input
+                          value={c.hex}
+                          onChange={(e) => setColor(i, { hex: e.target.value })}
+                          aria-label="Hex"
+                          className="w-24 shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1.5 font-mono text-xs uppercase dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                        <code className="truncate font-mono text-[11px] text-zinc-400">
+                          {c.id}
+                        </code>
+                        <button
+                          onClick={() => removeColor(i)}
+                          className="ml-auto grid size-7 shrink-0 place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-red-500 dark:hover:bg-zinc-800"
+                          title="Remove"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
 
-              {/* Type roles */}
-              <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-                <h3 className="text-sm font-semibold">Type roles</h3>
-                <p className="mt-0.5 mb-4 text-[11px] leading-relaxed text-zinc-500">
-                  What every template and default resolves through. Each row is
-                  set in its own role, so the sample is the actual output.
-                </p>
-                <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                  {TYPE_ROLES.map((role) => (
-                    <TypeRoleRow
-                      key={role}
-                      role={role}
-                      style={ds.type[role]}
-                      colors={ds.colors}
-                      onChange={(next) => setRole(role, next)}
-                    />
-                  ))}
-                </div>
-              </section>
+                {/* Type roles */}
+                <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+                  <div className="mb-4 flex items-center justify-between gap-4">
+                    <h3 className="text-sm font-semibold">Type roles</h3>
+                    <button
+                      onClick={addRole}
+                      className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      + Add role
+                    </button>
+                  </div>
+                  <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                    {typeRoleIds(ds).map((role) => (
+                      <TypeRoleRow
+                        key={role}
+                        role={role}
+                        style={ds.type[role]}
+                        colors={ds.colors}
+                        onChange={(next) => setRole(role, next)}
+                        onRemove={
+                          isBuiltInTypeRole(role)
+                            ? undefined
+                            : () => removeRole(role)
+                        }
+                      />
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              {/* Logo and page numbers: the two pieces of chrome the BRAND
+                  owns rather than any individual deck, so they sit together and
+                  share the design system's own Save/Publish cycle. */}
+              <LogoSection logo={ds.logo} onChange={(logo) => patch({ logo })} />
 
               {/* Page numbers */}
-              <PageNumbersSection style={ds.pageNumbers} onChange={setPageNumbers} />
+              <PageNumbersSection
+                style={ds.pageNumbers}
+                onChange={setPageNumbers}
+              />
             </div>
           </div>
-        ) : tab === 'charts' ? (
+        ) : tab === "charts" ? (
           <div className="space-y-4">
             {/* Two different things with two different save models used to be
                 stacked on one page: chart style is part of the design system
@@ -527,8 +628,8 @@ export function Admin() {
                   onClick={() => setChartSection(s.value)}
                   className={`rounded-md px-2.5 py-1 text-[12px] transition ${
                     chartSection === s.value
-                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                      : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
                   }`}
                 >
                   {s.label}
@@ -536,7 +637,7 @@ export function Admin() {
               ))}
             </div>
 
-            {chartSection === 'styles' ? (
+            {chartSection === "styles" ? (
               <div className="space-y-6">
                 <ChartStyleSection
                   ds={ds}
@@ -562,9 +663,9 @@ export function Admin() {
               </section>
             )}
           </div>
-        ) : tab === 'templates' ? (
+        ) : tab === "templates" ? (
           <DeckTemplates />
-        ) : tab === 'layouts' ? (
+        ) : tab === "layouts" ? (
           <div>
             <div className="mb-4 flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
@@ -583,7 +684,7 @@ export function Admin() {
                       ← All albums
                     </button>
                     <h2 className="mt-1 text-sm font-semibold">
-                      {album}{' '}
+                      {album}{" "}
                       <span className="font-normal text-zinc-400">
                         · {layouts.filter((l) => l.category === album).length}
                       </span>
@@ -600,13 +701,13 @@ export function Admin() {
                   className="hidden"
                 />
                 <button
-                  onClick={() => setPendingNew('upload')}
+                  onClick={() => setPendingNew("upload")}
                   className="rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   Upload to create layout
                 </button>
                 <button
-                  onClick={() => setPendingNew('build')}
+                  onClick={() => setPendingNew("build")}
                   className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
                 >
                   + Build layout
@@ -627,10 +728,12 @@ export function Admin() {
                         <AlbumCard
                           key={category}
                           category={category}
-                          layouts={layouts.filter((l) => l.category === category)}
+                          layouts={layouts.filter(
+                            (l) => l.category === category,
+                          )}
                           designSystem={ds}
                           onOpen={() => {
-                            setLayoutQuery('');
+                            setLayoutQuery("");
                             setAlbum(category);
                           }}
                         />
@@ -671,7 +774,12 @@ export function Admin() {
                   {layouts
                     .filter((l) => l.category === album)
                     .map((l) => (
-                      <LayoutCard key={l.id} layout={l} designSystem={ds} onChange={refreshLayouts} />
+                      <LayoutCard
+                        key={l.id}
+                        layout={l}
+                        designSystem={ds}
+                        onChange={refreshLayouts}
+                      />
                     ))}
                 </div>
               )
@@ -690,7 +798,11 @@ export function Admin() {
             )}
             {pendingNew ? (
               <FolderPickerModal
-                title={pendingNew === 'build' ? 'Build layout in…' : 'Upload layout into…'}
+                title={
+                  pendingNew === "build"
+                    ? "Build layout in…"
+                    : "Upload layout into…"
+                }
                 folders={folders}
                 counts={layouts}
                 initial={album}
@@ -717,136 +829,242 @@ export function Admin() {
  * a title's job is to hold a real headline at a real length, and a 26pt vs 30pt
  * decision is only visible in copy that behaves like the copy authors type.
  */
-const ROLE_SAMPLES: Record<keyof DesignSystem['type'], string> = {
-  title: 'Quarterly Business Review',
-  subtitle: 'FY26 Q2 · Prepared for the board',
-  heading: 'Where things stand',
-  body: 'Enterprise renewals carried the quarter, with net revenue retention at 118%.',
-  caption: 'Source: internal finance data, as of Aug 2026',
-  kpiValue: '118%',
+const ROLE_SAMPLES: Record<BuiltInTypeRole, string> = {
+  title: "Quarterly Business Review",
+  subtitle: "FY26 Q2 · Prepared for the board",
+  heading: "Where things stand",
+  body: "Enterprise renewals carried the quarter, with net revenue retention at 118%.",
+  caption: "Source: internal finance data, as of Aug 2026",
+  kpiValue: "118%",
 };
 
-const ROLE_LABELS: Record<keyof DesignSystem['type'], string> = {
-  title: 'Title',
-  subtitle: 'Subtitle',
-  heading: 'Heading',
-  body: 'Body',
-  caption: 'Caption',
-  kpiValue: 'KPI value',
+const ROLE_LABELS: Record<BuiltInTypeRole, string> = {
+  title: "Title",
+  subtitle: "Subtitle",
+  heading: "Heading",
+  body: "Body",
+  caption: "Caption",
+  kpiValue: "KPI value",
 };
 
 /**
- * Slide points shown as CSS pixels at slightly under 1:1. Not the real
- * renderer's scale — a 48pt KPI at true size would blow the row apart — but a
- * single shared factor, so the roles stay in the same proportion to each other
- * as they will be on the slide.
+ * What a row is called and what it's set in. A built-in has both written above;
+ * an added role has only the name its admin typed, so that name is also the
+ * sample — a role called "Pull quote" shown in itself says everything a lorem
+ * line would, and says it about this brand.
  */
-const SAMPLE_PX_PER_PT = 0.82;
+const roleLabel = (id: string, style: TypeRole) =>
+  isBuiltInTypeRole(id) ? ROLE_LABELS[id] : style.label || "Untitled role";
 
-/** One type role: the sample it produces, then the knobs that shape it. */
+const roleSample = (id: string, style: TypeRole) =>
+  isBuiltInTypeRole(id) ? ROLE_SAMPLES[id] : style.label || "Sample text";
+
+/**
+ * Slide points shown at true size: CSS defines 96px to the inch and there are
+ * 72pt to the inch, so this is the same physical size the type takes on a slide
+ * shown at 100%. Shrinking it to fit the row was the wrong trade — the whole
+ * point of setting each row in its own role is that you can judge 14pt body
+ * against a 26pt title, and a factor under 1 makes every one of those calls
+ * against type smaller than the thing being decided.
+ */
+const SAMPLE_PX_PER_PT = 96 / 72;
+
+/**
+ * One type role: the line it sets, and — on click — the menu that shapes it.
+ *
+ * The knobs used to sit in the row, four selects deep, six times over: the
+ * panel read as a form about type rather than as type. Slides has the right
+ * idea — you click the thing and the controls come to it — and here it buys
+ * something extra, because a role IS its sample. With the row down to a name
+ * and a line, the samples stack close enough to compare, which is the whole
+ * job of this panel.
+ *
+ * `onRemove` absent means built-in — the six roles code resolves through by
+ * name. Their menu shows no delete rather than a disabled one with an
+ * explanation, because "why can't I delete Body" is a question about the code,
+ * and the answer isn't actionable from here.
+ */
 function TypeRoleRow({
   role,
   style,
   colors,
   onChange,
+  onRemove,
 }: {
-  role: keyof DesignSystem['type'];
+  role: string;
   style: TypeRole;
   colors: ColorToken[];
   onChange: (next: Partial<TypeRole>) => void;
+  onRemove?: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
   const font = FONTS[style.font];
-  const hex = colors.find((c) => c.id === style.colorToken)?.hex ?? '#000000';
+  const color = colors.find((c) => c.id === style.colorToken);
+  const hex = color?.hex ?? "#000000";
+
+  // Outside click and Escape, the same dismissal the editor's colour picker
+  // uses. Deliberately not a focus trap: the menu is a handful of native
+  // controls, and tabbing out of it to the next role is a reasonable thing to
+  // want to do.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3 first:pt-0 last:pb-0">
-      <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">
-          {ROLE_LABELS[role]}
+    <div ref={ref} className="relative py-3 first:pt-0 last:pb-0">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+          {roleLabel(role, style)}
+        </span>
+        {/* The id: what a template or the chat agent names to resolve through
+            this role, exactly as a colour row shows its token. */}
+        <code className="truncate font-mono text-[10px] text-zinc-300 dark:text-zinc-600">
+          {role}
+        </code>
+        {/* The settings in words, so the panel still reads as a spec sheet
+            without opening six menus. The sample shows what they DO; this says
+            what they ARE, which is what you quote to someone in Figma. */}
+        <span className="ml-auto shrink-0 text-[10px] text-zinc-400">
+          {fontChoiceIdOf(style, style.font)} · {style.sizePt}pt
+          {style.bold ? " · Bold" : ""}
+          {color ? ` · ${color.name}` : ""}
+        </span>
+      </div>
+      {/* Set in the role itself, on a white ground: these colours are picked
+          against slides, so previewing them on the app's dark chrome would lie
+          about contrast. */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label={`Edit ${roleLabel(role, style)}`}
+        className={`mt-1 block w-full overflow-hidden rounded-md bg-white px-3 py-2 text-left ring-1 transition hover:ring-zinc-300 dark:hover:ring-zinc-600 ${
+          open ? "ring-zinc-400 dark:ring-zinc-500" : "ring-zinc-100 dark:ring-zinc-800"
+        }`}
+      >
+        <div
+          className="truncate"
+          style={{
+            fontFamily: font.cssStack,
+            fontSize: style.sizePt * SAMPLE_PX_PER_PT,
+            lineHeight: font.singleLineFactor,
+            fontWeight: runWeight(style),
+            color: hex,
+          }}
+        >
+          {roleSample(role, style)}
         </div>
-        {/* Set in the role itself, on a white ground: these colours are picked
-            against slides, so previewing them on the app's dark chrome would
-            lie about contrast. */}
-        <div className="mt-1 overflow-hidden rounded-md bg-white px-3 py-2 ring-1 ring-zinc-100 dark:ring-zinc-800">
-          <div
-            className="truncate"
-            style={{
-              fontFamily: font.cssStack,
-              fontSize: style.sizePt * SAMPLE_PX_PER_PT,
-              lineHeight: font.singleLineFactor,
-              fontWeight: runWeight(style),
-              color: hex,
-            }}
+      </button>
+      {open ? (
+        // Overlapping the row below, not pushing it: the reason to open a menu
+        // here is to watch one sample change against the others, and a menu
+        // that reflowed the stack would move the very lines being compared.
+        <div
+          role="toolbar"
+          aria-label={`${roleLabel(role, style)} type`}
+          className="absolute left-0 top-full z-30 mt-1 flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+        >
+          {/* An added role's name lives here rather than in the row: it's an
+              edit, and edits are what this menu is. */}
+          {onRemove ? (
+            <input
+              value={style.label ?? ""}
+              onChange={(e) => onChange({ label: e.target.value })}
+              placeholder="Role name"
+              aria-label="Role name"
+              className="w-28 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          ) : null}
+          {/* Faces, not just families: the deck's title ladder is set in Geist
+              Medium, and a role that could only say "Geist" had no way to name
+              it. `fontChoicePatch` sets family and weight together. */}
+          <select
+            value={fontChoiceIdOf(style, style.font)}
+            onChange={(e) => onChange(fontChoicePatch(e.target.value))}
+            aria-label="Font"
+            className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
           >
-            {ROLE_SAMPLES[role]}
-          </div>
+            {FONT_CHOICES.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+          <label className="flex items-center gap-1 text-[11px] text-zinc-500">
+            <input
+              type="number"
+              value={style.sizePt}
+              onChange={(e) => onChange({ sizePt: parseFloat(e.target.value) })}
+              className="w-16 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+            />
+            pt
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+            <input
+              type="checkbox"
+              checked={!!style.bold}
+              onChange={(e) => onChange({ bold: e.target.checked })}
+            />
+            Bold
+          </label>
+          <select
+            value={style.colorToken}
+            onChange={(e) => onChange({ colorToken: e.target.value })}
+            aria-label="Color token"
+            className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            {colors.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          <span
+            className="size-5 shrink-0 border border-zinc-200 dark:border-zinc-700"
+            style={{ background: hex }}
+            title={hex}
+          />
+          {onRemove ? (
+            <>
+              <span className="mx-0.5 h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
+              <button
+                onClick={onRemove}
+                className="rounded-md px-2 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100 hover:text-red-500 dark:hover:bg-zinc-800"
+              >
+                Remove role
+              </button>
+            </>
+          ) : null}
         </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {/* Faces, not just families: the deck's title ladder is set in Geist
-            Medium, and a role that could only say "Geist" had no way to name
-            it. `fontChoicePatch` sets family and weight together. */}
-        <select
-          value={fontChoiceIdOf(style, style.font)}
-          onChange={(e) => onChange(fontChoicePatch(e.target.value))}
-          aria-label="Font"
-          className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-        >
-          {FONT_CHOICES.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </select>
-        <label className="flex items-center gap-1 text-[11px] text-zinc-500">
-          <input
-            type="number"
-            value={style.sizePt}
-            onChange={(e) => onChange({ sizePt: parseFloat(e.target.value) })}
-            className="w-16 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-          />
-          pt
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
-          <input
-            type="checkbox"
-            checked={!!style.bold}
-            onChange={(e) => onChange({ bold: e.target.checked })}
-          />
-          Bold
-        </label>
-        <select
-          value={style.colorToken}
-          onChange={(e) => onChange({ colorToken: e.target.value })}
-          aria-label="Color token"
-          className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-        >
-          {colors.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-        <span
-          className="size-5 shrink-0 border border-zinc-200 dark:border-zinc-700"
-          style={{ background: hex }}
-          title={hex}
-        />
-      </div>
+      ) : null}
     </div>
   );
 }
 
 const POSITIONS: { value: PageNumberPosition; label: string }[] = [
-  { value: 'bottom-left', label: 'Bottom left' },
-  { value: 'bottom-center', label: 'Bottom center' },
-  { value: 'bottom-right', label: 'Bottom right' },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom-center", label: "Bottom center" },
+  { value: "bottom-right", label: "Bottom right" },
 ];
 
 const FORMATS: { value: string; label: string }[] = [
-  { value: '{n}', label: '7' },
-  { value: 'Page {n}', label: 'Page 7' },
-  { value: '{n} / {total}', label: '7 / 12' },
-  { value: '{n} of {total}', label: '7 of 12' },
+  { value: "{n}", label: "7" },
+  { value: "Page {n}", label: "Page 7" },
+  { value: "{n} / {total}", label: "7 / 12" },
+  { value: "{n} of {total}", label: "7 of 12" },
 ];
 
 /**
@@ -864,7 +1082,7 @@ function PageNumbersSection({
 }) {
   const inches = (emu: number) => Math.round((emu / EMU_PER_INCH) * 100) / 100;
   const field =
-    'rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800';
+    "rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800";
 
   return (
     <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -875,8 +1093,8 @@ function PageNumbersSection({
         </span>
       </div>
       <p className="mb-3 text-[11px] text-zinc-400">
-        Numbers are drawn from each slide&rsquo;s position, so decks renumber themselves as
-        slides are added, removed or reordered.
+        Numbers are drawn from each slide&rsquo;s position, so decks renumber
+        themselves as slides are added, removed or reordered.
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -895,7 +1113,9 @@ function PageNumbersSection({
         <input
           type="number"
           value={style.sizePt}
-          onChange={(e) => onChange({ sizePt: parseFloat(e.target.value) || 1 })}
+          onChange={(e) =>
+            onChange({ sizePt: parseFloat(e.target.value) || 1 })
+          }
           className={`w-16 ${field}`}
           title="Size (pt)"
         />
@@ -909,7 +1129,9 @@ function PageNumbersSection({
         </label>
         <select
           value={style.position}
-          onChange={(e) => onChange({ position: e.target.value as PageNumberPosition })}
+          onChange={(e) =>
+            onChange({ position: e.target.value as PageNumberPosition })
+          }
           className={field}
           title="Position"
         >
@@ -948,7 +1170,11 @@ function PageNumbersSection({
             type="number"
             step={0.05}
             value={inches(style.marginXEmu)}
-            onChange={(e) => onChange({ marginXEmu: inchesToEmu(parseFloat(e.target.value) || 0) })}
+            onChange={(e) =>
+              onChange({
+                marginXEmu: inchesToEmu(parseFloat(e.target.value) || 0),
+              })
+            }
             className={`w-16 ${field}`}
           />
           in
@@ -959,7 +1185,11 @@ function PageNumbersSection({
             type="number"
             step={0.05}
             value={inches(style.marginYEmu)}
-            onChange={(e) => onChange({ marginYEmu: inchesToEmu(parseFloat(e.target.value) || 0) })}
+            onChange={(e) =>
+              onChange({
+                marginYEmu: inchesToEmu(parseFloat(e.target.value) || 0),
+              })
+            }
             className={`w-16 ${field}`}
           />
           in
@@ -988,7 +1218,7 @@ function PageNumbersSection({
 
       {/* Both cases side by side: the same slide on white and on near-black. */}
       <div className="mt-4 grid grid-cols-2 gap-3">
-        {['#FFFFFF', '#0A0A0A'].map((bg) => (
+        {["#FFFFFF", "#0A0A0A"].map((bg) => (
           <PageNumberPreview key={bg} style={style} backgroundHex={bg} />
         ))}
       </div>
@@ -1010,11 +1240,11 @@ function PageNumberPreview({
 }) {
   const label = pageNumberLabel({ ...style, skipFirst: false }, 6, 12);
   const justify =
-    style.position === 'bottom-center'
-      ? 'center'
-      : style.position === 'bottom-left'
-        ? 'flex-start'
-        : 'flex-end';
+    style.position === "bottom-center"
+      ? "center"
+      : style.position === "bottom-left"
+        ? "flex-start"
+        : "flex-end";
   // The crop: a corner-sized window onto the slide. The slide itself is laid
   // out at full size behind it and anchored so the window lands on the corner,
   // which keeps every inset in true slide proportion while the type comes out
@@ -1026,16 +1256,20 @@ function PageNumberPreview({
   const pct = (emu: number, of: number) => `${(emu / of) * 100}%`;
   const ink = pageNumberInk(style, backgroundHex);
   const inches = (emu: number) => Math.round((emu / EMU_PER_INCH) * 100) / 100;
-  const guide = { position: 'absolute', borderColor: ink, opacity: 0.35 } as const;
+  const guide = {
+    position: "absolute",
+    borderColor: ink,
+    opacity: 0.35,
+  } as const;
   const tick = {
-    position: 'absolute',
+    position: "absolute",
     color: ink,
     opacity: 0.55,
     fontSize: 9,
-    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-    whiteSpace: 'nowrap',
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    whiteSpace: "nowrap",
   } as const;
-  const centered = style.position === 'bottom-center';
+  const centered = style.position === "bottom-center";
   return (
     <div
       className="relative overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
@@ -1048,12 +1282,16 @@ function PageNumberPreview({
         className="absolute flex"
         style={{
           bottom: 0,
-          left: centered ? '50%' : style.position === 'bottom-left' ? 0 : undefined,
-          right: style.position === 'bottom-right' ? 0 : undefined,
-          transform: centered ? 'translateX(-50%)' : undefined,
+          left: centered
+            ? "50%"
+            : style.position === "bottom-left"
+              ? 0
+              : undefined,
+          right: style.position === "bottom-right" ? 0 : undefined,
+          transform: centered ? "translateX(-50%)" : undefined,
           width: `${100 / CROP_W}%`,
           aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}`,
-          alignItems: 'flex-end',
+          alignItems: "flex-end",
           justifyContent: justify,
           padding: `0 ${style.marginXEmu * scale}px ${style.marginYEmu * scale}px`,
         }}
@@ -1066,11 +1304,11 @@ function PageNumberPreview({
             right: 0,
             bottom: pct(style.marginYEmu, SLIDE_SIZE.h),
             borderTopWidth: 1,
-            borderTopStyle: 'dashed',
+            borderTopStyle: "dashed",
           }}
         />
         {/* Side margin: one edge, or both when the number is centered. */}
-        {(centered || style.position === 'bottom-left') && (
+        {(centered || style.position === "bottom-left") && (
           <div
             style={{
               ...guide,
@@ -1078,11 +1316,11 @@ function PageNumberPreview({
               bottom: 0,
               left: pct(style.marginXEmu, SLIDE_SIZE.w),
               borderLeftWidth: 1,
-              borderLeftStyle: 'dashed',
+              borderLeftStyle: "dashed",
             }}
           />
         )}
-        {(centered || style.position === 'bottom-right') && (
+        {(centered || style.position === "bottom-right") && (
           <div
             style={{
               ...guide,
@@ -1090,7 +1328,7 @@ function PageNumberPreview({
               bottom: 0,
               right: pct(style.marginXEmu, SLIDE_SIZE.w),
               borderLeftWidth: 1,
-              borderLeftStyle: 'dashed',
+              borderLeftStyle: "dashed",
             }}
           />
         )}
@@ -1107,8 +1345,12 @@ function PageNumberPreview({
         </span>
       </div>
       {/* Guide readouts, pinned to the crop so they never sit under the number. */}
-      <div style={{ ...tick, left: 4, bottom: 3 }}>{inches(style.marginYEmu)}&Prime; bottom</div>
-      <div style={{ ...tick, right: 4, top: 3 }}>{inches(style.marginXEmu)}&Prime; side</div>
+      <div style={{ ...tick, left: 4, bottom: 3 }}>
+        {inches(style.marginYEmu)}&Prime; bottom
+      </div>
+      <div style={{ ...tick, right: 4, top: 3 }}>
+        {inches(style.marginXEmu)}&Prime; side
+      </div>
     </div>
   );
 }
@@ -1141,10 +1383,18 @@ function AlbumCard({
             <div
               key={i}
               className="overflow-hidden rounded-sm bg-white dark:bg-zinc-900"
-              style={cell ? undefined : { aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}` }}
+              style={
+                cell
+                  ? undefined
+                  : { aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}` }
+              }
             >
               {cell ? (
-                <FitSlideView slide={cell.slide} slideSize={SLIDE_SIZE} designSystem={designSystem} />
+                <FitSlideView
+                  slide={cell.slide}
+                  slideSize={SLIDE_SIZE}
+                  designSystem={designSystem}
+                />
               ) : (
                 <div className="h-full w-full bg-zinc-200 dark:bg-zinc-700" />
               )}
@@ -1158,10 +1408,12 @@ function AlbumCard({
             browsed by the shape of the idea, the way SmartArt is. Folders Admin
             created have no authored blurb, so they simply don't get a line. */}
         {blurb ? (
-          <div className="text-[11px] text-zinc-500 dark:text-zinc-400">{blurb}</div>
+          <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            {blurb}
+          </div>
         ) : null}
         <div className="text-[11px] text-zinc-400 dark:text-zinc-500">
-          {layouts.length} {layouts.length === 1 ? 'layout' : 'layouts'}
+          {layouts.length} {layouts.length === 1 ? "layout" : "layouts"}
         </div>
       </div>
     </button>
@@ -1193,12 +1445,12 @@ function FolderPickerModal({
   onCancel: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(initial);
-  const [newFolder, setNewFolder] = useState('');
+  const [newFolder, setNewFolder] = useState("");
 
   const create = () => {
     const created = onCreate(newFolder);
     if (!created) return;
-    setNewFolder('');
+    setNewFolder("");
     setSelected(created);
   };
 
@@ -1221,14 +1473,14 @@ function FolderPickerModal({
               // A folder created from the field below can be out of view in a
               // long list; scrolling it in is the only confirmation it worked.
               ref={(el) => {
-                if (selected === f) el?.scrollIntoView({ block: 'nearest' });
+                if (selected === f) el?.scrollIntoView({ block: "nearest" });
               }}
               onClick={() => setSelected(f)}
               onDoubleClick={() => onPick(f)}
               className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs ${
                 selected === f
-                  ? 'bg-zinc-900 text-white dark:bg-white dark:text-black'
-                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                  ? "bg-zinc-900 text-white dark:bg-white dark:text-black"
+                  : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
               }`}
             >
               <span className="shrink-0 opacity-60">🗀</span>
@@ -1244,7 +1496,7 @@ function FolderPickerModal({
             value={newFolder}
             onChange={(e) => setNewFolder(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') create();
+              if (e.key === "Enter") create();
             }}
             placeholder="New folder name"
             className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs outline-none placeholder:text-zinc-400 focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900"

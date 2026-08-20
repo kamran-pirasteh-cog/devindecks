@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "validate:decks": "tsx scripts/validate-decks.ts",
+    "validate:brand": "tsx scripts/validate-brand.ts",
     "import:deck": "tsx scripts/import-deck.ts"
   },
   "dependencies": {

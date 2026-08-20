@@ -13,17 +13,23 @@
 import { nanoid } from 'nanoid';
 import {
   isButterflySpec,
+  isGanttSpec,
   isGridSpec,
   isSankeySpec,
   isWaterfallSpec,
   isXYSpec,
   type ChartSpec,
   type GridSeries,
+  type GanttItem,
+  type GanttItemShape,
+  type PointOverride,
   type WaterfallRole,
   type XYSeries,
 } from './chart/spec';
-import { WATERFALL_ROLE_OPTIONS } from './chart/roles';
-import { datasheetSchemaFor, datasheetSeriesFor, parseGrain } from './sheetSchema';
+import { GANTT_ITEM_FORM_OPTIONS, WATERFALL_ROLE_OPTIONS, type GanttItemForm } from './chart/roles';
+import { comboDisplayOrder, comboSeriesMark } from './chart/combo';
+import { datasheetSchemaFor, datasheetSeriesFor, parseDay, parseGrain } from './sheetSchema';
+import { fromIso, toIso, type EpochDay } from './units';
 import {
   columnsFor,
   EMPTY,
@@ -37,6 +43,9 @@ const numCell = (n: number | null | undefined): CellValue =>
   n === null || n === undefined || !Number.isFinite(n) ? EMPTY : { kind: 'number', n };
 
 const textCell = (s: string): CellValue => (s ? { kind: 'text', text: s } : EMPTY);
+
+const dayCell = (d: EpochDay | undefined): CellValue =>
+  d === undefined || !Number.isFinite(d) ? EMPTY : { kind: 'date', iso: toIso(d) };
 
 /* ------------------------------------------------------------------ */
 /* spec -> sheet                                                      */
@@ -52,6 +61,8 @@ export function sheetFromSpec(spec: ChartSpec, turn = 0): SheetModel {
   const series = datasheetSeriesFor(spec, turn);
   const columns = columnsFor(schema, series);
   const dateKey = schema.keyColumns[0]?.type === 'date';
+  /** Does this kind's sheet carry a per-datum caption? See `sheetSchemaFor`. */
+  const withNotes = schema.perSeries.some((c) => c.key === 'note');
 
   const keyCell = (label: string): CellValue => {
     if (!dateKey) return textCell(label);
@@ -63,20 +74,34 @@ export function sheetFromSpec(spec: ChartSpec, turn = 0): SheetModel {
 
   const rows: CellValue[][] = [];
   const bandValues: Record<string, CellValue[]> = {};
+  const rowMarks: (string | undefined)[] = [];
+  const rowIndent: (number | undefined)[] = [];
 
   if (isGridSpec(spec) && schema.layout === 'seriesDown') {
     // Transposed: a row is a series, a column is a category. The category
     // labels aren't cells at all here — they're the column headers, carried by
     // `series` above.
-    for (const s of spec.data.series) {
+    //
+    // A combo's lines sink to the bottom and say so — see `comboDisplayOrder`.
+    for (const s of comboOrdered(spec.data.series, spec)) {
       rows.push([
         textCell(s.name),
-        ...spec.data.categories.map((_, ci) => numCell(s.values[ci])),
+        ...spec.data.categories.flatMap((cat, ci) => [
+          numCell(s.values[ci]),
+          ...(withNotes ? [textCell(s.pointOverrides?.[cat.key]?.note ?? '')] : []),
+        ]),
       ]);
+      rowMarks.push(comboSeriesMark(spec, s.key));
     }
   } else if (isGridSpec(spec)) {
     for (const [ci, cat] of spec.data.categories.entries()) {
-      rows.push([keyCell(cat.label), ...spec.data.series.map((s) => numCell(s.values[ci]))]);
+      rows.push([
+        keyCell(cat.label),
+        ...spec.data.series.flatMap((s) => [
+          numCell(s.values[ci]),
+          ...(withNotes ? [textCell(s.pointOverrides?.[cat.key]?.note ?? '')] : []),
+        ]),
+      ]);
     }
     if (spec.kind === 'mekko') {
       const widths =
@@ -119,9 +144,57 @@ export function sheetFromSpec(spec: ChartSpec, turn = 0): SheetModel {
     for (const [ci, cat] of spec.categories.entries()) {
       rows.push([textCell(cat.label), ...all.map((s) => numCell(s.values[ci]))]);
     }
+  } else if (isGanttSpec(spec)) {
+    // One row per task; its bars fill the repeated slot columns in order. The
+    // slot INDEX is the item's index within its row, which is the contract
+    // `specFromSheet` reuses keys through.
+    const left = schema.keyColumns.slice(1);
+    const right = schema.extraColumns;
+    const authored = (rowKey: string, col: { key: string }): CellValue =>
+      textCell(spec.cells?.[rowKey]?.[col.key.replace(/^desc\./, '')] ?? '');
+
+    for (const row of spec.rows) {
+      const items = spec.items.filter((i) => i.row === row.key);
+      rows.push([
+        textCell(row.label),
+        ...left.map((c) => authored(row.key, c)),
+        ...series.flatMap((_, i) => {
+          const it = items[i];
+          if (!it) return [EMPTY, EMPTY, EMPTY, EMPTY];
+          return [
+            { kind: 'enum' as const, value: it.shape.form },
+            dayCell(it.from),
+            // Shown INCLUSIVE, stored half-open — see `GanttItem.from`. A task
+            // running to 1 Apr exclusive is one an author calls "ends 31 Mar",
+            // and a sheet that says otherwise reads as an off-by-one bug.
+            it.to === undefined ? EMPTY : dayCell(it.to - 1),
+            textCell(it.label ?? ''),
+          ];
+        }),
+        ...right.map((c) => authored(row.key, c)),
+      ]);
+      // The indent is attached to the task's NAME rather than being a column of
+      // its own: it is a property of the row, and a column for it would be one
+      // more thing to keep in step with the tree it describes.
+      rowIndent.push(row.level || undefined);
+    }
   }
 
-  return { schema, columns, series, rows, bandValues };
+  return {
+    schema,
+    columns,
+    series,
+    rows,
+    bandValues,
+    ...(rowMarks.some(Boolean) ? { rowMarks } : {}),
+    ...(rowIndent.some((n) => n !== undefined) ? { rowIndent } : {}),
+  };
+}
+
+/** A combo's series with its lines and areas last; anything else untouched. */
+function comboOrdered<T>(series: T[], spec: ChartSpec): T[] {
+  const order = comboDisplayOrder(spec);
+  return order ? order.map((i) => series[i]!) : series;
 }
 
 /* ------------------------------------------------------------------ */
@@ -155,6 +228,10 @@ export function specFromSheet(sheet: SheetModel, base: ChartSpec): SpecFromSheet
     return null;
   };
 
+  /** The caption cell at (row, column), or '' when the sheet has no such column. */
+  const noteAt = (r: number, c: number): string =>
+    c < 0 ? '' : cellText(rows[r]?.[c]).trim();
+
   const labelAt = (r: number, fallback: string): string => {
     const cell = rows[r]?.[0];
     const t = cellText(cell).trim();
@@ -175,12 +252,22 @@ export function specFromSheet(sheet: SheetModel, base: ChartSpec): SpecFromSheet
     const valueCols = sheet.series.map((s) =>
       colIndex((col) => col.seriesKey === s.key && col.field === 'value'),
     );
+    const noteCols = sheet.series.map((s) =>
+      colIndex((col) => col.seriesKey === s.key && col.field === 'note'),
+    );
+
+    // The rows arrive in the order the sheet showed them, which for a combo
+    // sinks the lines below the columns — so the slot a row maps back onto is
+    // that same order, and writing the series out in it settles the spec into
+    // the order the sheet is already showing.
+    const order = comboDisplayOrder(spec);
+    const priorSeries = spec.data.series;
 
     spec.data.series = rows.map((_, r): GridSeries => {
       // Series identity is POSITIONAL here: a row carries no key, so a series
       // that moves takes its name and values with it while explicit formatting
       // stays with the slot — which is also how a palette assigns colour.
-      const prior = spec.data.series[r];
+      const prior = priorSeries[order ? (order[r] ?? -1) : r];
       return {
         ...(prior ?? { key: `s-${nanoid(5)}`, name: '', values: [] }),
         key: prior?.key ?? `s-${nanoid(5)}`,
@@ -188,7 +275,12 @@ export function specFromSheet(sheet: SheetModel, base: ChartSpec): SpecFromSheet
         values: valueCols.map((c, ci) =>
           c < 0 ? null : readNumber(r, c, `${liveKeys[ci]}.value`),
         ),
-        pointOverrides: pruneOverrides(prior?.pointOverrides, liveKeys),
+        // A column here IS a category, so the caption cells for one series run
+        // across its row.
+        pointOverrides: withNotes(
+          pruneOverrides(prior?.pointOverrides, liveKeys),
+          noteCols.map((c, ci) => ({ key: liveKeys[ci]!, note: noteAt(r, c) })),
+        ),
       };
     });
   } else if (isGridSpec(spec)) {
@@ -202,12 +294,16 @@ export function specFromSheet(sheet: SheetModel, base: ChartSpec): SpecFromSheet
     spec.data.series = sheet.series.map((s): GridSeries => {
       const prior = spec.data.series.find((x) => x.key === s.key);
       const c = colIndex((col) => col.seriesKey === s.key && col.field === 'value');
+      const n = colIndex((col) => col.seriesKey === s.key && col.field === 'note');
       return {
         ...(prior ?? { key: s.key, name: s.name, values: [] }),
         key: s.key,
         name: s.name,
         values: rows.map((_, r) => (c < 0 ? null : readNumber(r, c, `${s.key}.value`))),
-        pointOverrides: pruneOverrides(prior?.pointOverrides, spec.data.categories.map((x) => x.key)),
+        pointOverrides: withNotes(
+          pruneOverrides(prior?.pointOverrides, spec.data.categories.map((x) => x.key)),
+          spec.data.categories.map((cat, r) => ({ key: cat.key, note: noteAt(r, n) })),
+        ),
       };
     });
 
@@ -349,9 +445,172 @@ export function specFromSheet(sheet: SheetModel, base: ChartSpec): SpecFromSheet
     });
     spec.left = built.slice(0, 1);
     spec.right = built.slice(1, 2);
+  } else if (isGanttSpec(spec)) {
+    const priorRows = spec.rows;
+    const priorItems = spec.items;
+    const authored = [...schema.keyColumns.slice(1), ...schema.extraColumns];
+
+    /** The day in this cell, or null with a diagnostic if it isn't one. */
+    const readDay = (r: number, c: number, columnKey: string): EpochDay | null => {
+      const cell = rows[r]?.[c];
+      if (!cell || cell.kind === 'empty') return null;
+      const iso = cell.kind === 'date' ? cell.iso : parseDay(cellText(cell));
+      const day = iso ? fromIso(iso) : null;
+      if (day === null) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'cell-not-a-date',
+          message: `"${cellText(cell)}" isn't a date.`,
+          cell: { r, c },
+          column: columnKey,
+        });
+      }
+      return day;
+    };
+
+    spec.rows = rows.map((_, r) => {
+      const prior = priorRows[r];
+      return {
+        ...(prior ?? { key: `r-${nanoid(5)}`, label: '', level: 0 }),
+        key: prior?.key ?? `r-${nanoid(5)}`,
+        label: labelAt(r, `Task ${r + 1}`),
+        // Indent is edited beside the name, not in a cell — the sheet carries
+        // it back verbatim, and a level that jumps (0 straight to 2) is
+        // clamped so the tree can always be walked.
+        level: Math.max(0, Math.min(sheet.rowIndent?.[r] ?? prior?.level ?? 0, r === 0 ? 0 : 9)),
+      };
+    });
+
+    const items: GanttItem[] = [];
+    const cells: Record<string, Record<string, string>> = {};
+
+    for (const [r, row] of spec.rows.entries()) {
+      const was = priorItems.filter((i) => i.row === priorRows[r]?.key);
+
+      for (const [si, s0] of sheet.series.entries()) {
+        const fi = colIndex((col) => col.seriesKey === s0.key && col.field === 'form');
+        const sti = colIndex((col) => col.seriesKey === s0.key && col.field === 'start');
+        const eni = colIndex((col) => col.seriesKey === s0.key && col.field === 'end');
+        const txi = colIndex((col) => col.seriesKey === s0.key && col.field === 'text');
+
+        const formCell = rows[r]?.[fi];
+        const rawForm = formCell && formCell.kind !== 'empty' ? cellText(formCell).trim() : '';
+        const start = sti < 0 ? null : readDay(r, sti, `${s0.key}.start`);
+        const endInclusive = eni < 0 ? null : readDay(r, eni, `${s0.key}.end`);
+        const label = txi < 0 ? '' : cellText(rows[r]?.[txi]).trim();
+
+        // An empty slot is NOT an item. A zero-width bar at the epoch is worse
+        // than nothing: it draws, it can be selected, and it says nothing.
+        if (!rawForm && start === null && endInclusive === null && !label) continue;
+
+        const form = coerceForm(rawForm, r, fi, diagnostics);
+        const prior = was[si];
+        const from = start ?? prior?.from ?? spec.timescale.min ?? 0;
+
+        let to: EpochDay | undefined;
+        if (form === 'milestone') {
+          // A milestone is a moment. An End typed against one is a real edit
+          // that cannot be honoured, so it is reported rather than dropped in
+          // silence — this file never drops input.
+          if (endInclusive !== null) {
+            diagnostics.push({
+              severity: 'warning',
+              code: 'milestone-has-end',
+              message: `Row ${r + 1} is a milestone, so its End is ignored.`,
+              cell: { r, c: eni },
+            });
+          }
+        } else if (endInclusive !== null) {
+          // Back to half-open, and never before the start: an inverted span
+          // draws as a zero-width bar rather than a negative one.
+          to = Math.max(from, endInclusive + 1);
+          if (endInclusive + 1 < from) {
+            diagnostics.push({
+              severity: 'warning',
+              code: 'end-before-start',
+              message: `Row ${r + 1} ends before it starts.`,
+              cell: { r, c: eni },
+            });
+          }
+        } else {
+          // A summary computes its span from its children; anything else with
+          // no End is a day long, which is at least drawable.
+          to = form === 'summary' ? undefined : from + 1;
+        }
+
+        items.push({
+          ...(prior ?? {}),
+          key: prior?.key ?? `g-${nanoid(5)}`,
+          row: row.key,
+          from,
+          ...(to === undefined ? {} : { to }),
+          shape: reshape(prior?.shape, form),
+          ...(label ? { label } : {}),
+        });
+      }
+
+      for (const col of authored) {
+        const ci = colIndex((c) => c.key === col.key);
+        const text = ci < 0 ? '' : cellText(rows[r]?.[ci]).trim();
+        if (!text) continue;
+        (cells[row.key] ??= {})[col.key.replace(/^desc\./, '')] = text;
+      }
+    }
+
+    spec.items = items;
+    spec.cells = cells;
   }
 
   return { spec, diagnostics };
+}
+
+/**
+ * The item shape a Type cell names.
+ *
+ * Blank means a bar: a row with dates and no type typed is the ordinary case,
+ * and demanding the word "bar" for it would be a form to fill in rather than a
+ * schedule to write.
+ */
+function coerceForm(
+  raw: string,
+  r: number,
+  c: number,
+  diagnostics: SheetDiagnostic[],
+): GanttItemForm {
+  if (!raw) return 'bar';
+  const hit = GANTT_ITEM_FORM_OPTIONS.find(
+    (o) => o.value === raw.toLowerCase() || o.label.toLowerCase() === raw.toLowerCase(),
+  );
+  if (hit) return hit.value;
+  diagnostics.push({
+    severity: 'warning',
+    code: 'unknown-item-type',
+    message: `"${raw}" isn't a bar, chevron, milestone, summary or bracket.`,
+    cell: { r, c },
+  });
+  return 'bar';
+}
+
+/**
+ * Change an item's form while keeping the geometry that still applies.
+ *
+ * A chevron retyped to a bar and back should not lose its head length, and a
+ * milestone retyped away and back should keep its marker — the datasheet edits
+ * the FORM, and the rest of the shape is a formatting choice made elsewhere.
+ */
+function reshape(prior: GanttItemShape | undefined, form: GanttItemForm): GanttItemShape {
+  if (prior?.form === form) return prior;
+  switch (form) {
+    case 'chevron':
+      return { form };
+    case 'milestone':
+      return { form, marker: 'diamond' };
+    case 'summary':
+    case 'bracket':
+      return { form };
+    default:
+      return { form: 'bar' };
+  }
 }
 
 function coerceRole(
@@ -374,6 +633,33 @@ function coerceRole(
     column: 'role',
   });
   return 'delta';
+}
+
+/**
+ * Fold the sheet's caption column back onto the series' per-point overrides.
+ *
+ * A blank cell DELETES the caption rather than storing an empty string, and an
+ * override with nothing else left on it goes with it — otherwise clearing a
+ * caption leaves the spec littered with entries that make an untouched point
+ * indistinguishable from a hand-formatted one.
+ */
+function withNotes(
+  overrides: GridSeries['pointOverrides'],
+  notes: { key: string; note: string }[],
+): GridSeries['pointOverrides'] {
+  const next: Record<string, PointOverride> = { ...(overrides ?? {}) };
+  for (const { key, note } of notes) {
+    const prior = next[key];
+    if (note) {
+      next[key] = { ...prior, note };
+    } else if (prior?.note !== undefined) {
+      const rest = { ...prior };
+      delete rest.note;
+      if (Object.keys(rest).length) next[key] = rest;
+      else delete next[key];
+    }
+  }
+  return Object.keys(next).length ? next : undefined;
 }
 
 /**

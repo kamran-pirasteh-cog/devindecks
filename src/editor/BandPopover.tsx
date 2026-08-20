@@ -29,14 +29,17 @@ function Segmented<T extends string>({
   value,
   options,
   onPick,
+  disabled,
 }: {
   label: string;
   value: T;
   options: { id: T; label: string }[];
   onPick: (id: T) => void;
+  /** Greyed out when the choice has no effect — a full-page band has no side. */
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className={`flex flex-col gap-1.5 ${disabled ? 'opacity-40' : ''}`}>
       <span className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
         {label}
       </span>
@@ -49,7 +52,8 @@ function Segmented<T extends string>({
               type="button"
               onClick={() => onPick(o.id)}
               aria-pressed={active}
-              className={`flex h-7 flex-1 items-center justify-center rounded-md border px-2 text-xs ${
+              disabled={disabled}
+              className={`flex h-7 flex-1 items-center justify-center rounded-md border px-2 text-xs whitespace-nowrap ${
                 active
                   ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
                   : 'border-zinc-200 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800'
@@ -107,7 +111,7 @@ export function BandPopover({
       role="dialog"
       aria-label="Insert side band"
       style={{ zIndex: OVERLAY_Z }}
-      className="absolute top-full left-0 mt-1.5 w-72 rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+      className="absolute top-full left-0 mt-1.5 w-[22rem] rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
     >
       <div className="flex flex-col gap-3">
         {/* The slide, at slide proportions — band on its edge, content inside. */}
@@ -165,6 +169,7 @@ export function BandPopover({
             { id: 'right', label: 'Right' },
           ]}
           onPick={(side) => setOpts((o) => ({ ...o, side }))}
+          disabled={opts.fraction === 'full'}
         />
 
         <Segmented

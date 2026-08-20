@@ -5,7 +5,7 @@
  * Column, bar, line, area and combo all draw the same frame around different
  * marks, so this lives once and each placer only supplies its own geometry.
  */
-import type { AxisSpec, ColorRef, EMU, LegendSpec, Rect } from '@/model';
+import type { AxisId, AxisSpec, ColorRef, EMU, LegendSpec, Rect } from '@/model';
 import { isInsideLegend, pointsToEmu, token } from '@/model';
 import type { LinearScale } from '../scale/linear';
 import type { ChartTheme } from '../theme';
@@ -72,6 +72,7 @@ export const textStyle = (
   font: role.font,
   sizePt: role.sizePt,
   bold: role.bold,
+  italic: role.italic,
   weight: role.weight,
   color: role.color,
   caps: role.caps,
@@ -104,6 +105,23 @@ export interface CartesianInput {
   /** Short rules at each tick, per axis. Unset means none — see `AxisSpec`. */
   valueTickMarks?: AxisSpec['tickMarks'];
   categoryTickMarks?: AxisSpec['tickMarks'];
+  /**
+   * The SECONDARY value axis, drawn on the far side of the plot — the right on
+   * a column chart, the top on a bar. Unset means the chart has one value axis.
+   *
+   * It carries its own scale rather than reading the primary's: that is the
+   * whole point of it. No gridlines of its own, though — a second set of rules
+   * across the same plot at different heights reads as a mistake, and the
+   * caller aligns the two tick counts so the primary's rules serve both.
+   */
+  secondary?: {
+    scale: LinearScale;
+    tickLabels: string[];
+    showLabels: boolean;
+    showLine?: boolean;
+    tickMarks?: AxisSpec['tickMarks'];
+    title?: string;
+  };
   title?: string;
   valueAxisTitle?: string;
   categoryAxisTitle?: string;
@@ -149,6 +167,7 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     unitNote,
     legend,
     uprightText,
+    secondary,
   } = input;
 
   const { plot, horizontal } = proj;
@@ -297,6 +316,85 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     });
   }
 
+  /* --- the secondary value axis, on the far side of the plot --- */
+  if (secondary) {
+    const sProj = projector(plot, secondary.scale, horizontal);
+    // Which edge it hangs off: the right of an upright chart, the top of one
+    // lying on its side — always the side the primary axis is not on.
+    const farEdge = horizontal ? plot.y : plot.x + plot.w;
+
+    if (secondary.showLine) {
+      marks.push({
+        kind: 'line',
+        ref: { chartId, part: 'axis', axis: 'y2', sub: 'line' },
+        rect: horizontal
+          ? rectFromEdges(plot.x, farEdge, plot.x + plot.w, farEdge)
+          : rectFromEdges(farEdge, plot.y, farEdge, plot.y + plot.h),
+        color: theme.axisLine,
+        widthEmu: theme.sizes.axisWidthEmu,
+        dash: 'solid',
+      });
+    }
+
+    if (secondary.tickMarks && secondary.tickMarks !== 'none') {
+      const len = theme.sizes.tickMarkEmu;
+      // Outwards is away from the plot, which on this axis means the other
+      // direction to the primary's.
+      const out = secondary.tickMarks === 'out' ? 1 : -1;
+      secondary.scale.ticks.forEach((t, i) => {
+        const at = sProj.value(t);
+        const a = farEdge;
+        const b = horizontal ? farEdge - len * out : farEdge + len * out;
+        marks.push({
+          kind: 'line',
+          ref: { chartId, part: 'axis', axis: 'y2', sub: 'tickMark', i },
+          rect: horizontal
+            ? rectFromEdges(at, Math.min(a, b), at, Math.max(a, b))
+            : rectFromEdges(Math.min(a, b), at, Math.max(a, b), at),
+          color: theme.axisLine,
+          widthEmu: theme.sizes.axisWidthEmu,
+          dash: 'solid',
+        });
+      });
+    }
+
+    if (secondary.showLabels) {
+      const style = textStyle(theme.text.tick, horizontal ? 'center' : 'left', 'middle');
+      const h = lineHeightEmu(style);
+      const w = Math.max(
+        fitted(Math.max(...secondary.tickLabels.map((t) => measurer.measure(t, style).wEmu))),
+        pointsToEmu(1),
+      );
+      const fw = xExtent(w, h);
+      const fh = yExtent(w, h);
+      secondary.scale.ticks.forEach((t, i) => {
+        const at = sProj.value(t);
+        marks.push({
+          kind: 'text',
+          ref: { chartId, part: 'axis', axis: 'y2', sub: 'tick', i },
+          text: secondary.tickLabels[i] ?? '',
+          style,
+          rect: horizontal
+            ? boxAt(at, plot.y - gap - fh / 2, w, h)
+            : boxAt(plot.x + plot.w + gap + fw / 2, at, w, h),
+        });
+      });
+    }
+
+    if (secondary.title && layout.secondaryAxisTitle) {
+      marks.push(
+        rotatedAxisTitle(
+          chartId,
+          'y2',
+          secondary.title,
+          layout.secondaryAxisTitle,
+          theme,
+          horizontal,
+        ),
+      );
+    }
+  }
+
   /* --- category labels --- */
   if (showCategoryAxisLabels) {
     const style = textStyle(theme.text.category, horizontal ? 'right' : 'center', 'middle');
@@ -413,7 +511,7 @@ const clampTo = (x: EMU, w: EMU, bounds: Rect): EMU =>
  */
 function rotatedAxisTitle(
   chartId: string,
-  axis: 'x' | 'y',
+  axis: AxisId,
   text: string,
   slot: Rect,
   theme: ChartTheme,

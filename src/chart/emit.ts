@@ -54,6 +54,14 @@ function roleFor(mark: Mark): string {
       return 'chart.plot';
     case 'decoration':
       return 'chart.decoration';
+    case 'gantt.row':
+      // A divider IS the category axis's gridline, and reads as one to every
+      // brand rule that already styles gridlines.
+      return mark.ref.sub === 'divider' ? 'chart.gridline' : 'chart.ganttrow';
+    case 'gantt.column':
+      return mark.ref.sub === 'header' ? 'chart.gantthead' : 'chart.ganttcell';
+    case 'gantt.band':
+      return 'chart.ganttband';
   }
 }
 
@@ -110,6 +118,7 @@ function emitMark(mark: Mark, groupId: string): SlideElement {
         type: 'line',
         outline: { color: mark.color, widthEmu: mark.widthEmu, dash: mark.dash },
         ...(mark.flipV ? { flipV: true } : {}),
+        ...(mark.endArrow ? { endArrow: true } : {}),
       };
       return el;
     }
@@ -133,6 +142,7 @@ function emitMark(mark: Mark, groupId: string): SlideElement {
                   font: mark.style.font,
                   sizePt: mark.style.sizePt,
                   bold: mark.style.bold,
+                  italic: mark.style.italic,
                   weight: mark.style.weight,
                   color: mark.style.color,
                 },

@@ -21,6 +21,14 @@ export interface FrameInput {
   horizontal: boolean;
   /** Formatted tick labels, already scaled and rounded. */
   tickLabels: string[];
+  /**
+   * Tick labels for the SECONDARY value axis, which sits on the far side of the
+   * plot — the right on a column chart, the top on a bar. Empty or unset means
+   * the chart has one value axis, and no gutter is cut for a second.
+   */
+  secondaryTickLabels?: string[];
+  /** Title for that axis, in its own gutter outside the labels. */
+  secondaryAxisTitle?: string;
   categoryLabels: string[];
   showValueAxisLabels: boolean;
   showCategoryAxisLabels: boolean;
@@ -69,6 +77,7 @@ export interface FrameLayout {
   legend?: Rect;
   valueAxisTitle?: Rect;
   categoryAxisTitle?: Rect;
+  secondaryAxisTitle?: Rect;
   unitNote?: Rect;
 }
 
@@ -197,7 +206,13 @@ export function solveFrame(input: FrameInput): FrameLayout {
     outsideValueLabels,
     endLabels,
     uprightText,
+    secondaryTickLabels,
+    secondaryAxisTitle,
   } = input;
+
+  // A second value axis only exists once something is plotted against it, so
+  // the gutter is driven by the labels rather than by a flag.
+  const hasSecondary = !!secondaryTickLabels?.length;
 
   // Every text extent below is read through one of these two rather than taken
   // straight from the measurer. They are the identity for an upright chart; for
@@ -287,6 +302,19 @@ export function solveFrame(input: FrameInput): FrameLayout {
     }
   }
 
+  if (secondaryAxisTitle) {
+    const thickness = lineHeightEmu(axisTitleStyle);
+    if (horizontal) {
+      // The secondary value axis runs along the TOP of a bar chart, so its
+      // title sits above the plot rather than beside it.
+      out.secondaryAxisTitle = { x: left, y: top, w: right - left, h: thickness };
+      top += thickness + gap;
+    } else {
+      out.secondaryAxisTitle = { x: right - thickness, y: top, w: thickness, h: bottom - top };
+      right -= thickness + gap;
+    }
+  }
+
   // --- data-label gutters ---
   // These come before the tick gutters because they're measured against the
   // frame's edges, not against the axis furniture.
@@ -339,12 +367,20 @@ export function solveFrame(input: FrameInput): FrameLayout {
   const catW = catWidest && continuousCategoryAxis ? catWidest + pointsToEmu(2) : catWidest;
   const catH = showCategoryAxisLabels ? lineHeightEmu(catStyle) : 0;
 
+  const sTickW = hasSecondary ? widestOf(secondaryTickLabels ?? [], tickStyle, measurer) : 0;
+  const sTickH = hasSecondary ? lineHeightEmu(tickStyle) : 0;
+
   if (horizontal) {
     // Values run along the bottom, categories down the left.
     if (showCategoryAxisLabels) left += xExtent(catW, catH) + gap;
     if (showValueAxisLabels) bottom -= yExtent(tickW, tickH) + gap;
     // Half the first and last tick label overhang the plot horizontally.
     if (showValueAxisLabels) right -= xExtent(tickW, tickH) / 2;
+    // …and the second value axis along the top, mirroring them.
+    if (hasSecondary) {
+      top += yExtent(sTickW, sTickH) + gap;
+      right -= xExtent(sTickW, sTickH) / 2;
+    }
     if (showCategoryAxisLabels && continuousCategoryAxis) {
       // The mirror of the vertical case below: a line or area places its first
       // and last categories ON the plot's edges, so half of each of those
@@ -358,6 +394,12 @@ export function solveFrame(input: FrameInput): FrameLayout {
     if (showCategoryAxisLabels) bottom -= yExtent(catW, catH) + gap;
     // The topmost tick label is centred on the plot's top edge.
     if (showValueAxisLabels) top += yExtent(tickW, tickH) / 2;
+    if (hasSecondary) {
+      right -= xExtent(sTickW, sTickH) + gap;
+      // Its topmost label is centred on the plot's top edge too, and the
+      // primary's half-line is only reserved once.
+      if (!showValueAxisLabels) top += yExtent(sTickW, sTickH) / 2;
+    }
     if (showCategoryAxisLabels && continuousCategoryAxis) {
       // The end labels straddle the plot's edges; without this they run off
       // the chart entirely.

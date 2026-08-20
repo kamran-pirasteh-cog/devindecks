@@ -26,11 +26,17 @@ const SOURCE_COLUMNS = ['source_url', 'source_note', 'confidence'] as const;
 export const CONFIDENCE_VALUES = ['reported', 'derived', 'estimated'] as const;
 
 export function chartResultContract(schema: SheetSchema, seriesKeys: string[]): ChartResultContract {
-  const dataColumns: { name: string; type: 'string' | 'number'; enum?: string[]; required: boolean }[] =
-    [];
+  const dataColumns: {
+    name: string;
+    type: 'string' | 'number';
+    enum?: string[];
+    required: boolean;
+    /** A `date` column that stores an actual day rather than a period label. */
+    day?: boolean;
+  }[] = [];
 
   for (const col of schema.keyColumns) {
-    dataColumns.push({ name: col.key, type: 'string', required: true });
+    dataColumns.push({ name: col.key, type: 'string', required: true, ...dayFlag(col) });
   }
 
   // One block of columns per series, named after the series so a human reading
@@ -39,8 +45,12 @@ export function chartResultContract(schema: SheetSchema, seriesKeys: string[]): 
     for (const col of schema.perSeries) {
       dataColumns.push({
         name: seriesKeys.length === 1 && schema.perSeries.length === 1 ? col.key : `${key}_${col.key}`,
-        type: 'number',
+        // A per-series column isn't always a figure — a dot plot's caption
+        // column asks for an as-of date — and typing one `number` would have
+        // the schema reject the very answer the prompt asked for.
+        type: col.type === 'number' || col.type === 'percent' ? 'number' : 'string',
         required: col.required ?? false,
+        ...dayFlag(col),
       });
     }
   }
@@ -51,6 +61,7 @@ export function chartResultContract(schema: SheetSchema, seriesKeys: string[]): 
       type: col.type === 'number' ? 'number' : 'string',
       enum: col.options?.map((o) => o.value),
       required: col.required ?? false,
+      ...dayFlag(col),
     });
   }
 
@@ -60,7 +71,14 @@ export function chartResultContract(schema: SheetSchema, seriesKeys: string[]): 
       ? { enum: c.enum }
       : // Every value is nullable on purpose: "not available" has to be
         // expressible, or the only way to answer is to invent a number.
-        { type: [c.type, 'null'] };
+        {
+          type: [c.type, 'null'],
+          // A day column must say so. `parseDay` would forgive "Q3 2026" by
+          // taking its first day, but a schedule answered in quarters is a
+          // schedule nobody asked for — and the whole point of generating this
+          // from the sheet schema is that the answer pastes straight back.
+          ...(c.day ? { format: 'date', description: 'An exact calendar day, as YYYY-MM-DD.' } : {}),
+        };
   }
   properties.source_url = { type: ['string', 'null'] };
   properties.source_note = { type: ['string', 'null'] };
@@ -95,13 +113,23 @@ export function chartResultContract(schema: SheetSchema, seriesKeys: string[]): 
   };
 }
 
+/** Whether this column wants an exact day — see `SheetColumn.dateGrain`. */
+const dayFlag = (col: { type: string; dateGrain?: 'day' | 'label' }) =>
+  col.type === 'date' && col.dateGrain === 'day' ? { day: true } : {};
+
 function exampleRow(
   schema: SheetSchema,
-  dataColumns: { name: string; type: 'string' | 'number'; enum?: string[] }[],
+  dataColumns: { name: string; type: 'string' | 'number'; enum?: string[]; day?: boolean }[],
 ): Record<string, unknown> {
   const row: Record<string, unknown> = {};
   for (const c of dataColumns) {
-    row[c.name] = c.enum ? c.enum[0] : c.type === 'number' ? 1240 : 'FY25';
+    row[c.name] = c.enum
+      ? c.enum[0]
+      : c.day
+        ? '2026-03-14'
+        : c.type === 'number'
+          ? 1240
+          : 'FY25';
   }
   row.source_url = 'https://investors.example.com/annual-report-2025.pdf';
   row.source_note = 'Total revenue, page 42';

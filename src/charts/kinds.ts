@@ -20,7 +20,9 @@ export const CHART_KIND_LABELS: Record<ChartKind, string> = {
   waterfall: 'Waterfall',
   sankey: 'Sankey',
   mekko: 'Mekko',
+  dotplot: 'Dot plot',
   butterfly: 'Butterfly',
+  gantt: 'Gantt',
 };
 
 /**
@@ -40,8 +42,10 @@ export const STYLEABLE_KINDS: ChartKind[] = [
   'donut',
   'waterfall',
   'mekko',
+  'dotplot',
   'scatter',
   'bubble',
   'sankey',
   'butterfly',
+  'gantt',
 ];

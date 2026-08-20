@@ -14,9 +14,12 @@
  * off as insurance rather than as a plan.
  */
 import {
+  DEFAULT_AXIS,
+  axisLineVisible,
   isGridSpec,
   isHorizontal,
   isInsideLegend,
+  secondarySeriesKeys,
   supportsTurn,
   token,
   type AreaSpec,
@@ -25,6 +28,8 @@ import {
   type ColumnBarSpec,
   type ComboSpec,
   type DesignSystem,
+  type DotPlotSpec,
+  type GanttSpec,
   type GridSeries,
   type LegendPosition,
   type LineSpec,
@@ -48,6 +53,7 @@ import {
   placeCartesianFurniture,
   placeLegend,
   projector,
+  textStyle,
   type LegendItem,
 } from './place/cartesian';
 import {
@@ -62,6 +68,12 @@ import { placePie } from './place/pie';
 import { placeSankey } from './place/sankey';
 import { placeWaterfall, waterfallCenters } from './place/waterfall';
 import { mekkoCenters, placeMekko } from './place/mekko';
+import { dotCategoryCenters, dotRungs, placeDotPlot } from './place/dotPlot';
+import { deriveGantt, orderedColumns } from './derive/gantt';
+import { solveGanttFrame, type GanttColumnInput } from './layout/ganttFrame';
+import { ganttRowCenters, placeGantt } from './place/gantt';
+import { defaultBands, grainFor, niceTimeDomain, timeScale } from './scale/time';
+import { formatDate } from './format/date';
 import { placeXY } from './place/xy';
 import { placeAnnotations } from './decorate/annotations';
 import { resolveChartTheme, type ChartTheme } from './theme';
@@ -94,6 +106,8 @@ export const SUPPORTED_KINDS: ChartSpec['kind'][] = [
   'waterfall',
   'sankey',
   'mekko',
+  'dotplot',
+  'gantt',
 ];
 
 export const isSupported = (spec: ChartSpec): boolean => SUPPORTED_KINDS.includes(spec.kind);
@@ -164,9 +178,11 @@ export function compileChart(
   const { marks, innerFrame } =
     spec.kind === 'sankey'
       ? compileSankey(chart, spec, theme, measurer, rotation, diagnostics)
-      : spec.kind === 'scatter' || spec.kind === 'bubble'
-        ? compileXY(chart, theme, measurer, diagnostics)
-        : compileCartesian(chart, theme, measurer, rotation, diagnostics);
+      : spec.kind === 'gantt'
+        ? compileGantt(chart, spec, theme, measurer, diagnostics)
+        : spec.kind === 'scatter' || spec.kind === 'bubble'
+          ? compileXY(chart, theme, measurer, diagnostics)
+          : compileCartesian(chart, theme, measurer, rotation, diagnostics);
 
   if (!marks.length) return { elements: [], diagnostics };
 
@@ -238,6 +254,174 @@ function solveChrome(input: {
     showCategoryAxisLabels: false,
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Gantt                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A schedule: a description table, a timescale header, and rows of spans.
+ *
+ * A fourth branch for the reason the Sankey has a third — its layout is a
+ * different shape, not a cartesian one behind more `if`s. See `ganttFrame.ts`.
+ *
+ * Two passes, as `compileCartesian` has, and chasing a different circle: how
+ * fine the timescale can be depends on how wide the plot is, which depends on
+ * how wide the description table is, which depends on nothing here. One pass
+ * against the frame to get a plausible grain, one against the real plot to fix
+ * it. A Gantt never turns, so there is no rotation to thread through.
+ */
+function compileGantt(
+  chart: ChartInstance,
+  spec: GanttSpec,
+  theme: ChartTheme,
+  measurer: TextMeasurer,
+  diagnostics: CompileDiagnostic[],
+): Placed {
+  if (!spec.rows.length) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'chart-empty',
+      message: 'This chart has no tasks yet.',
+    });
+    return { marks: [], innerFrame: chart.frame };
+  }
+
+  const derived = deriveGantt(spec);
+  const [lo, hi] = derived.extent;
+  const weekStart = spec.timescale.weekStart ?? 1;
+
+  const chrome = solveChrome({
+    frame: chart.frame,
+    theme,
+    measurer,
+    horizontal: true,
+    title: spec.title,
+    legend: spec.legend.show
+      ? { items: derived.visible.map((r) => r.row.label), position: spec.legend.position }
+      : undefined,
+  });
+
+  const rowLanes = derived.visible.map((r) => r.lanes);
+  const { left, right } = orderedColumns(spec);
+  const indents = derived.visible.map((r) => r.level);
+
+  /** A column reduced to the strings that decide its width. */
+  const columnInput = (bandGrain: string): GanttColumnInput[] =>
+    [...left, ...right].map((col) => ({
+      key: col.key,
+      header: col.header,
+      side: col.side,
+      order: col.order,
+      widthEmu: col.widthEmu,
+      indents: col.source === 'label' ? indents : undefined,
+      cells: derived.visible.map((r) => {
+        const raw = derived.cells[r.row.key]?.[col.key] ?? '';
+        if ((col.source === 'start' || col.source === 'end') && /^-?\d+$/.test(raw)) {
+          return formatDate(Number(raw), col.dateFormat ?? "d MMM ''yy");
+        }
+        return col.source === 'duration' && raw ? `${raw}d` : raw;
+      }),
+    })).map((c) => ({ ...c, headerGrain: bandGrain })) as GanttColumnInput[];
+
+  /** One solve at a given band count, so the two passes share their arithmetic. */
+  const solve = (bandCount: number) =>
+    solveGanttFrame({
+      frame: chrome.plot,
+      theme,
+      measurer,
+      columns: columnInput(''),
+      bandCount,
+      rowLanes,
+      rowHeightEmu: spec.rowHeightEmu,
+      padding: spec.plotPadding,
+    });
+
+  // Pass 1: a guess at the band count, from a plot the width of the frame.
+  const authored = spec.timescale.bands.length;
+  let layout = solve(authored || 2);
+
+  // Pass 2: pick the real grain against the plot we now have, and re-solve if
+  // that changed how many header rows are needed.
+  const domain = niceTimeDomain([lo, hi], {
+    min: spec.timescale.min,
+    max: spec.timescale.max,
+    coarsest: coarsestBand(spec) ?? 'month',
+    weekStart,
+  });
+  const labelWidth = measurer.measure('MMM 00', {
+    font: theme.text.tick.font,
+    sizePt: theme.text.tick.sizePt,
+  }).wEmu;
+  const bands = authored
+    ? spec.timescale.bands.map((b) => ({ grain: b.grain, format: b.format }))
+    : defaultBands(domain.max - domain.min, layout.plot.w, labelWidth);
+
+  // An authored fine grain that no longer fits is refined DOWN rather than
+  // honoured: a header of overlapping day numbers is not what was asked for
+  // either, and the placer would drop most of the labels anyway.
+  const fits = grainFor(domain.max - domain.min, layout.plot.w, labelWidth);
+  const refined = bands.filter((b, i) => i === 0 || rank(b.grain) <= rank(fits));
+  if (refined.length !== layout.bands.length) layout = solve(refined.length);
+
+  const scale = timeScale(domain.min, domain.max, refined, { weekStart });
+  const proj = projector(layout.plot, scale, true);
+
+  if (layout.clamped.includes('columns')) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'chart-gantt-columns-clamped',
+      message: 'The description columns were narrowed to leave room for the schedule.',
+    });
+  }
+  if (layout.clamped.includes('rows')) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'chart-gantt-crowded',
+      message: 'There are more rows than fit at this height.',
+    });
+  }
+
+  const marks = placeGantt({
+    chartId: chart.id,
+    spec,
+    derived,
+    layout,
+    scale,
+    proj,
+    theme,
+    measurer,
+  });
+
+  // No `placeAnnotations` pass. Every `Anchor` it resolves is a GRID address —
+  // `{series, point}` into a `GridDerived` — and a Gantt has neither. The
+  // decorations a schedule actually wants are already first-class on the spec
+  // and drawn by the placer: the today line, shaded spans, and dependency
+  // links. `ganttRowCenters` is exported for the day an anchor kind arrives
+  // that a schedule can answer.
+  void ganttRowCenters;
+
+  if (spec.title && chrome.title) {
+    marks.push({
+      kind: 'text',
+      ref: { chartId: chart.id, part: 'title' },
+      text: spec.title,
+      // Sized to the frame, not to the string: a long title SHOULD wrap. Same
+      // call `placeCartesianFurniture` makes, so the two agree.
+      style: textStyle(theme.text.title, 'left', 'top', undefined, true),
+      rect: chrome.title,
+    });
+  }
+
+  return { marks, innerFrame: chart.frame };
+}
+
+const GRAIN_RANK = ['year', 'half', 'quarter', 'month', 'week', 'day'];
+const rank = (g: string): number => GRAIN_RANK.indexOf(g);
+
+/** The coarsest band an author asked for, which is what the domain snaps to. */
+const coarsestBand = (spec: GanttSpec) =>
+  [...spec.timescale.bands].sort((a, b) => rank(a.grain) - rank(b.grain))[0]?.grain;
 
 /* ------------------------------------------------------------------ */
 /* Sankey                                                             */
@@ -343,6 +527,11 @@ function compileCartesian(
   const uprightText = rotation === 90 || rotation === 270;
   const isPie = spec.kind === 'pie' || spec.kind === 'donut';
 
+  // The series measured in other units, and so drawn against their own axis on
+  // the far side of the plot. Read before the derive, which keeps their values
+  // out of the primary extent and out of the stack.
+  const secondaryKeys = secondarySeriesKeys(spec);
+
   // Derive first — everything downstream reads the resolved numbers, not the
   // authored ones.
   const waterfall = spec.kind === 'waterfall' ? deriveWaterfall(spec) : null;
@@ -362,13 +551,17 @@ function compileCartesian(
         })),
         totals: waterfall.data.map((d) => d.value),
         extent: waterfall.extent,
+        extentSecondary: [],
         series: [{ key: 's0', name: 'Value', values: waterfall.data.map((d) => d.value) }],
         categoryLabels: waterfall.labels,
       }
     : deriveGrid(
         isGridSpec(spec) ? spec.data : { categories: [], series: [] },
         'stack' in spec ? spec.stack : 'clustered',
-        { unstacked: spec.kind === 'combo' ? comboUnstackedKeys(spec) : undefined },
+        {
+          unstacked: spec.kind === 'combo' ? comboUnstackedKeys(spec) : undefined,
+          secondary: secondaryKeys,
+        },
       );
 
   if (!derived.series.length || !derived.categoryLabels.length) {
@@ -395,6 +588,19 @@ function compileCartesian(
   const tickLineH = lineHeightEmu(tickStyle);
   const divisor = valueAxis.unitDivisor && valueAxis.unitDivisor > 0 ? valueAxis.unitDivisor : 1;
 
+  /**
+   * The numbers the value axis has to contain.
+   *
+   * `derived.extent` carries every mark's BASE as well as its top, which is
+   * right for anything length-encoded: a bar's foot is part of the bar. A dot
+   * plot's markers have no feet, so that base is a zero nothing drew — and left
+   * in, it drags the domain back to zero and undoes the point of the chart.
+   */
+  const domainValues =
+    spec.kind === 'dotplot'
+      ? derived.data.filter((d) => d.value !== null).map((d) => d.value as number)
+      : derived.extent;
+
   const solve = (maxTicks: number): { scale: LinearScale; ticks: string[] } => {
     if (pct || spec.kind === 'mekko') {
       const scale = makeScale(0, 1, 0.25);
@@ -404,12 +610,20 @@ function compileCartesian(
     // ticks on the raw values and dividing afterwards gives an axis of
     // 0.0 / 0.5 / 1.0 where the author asked for "in $M" and expected 0 / 1 / 2.
     const display = niceDomain(
-      derived.extent.map((v) => v / divisor),
+      domainValues.map((v) => v / divisor),
       {
         maxTicks,
         // A line chart that doesn't have to include zero can use the whole
         // plot for its actual range, which is usually what makes it readable.
-        includeZero: spec.kind !== 'line' || valueAxis.min === undefined,
+        // A DOT PLOT never includes zero: nothing about a marker's position is
+        // length-encoded, so dragging the domain down to zero buys no honesty
+        // and costs the chart its whole spread — peers at 42 to 67 collapse
+        // into one cluster against the right-hand edge, which is the picture a
+        // dot plot exists to replace.
+        includeZero:
+          spec.kind === 'dotplot'
+            ? false
+            : spec.kind !== 'line' || valueAxis.min === undefined,
         min: valueAxis.min === undefined ? undefined : valueAxis.min / divisor,
         max: valueAxis.max === undefined ? undefined : valueAxis.max / divisor,
         step: valueAxis.tickStep === undefined ? undefined : valueAxis.tickStep / divisor,
@@ -417,6 +631,69 @@ function compileCartesian(
     );
     const scale = makeScale(display.min * divisor, display.max * divisor, display.step * divisor);
     return { scale, ticks: formatSet(display.ticks, numberFormat).map((f) => f.text) };
+  };
+
+  /* --- the secondary value axis --- */
+
+  /**
+   * Live only when something is actually plotted against it. A spec can carry
+   * a `y2` nobody uses — a series moved back to the left axis, a type change —
+   * and drawing a second axis with no data beside it is a gutter of numbers
+   * that mean nothing.
+   */
+  const secondaryAxis = spec.axes.y2 ?? DEFAULT_AXIS;
+  const secondaryLive = secondaryKeys.size > 0 && derived.extentSecondary.length > 0;
+  const secondaryFormat = secondaryAxis.numberFormat ?? spec.numberFormat;
+  const secondaryDivisor =
+    secondaryAxis.unitDivisor && secondaryAxis.unitDivisor > 0 ? secondaryAxis.unitDivisor : 1;
+  // Mirrors the primary axis's rule: a bar's length has to be proportional to
+  // its value, so zero stays in; a line needn't include one. It bites on a
+  // PINNED axis — an unstacked series carries a zero base into the extent
+  // either way — which is where "min 15%, and don't put zero back" is written.
+  const secondaryLinesOnly =
+    spec.kind === 'line' ||
+    (spec.kind === 'combo' &&
+      [...secondaryKeys].every((k) => (spec as ComboSpec).render[k] === 'line'));
+
+  /**
+   * The right-hand domain, on the same NUMBER of intervals as the left.
+   *
+   * Two independent nice-domains put the right axis's ticks between the left's,
+   * so the gridlines line up with one set of numbers and cut across the other.
+   * Sharing the interval count is what keeps one set of rules honest for both
+   * axes — and it's what Excel does when you add a secondary axis.
+   */
+  const solveSecondary = (intervals: number): { scale: LinearScale; ticks: string[] } => {
+    const display = niceDomain(
+      derived.extentSecondary.map((v) => v / secondaryDivisor),
+      {
+        maxTicks: Math.max(2, intervals),
+        includeZero: !secondaryLinesOnly || secondaryAxis.min !== undefined,
+        min: secondaryAxis.min === undefined ? undefined : secondaryAxis.min / secondaryDivisor,
+        max: secondaryAxis.max === undefined ? undefined : secondaryAxis.max / secondaryDivisor,
+        step:
+          secondaryAxis.tickStep === undefined
+            ? undefined
+            : secondaryAxis.tickStep / secondaryDivisor,
+      },
+    );
+    // Grow the top to reach the primary's tick count — never the bottom, which
+    // would drag a rate axis below the zero its own data respects. An author
+    // who pinned the max meant it, so that case is left alone.
+    const count = Math.round((display.max - display.min) / display.step);
+    const max =
+      secondaryAxis.max === undefined && count < intervals
+        ? display.min + display.step * intervals
+        : display.max;
+    const aligned = makeScale(display.min, max, display.step);
+    return {
+      scale: makeScale(
+        display.min * secondaryDivisor,
+        max * secondaryDivisor,
+        display.step * secondaryDivisor,
+      ),
+      ticks: formatSet(aligned.ticks, secondaryFormat).map((f) => f.text),
+    };
   };
 
   /**
@@ -430,6 +707,17 @@ function compileCartesian(
     const keys = derived.data.filter((d) => d.seriesKey === s.key).map((d) => d.pointKey);
     return keys.length > 0 && keys.every((k) => s.pointOverrides?.[k]?.hidden);
   };
+
+  /**
+   * A dot plot's markers climb a ladder rather than take a palette slot each —
+   * see `RUNGS` — so its legend has to read the same ladder. Keys coloured from
+   * `theme.seriesColor(i)` beside dots coloured from the ramp point at the wrong
+   * dot, which is worse than no legend at all.
+   */
+  const dotLadder =
+    spec.kind === 'dotplot'
+      ? dotRungs(spec as DotPlotSpec, derived.series.map((s) => s.key), theme)
+      : null;
 
   const legendItems: LegendItem[] = isPie
     ? derived.data
@@ -455,7 +743,9 @@ function compileCartesian(
                 name: s.name,
                 seriesKey: s.key,
                 color:
-                  s.format?.fill?.kind === 'solid' ? s.format.fill.color : theme.seriesColor(i),
+                  s.format?.fill?.kind === 'solid'
+                    ? s.format.fill.color
+                    : (dotLadder?.[i]?.color ?? theme.seriesColor(i)),
               },
         )
         .filter((item): item is LegendItem => item !== null);
@@ -545,7 +835,18 @@ function compileCartesian(
   // Pass 1: guess the tick budget from the frame, since there's no plot yet.
   const firstExtent = horizontal ? innerFrame.w : innerFrame.h;
   let { scale, ticks } = solve(maxTicksFor(firstExtent, tickAlong));
-  let layout: FrameLayout = solveFrame({ ...frameInputBase, tickLabels: ticks });
+  // The right-hand axis follows the left's tick count, so it is solved after
+  // it and re-solved with it.
+  let secondary = secondaryLive ? solveSecondary(scale.ticks.length - 1) : null;
+  const frameInput = () => ({
+    ...frameInputBase,
+    tickLabels: ticks,
+    // Its gutter is cut for the labels that will be drawn in it, so a hidden
+    // secondary axis costs the plot nothing.
+    secondaryTickLabels: secondary && secondaryAxis.show ? secondary.ticks : undefined,
+    secondaryAxisTitle: secondary ? secondaryAxis.title : undefined,
+  });
+  let layout: FrameLayout = solveFrame(frameInput());
 
   // Pass 2: re-solve against the plot we actually got.
   const plotExtent = horizontal ? layout.plot.w : layout.plot.h;
@@ -553,13 +854,34 @@ function compileCartesian(
   if (second.scale.step !== scale.step || second.scale.max !== scale.max) {
     scale = second.scale;
     ticks = second.ticks;
-    layout = solveFrame({ ...frameInputBase, tickLabels: ticks });
+    secondary = secondaryLive ? solveSecondary(scale.ticks.length - 1) : null;
+    layout = solveFrame(frameInput());
   }
 
   const proj = projector(layout.plot, scale, horizontal);
+  // What the placers draw the right-hand series against: the same plot, a
+  // different scale.
+  const secondaryPlot = secondary
+    ? {
+        keys: secondaryKeys,
+        proj: projector(layout.plot, secondary.scale, horizontal),
+        scale: secondary.scale,
+      }
+    : null;
   const centers = centersFor(spec, derived);
 
-  const body = placeBody(chart, spec, derived, proj, scale, theme, measurer, layout, uprightText);
+  const body = placeBody(
+    chart,
+    spec,
+    derived,
+    proj,
+    scale,
+    theme,
+    measurer,
+    layout,
+    uprightText,
+    secondaryPlot,
+  );
 
   if (isPie) {
     // A pie has no axes or gridlines; only its title and legend are furniture,
@@ -627,13 +949,27 @@ function compileCartesian(
     showValueAxisLabels: valueAxis.show,
     showCategoryAxisLabels: categoryAxis.show,
     continuousCategoryAxis: edgeCategories,
-    showValueAxisLine: false,
-    showCategoryAxisLine: categoryAxis.show,
+    // The house style leaves the value axis unruled and draws the category
+    // baseline; `line` overrides either, per chart. See `axisLineVisible`.
+    showValueAxisLine: axisLineVisible(spec, 'y'),
+    showCategoryAxisLine: axisLineVisible(spec, 'x'),
     valueTickMarks: valueAxis.tickMarks,
     categoryTickMarks: categoryAxis.tickMarks,
     gridlines: spec.decorations.gridlines.major?.show ?? theme.gridlines.major,
     valueAxisTitle: valueAxis.title,
     categoryAxisTitle: categoryAxis.title,
+    secondary: secondary
+      ? {
+          scale: secondary.scale,
+          tickLabels: secondary.ticks,
+          showLabels: secondaryAxis.show,
+          // No line, matching the primary: the house style draws the category
+          // axis and lets the gridlines carry the values.
+          showLine: axisLineVisible(spec, 'y2'),
+          tickMarks: secondaryAxis.tickMarks,
+          title: secondaryAxis.title,
+        }
+      : undefined,
   });
 
   const annotations = placeAnnotations({
@@ -645,6 +981,7 @@ function compileCartesian(
     theme,
     measurer,
     centers,
+    secondary: secondaryPlot,
   });
 
   // Furniture first so marks paint over the gridlines; annotations last so
@@ -682,9 +1019,18 @@ function centersFor(spec: ChartSpec, derived: GridDerived): number[] {
       return waterfallCenters(spec as WaterfallSpec, derived.categoryLabels.length);
     case 'mekko':
       return mekkoCenters(spec as MekkoSpec, derived);
+    case 'dotplot':
+      return dotCategoryCenters(derived.categoryLabels.length);
     default:
       return derived.categoryLabels.map((_, i) => (i + 0.5) / derived.categoryLabels.length);
   }
+}
+
+/** A value axis and the series drawn against it. */
+interface AxisPlot {
+  keys: ReadonlySet<string>;
+  proj: ReturnType<typeof projector>;
+  scale: LinearScale;
 }
 
 function placeBody(
@@ -697,38 +1043,84 @@ function placeBody(
   measurer: TextMeasurer,
   layout: FrameLayout,
   uprightText: boolean,
+  secondary: AxisPlot | null,
 ): Mark[] {
   const common = { chartId: chart.id, derived, proj, scale, theme, measurer, uprightText };
+
+  /**
+   * The chart's series, split by the axis they are measured against.
+   *
+   * One group when there is no second axis, which is every ordinary chart and
+   * the same single placer call it always was. Two when there is: the SAME
+   * placer, run again with the other scale, so a bar on the right axis is drawn
+   * by the code that draws bars rather than by a second copy of it.
+   */
+  const axisGroups: AxisPlot[] = secondary
+    ? [
+        {
+          keys: new Set(
+            derived.series.filter((s) => !secondary.keys.has(s.key)).map((s) => s.key),
+          ),
+          proj,
+          scale,
+        },
+        secondary,
+      ]
+    : [{ keys: new Set(derived.series.map((s) => s.key)), proj, scale }];
+
+  /** The placer's inputs for one group. `onlySeries` is dropped when there's one. */
+  const forGroup = (g: AxisPlot) => ({
+    ...common,
+    proj: g.proj,
+    scale: g.scale,
+    ...(secondary ? { onlySeries: new Set(g.keys) } : {}),
+  });
 
   switch (spec.kind) {
     case 'column':
     case 'bar':
-      return placeColumnBar({ ...common, spec: spec as ColumnBarSpec });
+      return axisGroups.flatMap((g) =>
+        placeColumnBar({ ...forGroup(g), spec: spec as ColumnBarSpec }),
+      );
 
     case 'line':
     case 'area':
-      return placeLineArea({ ...common, spec: spec as LineSpec | AreaSpec });
+      return axisGroups.flatMap((g) =>
+        placeLineArea({ ...forGroup(g), spec: spec as LineSpec | AreaSpec }),
+      );
 
     case 'combo': {
       const combo = spec as ComboSpec;
       const { columnKeys } = comboColumnBand(combo, derived);
       const columnSet = new Set(columnKeys);
+      const asColumns = {
+        ...combo,
+        kind: 'column',
+        data: { ...derived, categories: [], series: [] },
+      } as unknown as ColumnBarSpec;
+      const within = (g: AxisPlot, keep: (key: string) => boolean) =>
+        new Set([...g.keys].filter(keep));
+
       // Columns first, lines over them — a line hidden behind a column is the
-      // one thing a combo chart must never do.
-      const columns = placeColumnBar({
-        ...common,
-        spec: {
-          ...combo,
-          kind: 'column',
-          data: { ...derived, categories: [], series: [] },
-        } as unknown as ColumnBarSpec,
-        onlySeries: columnSet,
-      });
-      const lines = placeLineArea({
-        ...common,
-        spec: combo as LineLikeSpec,
-        onlySeries: new Set(derived.series.filter((s) => !columnSet.has(s.key)).map((s) => s.key)),
-      });
+      // one thing a combo chart must never do — and that holds ACROSS the two
+      // axes, so both passes of columns go down before either pass of lines.
+      const columns = axisGroups.flatMap((g) =>
+        placeColumnBar({
+          ...forGroup(g),
+          spec: asColumns,
+          onlySeries: within(g, (k) => columnSet.has(k)),
+          // The bars share the band among THEMSELVES; the line members aren't
+          // in the cluster, so they don't get a slot in it.
+          bandSeries: columnKeys,
+        }),
+      );
+      const lines = axisGroups.flatMap((g) =>
+        placeLineArea({
+          ...forGroup(g),
+          spec: combo as LineLikeSpec,
+          onlySeries: within(g, (k) => !columnSet.has(k)),
+        }),
+      );
       return [...columns, ...lines];
     }
 
@@ -769,6 +1161,9 @@ function placeBody(
 
     case 'mekko':
       return placeMekko({ ...common, spec: spec as MekkoSpec });
+
+    case 'dotplot':
+      return placeDotPlot({ ...common, spec: spec as DotPlotSpec });
 
     default:
       return [];
@@ -881,8 +1276,8 @@ function compileXY(
     showValueAxisLabels: spec.axes.y.show,
     showCategoryAxisLabels: spec.axes.x.show,
     continuousCategoryAxis: true,
-    showValueAxisLine: true,
-    showCategoryAxisLine: true,
+    showValueAxisLine: axisLineVisible(spec, 'y'),
+    showCategoryAxisLine: axisLineVisible(spec, 'x'),
     valueTickMarks: spec.axes.y.tickMarks,
     categoryTickMarks: spec.axes.x.tickMarks,
     gridlines: spec.decorations.gridlines.major?.show ?? theme.gridlines.major,
