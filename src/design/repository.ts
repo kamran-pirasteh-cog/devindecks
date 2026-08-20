@@ -136,9 +136,13 @@ export function saveDesignDraft(ds: DesignSystem): DesignSystem {
  */
 export function publishDesignSystem(ds?: DesignSystem): DesignSystem {
   const source = ds ?? getDraftDesignSystem();
+  const active = getActiveDesignSystem();
   const next: DesignSystem = {
     ...source,
-    version: getActiveDesignSystem().version + 1,
+    // A publish that changes nothing a deck can see keeps the version it had.
+    // Otherwise retyping a preview's dummy numbers — Admin scaffolding no deck
+    // reads — reports every deck in the org as built on a stale brand.
+    version: affectsDecks(active, source) ? active.version + 1 : active.version,
     updatedAt: new Date().toISOString(),
   };
   collection.mutate((map) => {
@@ -146,6 +150,21 @@ export function publishDesignSystem(ds?: DesignSystem): DesignSystem {
     delete map.draft;
   });
   return next;
+}
+
+/**
+ * Does this draft differ from the live brand in any way a deck renders?
+ *
+ * Compares by value, ignoring the two fields that are not brand truth:
+ * `updatedAt` (a timestamp, different on every save) and `previewData` (Admin's
+ * own dummy numbers). Structural equality is the right test here — a design
+ * system is plain JSON with a stable field order, and the alternative is a
+ * hand-maintained list of every field that matters, which drifts the first time
+ * one is added.
+ */
+function affectsDecks(active: DesignSystem, next: DesignSystem): boolean {
+  const strip = ({ updatedAt: _u, previewData: _p, version: _v, ...rest }: DesignSystem) => rest;
+  return JSON.stringify(strip(active)) !== JSON.stringify(strip(next));
 }
 
 /** Throw the draft away and go back to what's live. */

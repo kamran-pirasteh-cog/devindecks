@@ -72,6 +72,9 @@ describe('makeTitle', () => {
     expect(run.sizePt).toBe(ds.type.title.sizePt);
     expect(run.font).toBe(ds.type.title.font);
     expect(run.bold).toBe(ds.type.title.bold);
+    // Medium is the title ladder's own face, and it only reaches the slide if
+    // the role's weight rides along with the family.
+    expect(run.weight).toBe(ds.type.title.weight);
     expect(run.color).toEqual({ kind: 'token', token: ds.type.title.colorToken });
   });
 

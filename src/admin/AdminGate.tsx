@@ -51,10 +51,6 @@ export function AdminGate({ children }: { children: React.ReactNode }) {
         <h1 className="text-sm font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
           Admin
         </h1>
-        <p className="mt-1 text-[13px] text-zinc-500 dark:text-zinc-400">
-          The design system, layouts and artifacts live behind a password.
-        </p>
-
         <input
           type="password"
           value={password}

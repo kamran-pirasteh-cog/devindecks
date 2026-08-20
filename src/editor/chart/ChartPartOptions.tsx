@@ -59,6 +59,7 @@ import {
   type XYSeries,
 } from '@/model';
 import { SUPPORTED_KINDS } from '@/chart/compile';
+import { CHART_KIND_LABELS } from '@/charts/kinds';
 import { legendEntryColor, recolorLegendEntry } from '@/store/chartActions';
 import { emphasisSeriesKey } from '@/chart/place/lineArea';
 import { CustomColorSwatch, customHexOf } from '../color';
@@ -73,17 +74,24 @@ const FIELD =
 /**
  * Seven types, not twelve. Column and bar are one entry because orientation is
  * its own control; donut is a variant of pie and area of line.
+ *
+ * Each entry pairs the kind it WRITES with the kind whose word names it. They
+ * differ for the collapsed bar family: the value is `column` because that is
+ * what an unoriented bar chart is stored as, but the word has to be the
+ * orientation-free "Bar" rather than `column`'s own label.
  */
-const KIND_OPTIONS: { value: ChartKind; label: string }[] = [
-  { value: 'column', label: 'Bar' },
-  { value: 'line', label: 'Line' },
-  { value: 'combo', label: 'Column + line' },
-  { value: 'waterfall', label: 'Waterfall' },
-  { value: 'pie', label: 'Pie' },
-  { value: 'sankey', label: 'Sankey' },
-  { value: 'scatter', label: 'Scatter' },
-  { value: 'bubble', label: 'Bubble' },
-];
+const KIND_OPTIONS: { value: ChartKind; label: string }[] = (
+  [
+    ['column', 'bar'],
+    ['line', 'line'],
+    ['combo', 'combo'],
+    ['waterfall', 'waterfall'],
+    ['pie', 'pie'],
+    ['sankey', 'sankey'],
+    ['scatter', 'scatter'],
+    ['bubble', 'bubble'],
+  ] satisfies [ChartKind, ChartKind][]
+).map(([value, labelKind]) => ({ value, label: CHART_KIND_LABELS[labelKind] }));
 
 const displayKind = (kind: ChartKind): ChartKind =>
   kind === 'bar' ? 'column' : kind === 'donut' ? 'pie' : kind === 'area' ? 'line' : kind;

@@ -37,6 +37,7 @@ import {
 import { useEditor } from '@/store/editorStore';
 import { fontSizeDirection } from './fontSizeShortcut';
 import { formatPainterAction } from './formatShortcut';
+import { placeCaretAt, type CaretPoint } from './caretPoint';
 import { selectOffsets, selectionOffsets } from './textOffsets';
 import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
 
@@ -150,6 +151,7 @@ export function TextEditor({
   el,
   scale,
   onInput,
+  caretPoint,
 }: {
   el: TextElement | ShapeElement;
   scale: number;
@@ -159,6 +161,13 @@ export function TextEditor({
    * lives in the DOM until commit — this is a measurement hook, not a write.
    */
   onInput?: (node: HTMLElement) => void;
+  /**
+   * The point the editor was opened from, in viewport coordinates — where the
+   * caret should land. Read on mount only, and only a double-click supplies one:
+   * every other way in (Enter on a selected box, a new box, the Inspector)
+   * passes null and the caret falls to the end of the text.
+   */
+  caretPoint?: CaretPoint | null;
 }) {
   const ds = useEditor((s) => s.designSystem);
   const store = useEditor.getState;
@@ -201,6 +210,7 @@ export function TextEditor({
     node.style.fontWeight = String(runWeight(r));
     node.style.fontStyle = r.italic ? 'italic' : 'normal';
     node.style.textDecoration = r.underline ? 'underline' : 'none';
+    node.style.textTransform = r.caps ? 'uppercase' : 'none';
     node.style.color = resolveColor(r.color, ds);
     // The block, not the model, is the live truth for list style while the
     // editor is open — Tab and the list shortcuts move these two attributes and
@@ -322,6 +332,9 @@ export function TextEditor({
     span.style.fontWeight = String(runWeight(r));
     span.style.fontStyle = r.italic ? 'italic' : 'normal';
     span.style.textDecoration = r.underline ? 'underline' : 'none';
+    // Visual only — `commit` reads `nodeValue`, which CSS never touches, so the
+    // author's own casing survives in the model.
+    span.style.textTransform = r.caps ? 'uppercase' : 'none';
     span.style.color = resolveColor(r.color, ds);
   };
 
@@ -378,6 +391,12 @@ export function TextEditor({
     if (!node) return;
     paint(body.paragraphs);
     node.focus();
+    // Double-clicked in? The editable now covers the same rectangle the text was
+    // drawn in, so the click point resolves to the character it landed on.
+    if (caretPoint && placeCaretAt(node, caretPoint)) {
+      onInput?.(node);
+      return;
+    }
     // Place caret at the end of the last PARAGRAPH, not of the editable: text
     // typed after the last block is a sibling of it, which reads back as an
     // extra paragraph. An empty block holds only its placeholder <br>, so the
@@ -676,6 +695,7 @@ export function TextEditor({
         fontSize: (firstRun.sizePt ?? ds.type.body.sizePt) * EMU_PER_POINT * scale,
         fontWeight: runWeight(firstRun),
         fontStyle: firstRun.italic ? 'italic' : 'normal',
+        textTransform: firstRun.caps ? ('uppercase' as const) : ('none' as const),
         color: resolveColor(firstRun.color, ds),
         textAlign: (body.paragraphs[0]?.align ?? 'left') as 'left' | 'center' | 'right',
         whiteSpace: 'pre-wrap',

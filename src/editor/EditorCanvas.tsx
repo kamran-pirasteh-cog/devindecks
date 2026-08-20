@@ -29,6 +29,7 @@ import {
   textInsetBox,
   unionRect,
   type Rect,
+  type SlideElement,
   isGridSpec,
   elementIdFor,
   legendSeriesKey,
@@ -59,7 +60,8 @@ import { makeTitle } from './factories';
 import { inRect, titleBandPx, titleElement, titleSlotAction } from './titleSlot';
 import { MOVEABLE_Z, OVERLAY_Z } from './layers';
 import { measureEditableHeightPx, measureTextFitPx } from './fitToText';
-import { resizeFactor } from './groupResize';
+import { individualBox, resizeFactor } from './groupResize';
+import { liveFitRect } from './liveFit';
 import { isStickyPart, STICKY_TEXT_ROLE, stickyTextTarget } from './sticky';
 import { layoutFrame, turnRect, snapQuarterTurn } from '@/chart/turn';
 
@@ -181,6 +183,18 @@ export function EditorCanvas() {
    * is the one thing that is always true about a drag.
    */
   const groupResizeGrabRef = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * Every selected object's box in canvas px when an INDIVIDUAL-mode gesture
+   * began — see `individualMode`. Each object is its own frame there (it keeps
+   * its own anchor edge rather than orbiting a group centre), so the factors
+   * one handle produces are re-applied against these, never against the
+   * previous frame, and the sizes stay exact instead of drifting.
+   */
+  const individualStartRef = useRef<
+    { id: string; x: number; y: number; w: number; h: number; rotation: number }[]
+  >([]);
+  /** The latest frame of an individual-mode resize, committed on release. */
+  const individualRectsRef = useRef<{ id: string; rect: Rect }[]>([]);
   // PowerPoint-style resize modifiers: Shift keeps aspect ratio (keepRatio prop,
   // must be a live value so react-moveable re-reads it every frame), Ctrl
   // resizes from the center (via onBeforeResize's per-frame setFixedDirection).
@@ -217,6 +231,25 @@ export function EditorCanvas() {
    * ignores it once it leaves the selection anyway.
    */
   const partAnchorRef = useRef<string | null>(null);
+
+  // Where the last double-click into a text box landed, in viewport
+  // coordinates, and which box it was aimed at. The editable doesn't exist yet
+  // when the gesture fires, so the point is parked here and <TextEditor> reads
+  // it on mount to seat the caret under the cursor.
+  //
+  // Kept until the edit ENDS rather than consumed on first read: StrictMode
+  // mounts effects twice, and a read-once point was eaten by the first pass,
+  // leaving the second — the one whose caret survives — to fall back to the end
+  // of the text. Scoped to an element id so an edit opened any other way
+  // (Enter, a new box, the Inspector) still starts at the end.
+  const caretPointRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const caretPointFor = useCallback(
+    (id: string) => (caretPointRef.current?.id === id ? caretPointRef.current : null),
+    [],
+  );
+  useEffect(() => {
+    if (!editingId) caretPointRef.current = null;
+  }, [editingId]);
   /**
    * The chart whose datasheet is open. Held by id rather than by object so the
    * panel always reads the live instance out of the store — a stale copy would
@@ -268,6 +301,10 @@ export function EditorCanvas() {
   // Live rotation angle during a rotate gesture — rendered instead of the
   // model's value so the object turns under the cursor, not on mouseup.
   const [liveRotate, setLiveRotate] = useState<{ id: string; deg: number } | null>(null);
+  // The other objects' live angles while ONE handle of a multi-selection is
+  // turned — see `individualMode`. Separate from `liveRotate`, which is the
+  // object the handle belongs to and also drives the angle readout.
+  const [liveSpin, setLiveSpin] = useState<Record<string, number> | null>(null);
   /**
    * The chart part under the pointer, for the hover tint.
    *
@@ -642,6 +679,37 @@ export function EditorCanvas() {
    */
   const groupBoxOnly = !chartPart && !!slide && isSoleGroup(slide.elements, selectedIds);
 
+  /**
+   * Whether a multi-selection is drawn as SEPARATE objects rather than as one
+   * box — PowerPoint's behaviour for several ungrouped things.
+   *
+   * PowerPoint rings each of them with its own control box, handles and all,
+   * and a handle on any one of them resizes ALL of them: same scale factors,
+   * but each about its own anchor edge, so the objects keep their positions
+   * instead of being spread apart the way scaling one box would spread them.
+   * That distinction is the whole point — a group scales as a unit, a
+   * multi-selection doesn't.
+   *
+   * Moveable's `individualGroupable` mounts one child Moveable per target,
+   * which is what draws the boxes; each child fires the SINGLE-target events,
+   * so the fan-out that makes one handle act on all of them is ours (see
+   * `paintIndividualResize` and the `individualMode` branches below).
+   *
+   * Excluded: anything with a group (a group is exactly the case that DOES get
+   * one box), charts and drilled-into chart parts (a chart is one object whose
+   * parts are laid out, not transformed, by the compiler).
+   */
+  const individualMode =
+    !chartPart &&
+    !soleChart &&
+    !groupBoxOnly &&
+    selectedIds.length > 1 &&
+    !!slide &&
+    selectedIds.every((id) => {
+      const el = slide.elements.find((e) => e.id === id);
+      return !!el && !outerGroupId(el);
+    });
+
   const guidelineNodes = slide
     ? slide.elements
         .filter((e) => !selectedIds.includes(e.id))
@@ -903,6 +971,35 @@ export function EditorCanvas() {
     moveableRef.current?.updateRect();
   };
 
+  /**
+   * The box under the caret following its own text as it's typed — the reason
+   * the selection rectangle stays around the words instead of cutting through
+   * the lines that arrived after it was drawn.
+   *
+   * Same measurement as the sticky's, and transient for the same reason: the
+   * growth belongs to the keystroke that caused it, so one undo takes back the
+   * line AND the height it needed. `liveFitRect` decides whether this box is
+   * allowed to move at all — see the autofit rules there.
+   */
+  const growTextToFit = (el: SlideElement, node: HTMLElement) => {
+    const body = 'body' in el ? el.body : undefined;
+    // A chart's labels are laid out by the chart, not by the box they sit in:
+    // writing a rect back here would relayout the frame under the caret.
+    if (!body || el.chartRef) return;
+    const h = measureEditableHeightPx(node);
+    if (h === null) return;
+    const rect = liveFitRect(el.rect, pxToEmu(h, scale), {
+      anchor: body.anchor,
+      autofit: body.autofit,
+      rotation: el.rotation,
+      // A pixel of measurement noise is not a new line.
+      tolerance: pxToEmu(1, scale),
+    });
+    if (!rect) return;
+    store().setRect(el.id, rect, true);
+    moveableRef.current?.updateRect();
+  };
+
   const fitSelectionToText = () => {
     selectedIds.forEach((id) => fitToText(id));
     moveableRef.current?.updateRect();
@@ -1083,6 +1180,132 @@ export function EditorCanvas() {
         h: el.rect.h === 0 ? 0 : (ev.height as number),
       },
     };
+  };
+
+  /**
+   * Capture every selected object's box for an individual-mode gesture.
+   *
+   * Read from the MODEL rather than measured off the nodes: a line is floored
+   * to a pixel in the DOM (see `measurePx`) and has to come out of the gesture
+   * as a line, and `individualRectsRef` is what gets committed.
+   */
+  const captureIndividualStart = () => {
+    individualStartRef.current = selectedIds
+      .map((id) => {
+        const el = findEl(id);
+        return el
+          ? {
+              id,
+              x: el.rect.x * scale,
+              y: el.rect.y * scale,
+              w: el.rect.w * scale,
+              h: el.rect.h * scale,
+              rotation: el.rotation ?? 0,
+            }
+          : null;
+      })
+      .filter(Boolean) as typeof individualStartRef.current;
+  };
+
+  /**
+   * Apply the handle's scale factors to the REST of an individual-mode
+   * selection, and paint them.
+   *
+   * The factors come from the object the handle belongs to — so whatever
+   * snapping, ratio locking or centre-resize Moveable applied to it is already
+   * baked in — and every other object takes the same two numbers about its own
+   * anchor edge. Two shapes side by side both get 40% wider and both stay put;
+   * they don't slide apart, which is what a group resize would do to them.
+   *
+   * Returns the boxes for `liveResize`, the lead's included, so one state write
+   * covers the whole selection.
+   */
+  const paintIndividualResize = (
+    ev: any,
+    lead: { id: string; box: { x: number; y: number; w: number; h: number } },
+  ) => {
+    const starts = individualStartRef.current;
+    const start = starts.find((s) => s.id === lead.id);
+    const boxes: Record<string, { x: number; y: number; w: number; h: number }> = {
+      [lead.id]: lead.box,
+    };
+    const rects: { id: string; rect: Rect }[] = [
+      {
+        id: lead.id,
+        rect: {
+          x: pxToEmu(lead.box.x, scale),
+          y: pxToEmu(lead.box.y, scale),
+          w: pxToEmu(lead.box.w, scale),
+          h: pxToEmu(lead.box.h, scale),
+        },
+      },
+    ];
+    if (start) {
+      const [distW, distH] = (ev.dist ?? [0, 0]) as [number, number];
+      const sx = resizeFactor(start.w, ev.width, distW);
+      const sy = resizeFactor(start.h, ev.height, distH);
+      const [dirX, dirY] = ev.direction as [number, number];
+      const fromCenter = resizeFromCenterRef.current;
+
+      for (const s of starts) {
+        if (s.id === lead.id) continue;
+        const box = individualBox(s, sx, sy, dirX, dirY, fromCenter);
+        boxes[s.id] = box;
+        rects.push({
+          id: s.id,
+          rect: {
+            x: pxToEmu(box.x, scale),
+            y: pxToEmu(box.y, scale),
+            w: pxToEmu(box.w, scale),
+            h: pxToEmu(box.h, scale),
+          },
+        });
+        // Painted directly as well as through `liveResize`, so the boxes track
+        // the handle without waiting on a React commit.
+        const node = nodeMap.current.get(s.id);
+        if (!node) continue;
+        node.style.width = `${measurePx(box.w)}px`;
+        node.style.height = `${measurePx(box.h)}px`;
+        node.style.transform = `translate(${box.x}px, ${box.y}px)${
+          s.rotation ? ` rotate(${s.rotation}deg)` : ''
+        }`;
+      }
+    }
+    individualRectsRef.current = rects;
+    refreshIndividualBoxes(lead.id);
+    return boxes;
+  };
+
+  /**
+   * Re-measure the control boxes of every object EXCEPT the one being dragged.
+   *
+   * Individual mode is one Moveable per object, and each only watches its own
+   * target: the object under the handle is Moveable's own business, but the
+   * others are moved by the fan-out above, which Moveable has no way to notice.
+   * Without this their boxes sit at the committed position for the length of
+   * the gesture and snap into place on release.
+   *
+   * The dragged one is skipped deliberately — re-measuring the target of a
+   * gesture in flight moves the ground out from under it.
+   */
+  const refreshIndividualBoxes = (leadId: string) => {
+    for (const m of moveableRef.current?.getMoveables() ?? []) {
+      const target = m.getTargets()[0] as HTMLElement | undefined;
+      if (target && target.dataset.id !== leadId) m.updateRect();
+    }
+  };
+
+  /** Carry a drag on one object of an individual-mode selection to the rest. */
+  const paintIndividualDrag = (leadId: string, dx: number, dy: number) => {
+    for (const s of individualStartRef.current) {
+      if (s.id === leadId) continue;
+      const node = nodeMap.current.get(s.id);
+      if (!node) continue;
+      node.style.transform = `translate(${s.x + dx}px, ${s.y + dy}px)${
+        s.rotation ? ` rotate(${s.rotation}deg)` : ''
+      }`;
+    }
+    refreshIndividualBoxes(leadId);
   };
 
   /**
@@ -1412,8 +1635,12 @@ export function EditorCanvas() {
           moveableRef.current?.updateRect();
           return;
         }
-        // …and the bottom-right handle shrink-wraps the box to its text.
-        if (t.className.includes('moveable-control') && t.dataset.direction === 'se') {
+        // …and any of the resize dots shrink-wraps the box to its text. Every
+        // dot, not just the bottom-right one: the gesture reads as "size this
+        // box to what's in it", and which corner you happened to reach for
+        // says nothing about that. The box still grows from its top-left, so
+        // the fit lands in the same place whichever dot was hit.
+        if (t.className.includes('moveable-control') && t.dataset.direction) {
           e.preventDefault();
           e.stopPropagation();
           fitSelectionToText();
@@ -1583,8 +1810,13 @@ export function EditorCanvas() {
           const boxH = live ? live.h : el.rect.h * scale;
           // Mid-rotation the live angle wins, so the object turns with the
           // handle instead of snapping into place on mouseup.
-          const spinDeg =
-            !turning && liveRotate?.id === el.id ? liveRotate.deg : (el.rotation ?? 0);
+          const spinDeg = turning
+            ? (el.rotation ?? 0)
+            : liveRotate?.id === el.id
+              ? liveRotate.deg
+              // The other objects of a multi-selection being turned by one of
+              // their handles — see `individualMode`.
+              : (liveSpin?.[el.id] ?? el.rotation ?? 0);
           return (
             <div
               key={el.id}
@@ -1623,11 +1855,19 @@ export function EditorCanvas() {
                 if (isStickyPart(el)) {
                   e.stopPropagation();
                   const textId = stickyTextTarget(slide.elements, [el.id]);
-                  if (textId) store().setEditing(textId);
+                  // Same point-seeded caret as a plain text box; a click on the
+                  // paper outside the text box misses and falls back to the end.
+                  if (textId) {
+                    caretPointRef.current = { id: textId, x: e.clientX, y: e.clientY };
+                    store().setEditing(textId);
+                  }
                   return;
                 }
                 if (el.type === 'text' || (el.type === 'shape' && el.body)) {
                   e.stopPropagation();
+                  // Drop the caret where the click landed, the way it works in
+                  // any other text editor — not at the end of the text.
+                  caretPointRef.current = { id: el.id, x: e.clientX, y: e.clientY };
                   store().setEditing(el.id);
                   return;
                 }
@@ -1650,10 +1890,11 @@ export function EditorCanvas() {
                 <TextEditor
                   el={el}
                   scale={scale}
+                  caretPoint={caretPointFor(el.id)}
                   onInput={
                     el.role === STICKY_TEXT_ROLE
                       ? (node) => growStickyToText(el.id, node)
-                      : undefined
+                      : (node) => growTextToFit(el, node)
                   }
                 />
               ) : null}
@@ -1836,6 +2077,18 @@ export function EditorCanvas() {
             // One box for a group, rather than the group's box plus every
             // member's own — see `groupBoxOnly`.
             hideChildMoveableDefaultLines={groupBoxOnly}
+            // A box per object for an ungrouped multi-selection — see
+            // `individualMode`.
+            individualGroupable={individualMode}
+            individualGroupableProps={(node) => {
+              // Each child is its own Moveable, so a line among them gets the
+              // ends-only handles a lone line gets — see `lineHandles`.
+              const el = findEl((node as HTMLElement | null)?.dataset.id ?? '');
+              if (!el) return null;
+              if (el.rect.h === 0 && el.rect.w > 0) return { renderDirections: ['w', 'e'] };
+              if (el.rect.w === 0 && el.rect.h > 0) return { renderDirections: ['n', 's'] };
+              return null;
+            }}
             elementGuidelines={guidelineNodes}
             verticalGuidelines={[0, displayWidth / 2, displayWidth, ...marginX, ...shapeInset.x]}
             horizontalGuidelines={[0, height / 2, height, ...marginY, ...shapeInset.y]}
@@ -1844,7 +2097,12 @@ export function EditorCanvas() {
             // re-renders the authoritative transform. No baking, no leftover.
             onDragStart={(e) => {
               attachDragModifiers(e.inputEvent);
-              promoteForGesture([e.target as HTMLElement]);
+              if (individualMode) {
+                captureIndividualStart();
+                promoteForGesture(selectedNodes);
+              } else {
+                promoteForGesture([e.target as HTMLElement]);
+              }
             }}
             onDrag={(e) => {
               // Moveable raises dragStart on plain mousedown, so movement — not
@@ -1856,11 +2114,16 @@ export function EditorCanvas() {
               const [dx, dy] = e.dist as [number, number];
               // ⌘ held: pin a stand-in at the origin, then move the node itself
               // as usual, so the selection box and snap guides come along.
-              if (dragDuplicateRef.current) paintGhost(e.target as HTMLElement);
-              else clearGhosts();
+              if (dragDuplicateRef.current) {
+                if (individualMode) selectedNodes.forEach(paintGhost);
+                else paintGhost(e.target as HTMLElement);
+              } else clearGhosts();
               e.target.style.transform = `translate(${el.rect.x * scale + dx}px, ${el.rect.y * scale + dy}px)${
                 el.rotation ? ` rotate(${el.rotation}deg)` : ''
               }`;
+              // One object is Moveable's target; the rest of the selection
+              // travels with it — see `individualMode`.
+              if (individualMode) paintIndividualDrag(id, dx, dy);
               // The chart's other parts aren't Moveable targets, so move them
               // with it or only the backdrop appears to travel.
               if (soleChart) {
@@ -1880,11 +2143,25 @@ export function EditorCanvas() {
               const wasDuplicate = dragDuplicateRef.current;
               detachDragModifiers();
               clearGhosts();
-              demoteAfterGesture([e.target as HTMLElement]);
+              demoteAfterGesture(individualMode ? selectedNodes : [e.target as HTMLElement]);
               const last = e.lastEvent;
-              if (!last) return;
+              if (!last) {
+                individualStartRef.current = [];
+                return;
+              }
               const id = (e.target as HTMLElement).dataset.id!;
               const [dx, dy] = last.dist as [number, number];
+              if (individualMode) {
+                individualStartRef.current = [];
+                if (wasDuplicate) {
+                  if (dx || dy)
+                    store().duplicateBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
+                  selectedNodes.forEach(restoreCommittedTransform);
+                } else {
+                  store().moveBy(selectedIds, pxToEmu(dx, scale), pxToEmu(dy, scale));
+                }
+                return;
+              }
               if (wasDuplicate) {
                 if (!dx && !dy) {
                   restoreCommittedTransform(e.target as HTMLElement);
@@ -1940,6 +2217,10 @@ export function EditorCanvas() {
             }}
             onResizeStart={(e) => {
               beginResize(e.inputEvent);
+              if (individualMode) {
+                captureIndividualStart();
+                individualRectsRef.current = [];
+              }
               if (!soleChart) {
                 chartResizeStartRef.current = null;
                 return;
@@ -1992,12 +2273,26 @@ export function EditorCanvas() {
                 return;
               }
               const painted = paintResizeFrame(e);
-              if (painted) setLiveResize({ [painted.id]: painted.box });
+              if (!painted) return;
+              // One handle, the whole selection — see `individualMode`.
+              setLiveResize(
+                individualMode ? paintIndividualResize(e, painted) : { [painted.id]: painted.box },
+              );
             }}
             onResizeEnd={(e) => {
               endResize();
               const last = e.lastEvent;
               setLiveResize(null);
+              if (individualMode) {
+                const rects = individualRectsRef.current;
+                individualRectsRef.current = [];
+                individualStartRef.current = [];
+                if (last && rects.length) store().setRects(rects);
+                // The boxes moved with the objects, and each child Moveable was
+                // tracking the drag rather than the result.
+                moveableRef.current?.updateRect();
+                return;
+              }
               if (!last) {
                 settleChartResizePaint();
                 return;
@@ -2178,16 +2473,65 @@ export function EditorCanvas() {
             }}
             onRotateStart={() => {
               pendingSelectRef.current = null;
+              if (individualMode) captureIndividualStart();
             }}
             onRotate={(e) => {
               // Paint the angle every frame — the model is written once on end.
-              setLiveRotate({ id: (e.target as HTMLElement).dataset.id!, deg: e.rotation });
+              const id = (e.target as HTMLElement).dataset.id!;
+              setLiveRotate({ id, deg: e.rotation });
+              // The rest of the selection turns by the same amount, each about
+              // its OWN centre — PowerPoint's multi-selection rotate, and the
+              // reason this isn't the group path, which orbits them all about a
+              // shared centre. See `individualMode`.
+              if (!individualMode) return;
+              const starts = individualStartRef.current;
+              const lead = starts.find((s) => s.id === id);
+              if (!lead) return;
+              const delta = e.rotation - lead.rotation;
+              const spin: Record<string, number> = {};
+              for (const s of starts) {
+                if (s.id === id) continue;
+                const deg = s.rotation + delta;
+                spin[s.id] = deg;
+                // Painted as well as put in state, for the same reason the
+                // resize fan-out is: the boxes have to track the handle rather
+                // than wait on a React commit.
+                const node = nodeMap.current.get(s.id);
+                if (node) node.style.transform = `translate(${s.x}px, ${s.y}px) rotate(${deg}deg)`;
+              }
+              setLiveSpin(spin);
+              refreshIndividualBoxes(id);
             }}
             onRotateEnd={(e) => {
               setLiveRotate(null);
+              setLiveSpin(null);
               const last = e.lastEvent;
+              const starts = individualStartRef.current;
+              individualStartRef.current = [];
               if (!last) return;
               const id = (e.target as HTMLElement).dataset.id!;
+              if (individualMode) {
+                const lead = starts.find((s) => s.id === id);
+                const delta = lead ? last.rotation - lead.rotation : 0;
+                // One command, so the whole selection turns in one undo step.
+                store().setRects(
+                  starts
+                    .map((s) => {
+                      const el = findEl(s.id);
+                      return el
+                        ? {
+                            id: s.id,
+                            rect: el.rect,
+                            rotation: normalizeDeg(
+                              s.id === id ? last.rotation : s.rotation + delta,
+                            ),
+                          }
+                        : null;
+                    })
+                    .filter(Boolean) as { id: string; rect: Rect; rotation: number }[],
+                );
+                return;
+              }
               // The handle is on the backdrop, but the chart turns as one
               // object and the orientation belongs to the chart, not to a
               // rectangle that a recompile would replace.

@@ -11,6 +11,7 @@ import { FLAGS } from '@/flags';
 import { useResizableWidth } from './useResizableWidth';
 import { useContentWidth } from './useContentWidth';
 import { ResizeHandle } from './ResizeHandle';
+import { makeSlideDragImage } from './slideDragImage';
 
 /** First non-dragged slide after `afterIndex`, or null to mean "end of list". */
 function nextDropTargetId(afterIndex: number, draggingIds: string[], slides: { id: string }[]) {
@@ -124,6 +125,15 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                   setDraggingIds(group);
                   e.dataTransfer.effectAllowed = 'move';
                   e.dataTransfer.setData('text/plain', slide.id);
+                  // More than one slide in hand: drag a counted stack rather
+                  // than the browser's ghost of the single thumbnail grabbed.
+                  if (group.length > 1) {
+                    const ghost = makeSlideDragImage(e.currentTarget, group.length);
+                    e.dataTransfer.setDragImage(ghost, 24, 20);
+                    // The snapshot is taken synchronously, so the node only has
+                    // to survive this tick.
+                    setTimeout(() => ghost.remove(), 0);
+                  }
                 }}
                 onDragEnd={endDrag}
                 onDragOver={(e) => {

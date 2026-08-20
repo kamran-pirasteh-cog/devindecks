@@ -23,7 +23,8 @@ export type ArtifactFolderId =
   | 'client-logos'
   | 'cognition-brand-graphics'
   | 'icons'
-  | 'team-photos';
+  | 'team-photos'
+  | 'case-studies';
 
 export interface ArtifactFolder {
   id: ArtifactFolderId;
@@ -36,6 +37,7 @@ export const ARTIFACT_FOLDERS: ArtifactFolder[] = [
   { id: 'cognition-brand-graphics', name: 'Cognition Brand Graphics' },
   { id: 'icons', name: 'Icons' },
   { id: 'team-photos', name: 'Team Photos' },
+  { id: 'case-studies', name: 'Case Studies' },
 ];
 
 export interface StoredArtifact {

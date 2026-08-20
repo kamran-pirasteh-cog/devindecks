@@ -6,6 +6,7 @@ export * from './style';
 export * from './ref';
 export * from './instance';
 export * from './defaults';
+export * from './previewData';
 export * from './shape';
 export * from './migrate';
 export * from './legacy';

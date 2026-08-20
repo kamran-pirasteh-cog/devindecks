@@ -1,315 +1,112 @@
 'use client';
 
 /**
- * The brand's chart style, edited alongside the palette and type roles.
+ * The brand's chart CONVENTIONS — the rules every chart starts from.
  *
- * Structured like `PageNumbersSection`: a section of compact controls beside a
- * LIVE preview compiled through the real engine. Previewing the rule rather
- * than describing it is the only way anyone can tell what "gridlines: major"
- * actually does to their deck.
+ * Half of the Charts tab. The other half is per-kind variants
+ * (`ChartVariants`), which layer on top of what's edited here. Keeping the two
+ * visibly separate is the point: this panel answers "how do our charts look",
+ * and a variant answers "…except our gridless columns".
+ *
+ * Structured like `PageNumbersSection`: compact controls beside a LIVE preview
+ * compiled through the real engine. Previewing the rule rather than describing
+ * it is the only way anyone can tell what "gridlines: major" actually does.
  */
-import { useMemo } from 'react';
-import { FitSlideView } from '@/render/FitSlideView';
-import {
-  defaultChartSpec,
-  inchesToEmu,
-  SLIDE_16x9,
-  token,
-  type ChartStyle,
-  type DesignSystem,
-  type NumberFormat,
-} from '@/model';
-import { compileChart } from '@/chart/compile';
+import { useState } from 'react';
+import type { ChartPreviewData, ChartStyle, DesignSystem } from '@/model';
+import { ChartPreviewDataEditor } from './ChartPreviewDataEditor';
+import { ChartStyleControls } from './ChartStyleControls';
+import { ChartStylePreview, type PreviewChart } from './ChartStylePreview';
 
-const FIELD =
-  'rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[11px] outline-none focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-900';
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex items-center justify-between gap-2 py-0.5">
-      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{label}</span>
-      {children}
-    </label>
-  );
-}
+/**
+ * What the preview can show.
+ *
+ * The panel used to be pinned to column+line, so nothing you did to a pie,
+ * a waterfall or a scatter was visible until you inserted one — even though
+ * those settings applied to them just the same.
+ */
+const PREVIEW_SETS: { id: string; label: string; charts: PreviewChart[] }[] = [
+  {
+    id: 'bars',
+    label: 'Bars + line',
+    charts: [
+      { kind: 'column', stack: 'stacked', title: 'Stacked column' },
+      { kind: 'line', title: 'Line' },
+    ],
+  },
+  { id: 'pie', label: 'Pie', charts: [{ kind: 'pie', title: 'Share of revenue' }] },
+  {
+    id: 'waterfall',
+    label: 'Waterfall',
+    charts: [{ kind: 'waterfall', title: 'Revenue bridge' }],
+  },
+  {
+    id: 'xy',
+    label: 'Scatter',
+    charts: [{ kind: 'scatter', title: 'Accounts' }],
+  },
+  { id: 'mekko', label: 'Mekko', charts: [{ kind: 'mekko', title: 'Market structure' }] },
+];
 
 export function ChartStyleSection({
   ds,
   onChange,
+  onPreviewData,
 }: {
   ds: DesignSystem;
   onChange: (chart: ChartStyle) => void;
+  onPreviewData: (next: ChartPreviewData | undefined) => void;
 }) {
-  const style = ds.chart;
-  const patch = (fn: (s: ChartStyle) => void) => {
-    const next = structuredClone(style);
-    fn(next);
-    onChange(next);
-  };
-
-  // Two charts, because a stacked column and a line exercise different parts of
-  // the style and a single sample would hide half of what's being edited.
-  const preview = useMemo(() => {
-    const size = { w: SLIDE_16x9.w, h: SLIDE_16x9.h };
-    const half = Math.round(size.w / 2) - inchesToEmu(0.6);
-    const build = (kind: 'column' | 'line', x: number) => {
-      // Built from the style being edited, not from the house defaults: legend,
-      // data labels, gaps and number format are pinned onto a spec at creation
-      // and beat the design system afterwards, so a preview built without them
-      // can't show what those four controls do.
-      const spec = defaultChartSpec(kind, 'stacked', style);
-      spec.title = kind === 'column' ? 'Stacked column' : 'Line';
-      return compileChart(
-        {
-          id: `p-${kind}`,
-          groupId: `pg-${kind}`,
-          frame: { x, y: inchesToEmu(0.5), w: half, h: size.h - inchesToEmu(1) },
-          spec,
-        },
-        ds,
-      ).elements;
-    };
-    return {
-      id: 'preview',
-      background: { kind: 'solid' as const, color: token('surface.base') },
-      elements: [
-        ...build('column', inchesToEmu(0.4)),
-        ...build('line', Math.round(size.w / 2) + inchesToEmu(0.2)),
-      ],
-    };
-  }, [ds, style]);
-
-  const setFormat = (which: keyof ChartStyle['numberFormats'], fn: (f: NumberFormat) => void) =>
-    patch((s) => fn(s.numberFormats[which]));
+  const [set, setSet] = useState(PREVIEW_SETS[0].id);
+  const active = PREVIEW_SETS.find((s) => s.id === set) ?? PREVIEW_SETS[0];
 
   return (
     <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <h3 className="mb-3 text-sm font-semibold">Charts</h3>
+      <h3 className="text-sm font-semibold">Conventions</h3>
+      <p className="mb-3 mt-0.5 text-[11px] leading-relaxed text-zinc-500">
+        How every chart in the brand starts out. Palette, gridlines, axis colour
+        and type apply to charts that already exist; the rest seeds new ones.
+      </p>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,20rem)_1fr]">
-        <div className="space-y-4">
-          <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Series palette
-            </div>
-            <p className="mb-1.5 text-[11px] leading-relaxed text-zinc-500">
-              The order charts assign colours in. Leave it empty and charts pick
-              the most distinct brand colours themselves.
-            </p>
-            <div className="flex flex-wrap gap-1">
-              {ds.colors.map((c) => {
-                const index = style.paletteTokenIds.indexOf(c.id);
-                const on = index >= 0;
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() =>
-                      patch((s) => {
-                        s.paletteTokenIds = on
-                          ? s.paletteTokenIds.filter((id) => id !== c.id)
-                          : [...s.paletteTokenIds, c.id];
-                      })
-                    }
-                    title={`${c.name}${on ? ` — position ${index + 1}` : ''}`}
-                    className={`relative h-7 w-7 rounded ring-1 ring-black/10 transition ${
-                      on ? 'ring-2 ring-indigo-500' : 'opacity-50 hover:opacity-100'
-                    }`}
-                    style={{ background: c.hex }}
-                  >
-                    {on ? (
-                      <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-indigo-600 text-[8px] font-bold text-white">
-                        {index + 1}
-                      </span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Axes and gridlines
-            </div>
-            <Row label="Horizontal gridlines">
-              <select
-                value={style.gridlines.horizontal}
-                onChange={(e) =>
-                  patch((s) => (s.gridlines.horizontal = e.target.value as 'none' | 'major' | 'major+minor'))
-                }
-                className={`${FIELD} w-32`}
-              >
-                <option value="none">None</option>
-                <option value="major">Major</option>
-                <option value="major+minor">Major + minor</option>
-              </select>
-            </Row>
-            <Row label="Gridline colour">
-              <select
-                value={style.gridlines.tokenId}
-                onChange={(e) => patch((s) => (s.gridlines.tokenId = e.target.value))}
-                className={`${FIELD} w-32`}
-              >
-                {ds.colors.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </Row>
-            <Row label="Gridline style">
-              <select
-                value={style.gridlines.dash}
-                onChange={(e) =>
-                  patch((s) => (s.gridlines.dash = e.target.value as ChartStyle['gridlines']['dash']))
-                }
-                className={`${FIELD} w-32`}
-              >
-                <option value="solid">Solid</option>
-                <option value="dash">Dashed</option>
-                <option value="dot">Dotted</option>
-              </select>
-            </Row>
-            <Row label="Axis colour">
-              <select
-                value={style.axis.lineTokenId}
-                onChange={(e) => patch((s) => (s.axis.lineTokenId = e.target.value))}
-                className={`${FIELD} w-32`}
-              >
-                {ds.colors.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </Row>
-          </div>
-
-          <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Type
-            </div>
-            {(['axis', 'dataLabel', 'legend', 'title'] as const).map((slot) => (
-              <Row
-                key={slot}
-                label={
-                  slot === 'dataLabel' ? 'Data labels' : slot === 'axis' ? 'Axis labels' : slot === 'legend' ? 'Legend' : 'Chart title'
-                }
-              >
-                <input
-                  type="number"
-                  min={6}
-                  max={24}
-                  value={style.fonts[slot].sizePt ?? ds.type[style.fonts[slot].role].sizePt}
-                  onChange={(e) => patch((s) => (s.fonts[slot].sizePt = Number(e.target.value) || 9))}
-                  className={`${FIELD} w-16 text-right`}
-                />
-              </Row>
-            ))}
-          </div>
-
-          <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Bars
-            </div>
-            <Row label="Gap width %">
-              <input
-                type="number"
-                min={0}
-                max={500}
-                step={10}
-                value={style.gaps.categoryGapPct}
-                onChange={(e) => patch((s) => (s.gaps.categoryGapPct = Number(e.target.value) || 0))}
-                className={`${FIELD} w-16 text-right`}
-              />
-            </Row>
-            <Row label="Cluster overlap %">
-              <input
-                type="number"
-                min={-100}
-                max={100}
-                step={5}
-                value={style.gaps.seriesOverlapPct}
-                onChange={(e) => patch((s) => (s.gaps.seriesOverlapPct = Number(e.target.value) || 0))}
-                className={`${FIELD} w-16 text-right`}
-              />
-            </Row>
-          </div>
-
-          <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              Defaults for new charts
-            </div>
-            <Row label="Legend">
-              <select
-                value={style.legend.show ? style.legend.position : 'none'}
-                onChange={(e) =>
-                  patch((s) => {
-                    if (e.target.value === 'none') s.legend.show = false;
-                    else {
-                      s.legend.show = true;
-                      s.legend.position = e.target.value as ChartStyle['legend']['position'];
-                    }
-                  })
-                }
-                className={`${FIELD} w-32`}
-              >
-                <option value="none">Hidden</option>
-                <option value="top">Top</option>
-                <option value="right">Right</option>
-                <option value="bottom">Bottom</option>
-                <option value="left">Left</option>
-                <option value="insideTopLeft">Inside top left</option>
-                <option value="insideTopRight">Inside top right</option>
-              </select>
-            </Row>
-            <Row label="Data labels">
-              <input
-                type="checkbox"
-                checked={style.labels.show}
-                onChange={(e) => patch((s) => (s.labels.show = e.target.checked))}
-              />
-            </Row>
-            <Row label="Number format">
-              <select
-                value={style.numberFormats.value.style}
-                onChange={(e) =>
-                  setFormat('value', (f) => (f.style = e.target.value as NumberFormat['style']))
-                }
-                className={`${FIELD} w-32`}
-              >
-                <option value="number">Number</option>
-                <option value="currency">Currency</option>
-                <option value="percent">Percent</option>
-              </select>
-            </Row>
-            <Row label="Thousands separator">
-              <input
-                type="checkbox"
-                checked={style.numberFormats.value.thousands ?? true}
-                onChange={(e) => setFormat('value', (f) => (f.thousands = e.target.checked))}
-              />
-            </Row>
-          </div>
-        </div>
+        <ChartStyleControls ds={ds} style={ds.chart} onChange={onChange} />
 
         <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-            Preview
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+              Preview
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {PREVIEW_SETS.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => setSet(s.id)}
+                  className={`rounded px-1.5 py-0.5 text-[10px] transition ${
+                    s.id === active.id
+                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="overflow-hidden rounded-md ring-1 ring-black/10">
-            <FitSlideView
-              slide={preview}
-              slideSize={{ w: SLIDE_16x9.w, h: SLIDE_16x9.h }}
-              designSystem={ds}
-            />
-          </div>
+          <ChartStylePreview ds={ds} charts={active.charts} />
           <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
             Compiled by the same engine the editor uses, so this is exactly what
             a new chart will look like.
           </p>
+
+          {/* The numbers under the preview, editable. A style that reads at
+              three series can fall apart at six, and the only way to find that
+              out used to be inserting a real chart. */}
+          <div className="mt-3">
+            <ChartPreviewDataEditor data={ds.previewData} onChange={onPreviewData} />
+          </div>
         </div>
       </div>
     </section>
   );
 }
+

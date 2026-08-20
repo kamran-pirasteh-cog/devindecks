@@ -12,7 +12,7 @@
  */
 import type { DashStyle } from '../types';
 import type { NumberFormat } from './format';
-import type { LegendPosition } from './spec';
+import type { ChartKind, LegendPosition } from './spec';
 
 /** A reference into `DesignSystem.type`, with local tweaks. */
 export interface TypeRoleRef {
@@ -140,10 +140,12 @@ export type DeepPartial<T> = {
  */
 export function resolveChartStyle(
   base: ChartStyle,
-  template?: DeepPartial<ChartStyle>,
-  instance?: DeepPartial<ChartStyle>,
+  ...layers: (DeepPartial<ChartStyle> | undefined)[]
 ): ChartStyle {
-  return deepMerge(deepMerge(base, template), instance) as ChartStyle;
+  return layers.reduce<ChartStyle>(
+    (acc, layer) => deepMerge(acc, layer) as ChartStyle,
+    base,
+  );
 }
 
 function deepMerge<T>(base: T, over?: DeepPartial<T>): T {
@@ -178,3 +180,130 @@ function deepMerge<T>(base: T, over?: DeepPartial<T>): T {
  */
 export const withChartStyleDefaults = (stored?: DeepPartial<ChartStyle>): ChartStyle =>
   resolveChartStyle(DEFAULT_CHART_STYLE, stored);
+
+/* ------------------------------------------------------------------ */
+/* Per-kind style variants                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One named way this brand draws one kind of chart.
+ *
+ * The layer between "how all our charts look" and "how this particular chart
+ * looks": a house can want a plain column chart AND a gridline-less one with
+ * the last bar picked out, and neither is a template — there's no data and no
+ * archetype in a variant, only formatting. `overrides` is the same partial
+ * shape a template's `styleOverrides` is, and it occupies the same slot in
+ * `resolveChartStyle`, so a variant costs the resolver nothing new.
+ *
+ * Exactly one variant per kind carries `isDefault`; that's what a bare insert
+ * of that kind draws. `defaultVariantFor` falls back to the first in the list
+ * rather than trusting the flag to be present, because a stored design system
+ * edited by hand is allowed to be missing it.
+ */
+export interface ChartStyleVariant {
+  id: string;
+  kind: ChartKind;
+  name: string;
+  /** The one this kind inserts as, when nobody picks. One per kind. */
+  isDefault?: boolean;
+  overrides: DeepPartial<ChartStyle>;
+}
+
+export const variantsForKind = (
+  variants: ChartStyleVariant[] | undefined,
+  kind: ChartKind,
+): ChartStyleVariant[] => (variants ?? []).filter((v) => v.kind === kind);
+
+export const findChartVariant = (
+  variants: ChartStyleVariant[] | undefined,
+  id: string | undefined,
+): ChartStyleVariant | undefined =>
+  id === undefined ? undefined : (variants ?? []).find((v) => v.id === id);
+
+/**
+ * The variant a bare insert of this kind uses.
+ *
+ * Undefined means "no variants defined for this kind", which resolves to the
+ * conventions alone — the behaviour every chart had before variants existed.
+ */
+export const defaultVariantFor = (
+  variants: ChartStyleVariant[] | undefined,
+  kind: ChartKind,
+): ChartStyleVariant | undefined => {
+  const forKind = variantsForKind(variants, kind);
+  return forKind.find((v) => v.isDefault) ?? forKind[0];
+};
+
+/**
+ * Set `isDefault` on one variant and clear it across that kind's siblings.
+ *
+ * Two defaults for one kind is not a state the UI should be able to reach, so
+ * the flip is a single function rather than two edits Admin has to remember to
+ * pair.
+ */
+export const withDefaultVariant = (
+  variants: ChartStyleVariant[],
+  id: string,
+): ChartStyleVariant[] => {
+  const target = variants.find((v) => v.id === id);
+  if (!target) return variants;
+  return variants.map((v) =>
+    v.kind !== target.kind ? v : { ...v, isDefault: v.id === id },
+  );
+};
+
+/**
+ * What `over` says that `base` doesn't — the inverse of `deepMerge`.
+ *
+ * This is what lets a variant editor drive the SAME controls the conventions
+ * use: edit a fully-resolved style, then store only the difference. Writing a
+ * separate partial-aware editor for every control was the alternative, and it
+ * would have drifted from the conventions panel by the second control anyone
+ * added.
+ *
+ * Arrays compare by value and replace wholesale, matching `deepMerge`, so a
+ * variant either has its own palette or inherits the brand's entirely.
+ */
+export function diffChartStyle(
+  base: ChartStyle,
+  over: ChartStyle,
+): DeepPartial<ChartStyle> {
+  // `diff` returns undefined for "no difference" so that nested empty objects
+  // collapse away; the top level promises an object, so an untouched style is
+  // an empty one rather than undefined.
+  return (diff(base, over) ?? {}) as DeepPartial<ChartStyle>;
+}
+
+function diff(base: unknown, over: unknown): unknown {
+  if (Array.isArray(base) || Array.isArray(over)) {
+    return JSON.stringify(base) === JSON.stringify(over) ? undefined : over;
+  }
+  if (
+    typeof base !== 'object' ||
+    base === null ||
+    typeof over !== 'object' ||
+    over === null
+  ) {
+    return Object.is(base, over) ? undefined : over;
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(over as Record<string, unknown>)) {
+    const d = diff((base as Record<string, unknown>)[key], value);
+    if (d !== undefined) out[key] = d;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Does this variant say anything at all, or is it pure inheritance? */
+export const variantOverridesCount = (over: DeepPartial<ChartStyle>): number =>
+  countLeaves(over);
+
+function countLeaves(v: unknown): number {
+  if (v === undefined) return 0;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return 1;
+  return Object.values(v as Record<string, unknown>).reduce<number>(
+    (n, x) => n + countLeaves(x),
+    0,
+  );
+}

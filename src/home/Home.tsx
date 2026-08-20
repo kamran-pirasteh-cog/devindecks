@@ -419,7 +419,7 @@ export function Home() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="Search documents…"
-                    className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 pr-7 text-sm outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
+                    className="w-full rounded-md border border-zinc-200 bg-white px-3 py-1.5 pr-7 text-sm outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
                   />
                   {query ? (
                     <button

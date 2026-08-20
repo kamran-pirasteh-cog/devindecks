@@ -36,6 +36,7 @@ import { isCommentShortcut } from './commentShortcut';
 import { clipboardAction } from './clipboardShortcut';
 import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
 import { reorderDirection } from './reorderShortcut';
+import { slideMoveTarget } from './slideMove';
 import { NAV_KEYS, nextInDirection } from './spatialNav';
 import { stickyTextTarget } from './sticky';
 import { TemplateDrawer } from './TemplateDrawer';
@@ -334,6 +335,25 @@ export function Editor({
         else s.clearSelection();
       } else if (
         mod &&
+        !e.altKey &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
+        !s.selectedIds.length
+      ) {
+        // PowerPoint's ⌘↑ / ⌘↓ on the slide strip: the selected slides step one
+        // position through the deck, ⇧ sends them to the very start or end.
+        // Gated on an empty canvas selection — with objects picked the same
+        // chord nudges them, and selecting slides clears that selection anyway.
+        e.preventDefault();
+        const ids = s.selectedSlideIds.length ? s.selectedSlideIds : [s.currentSlideId];
+        const target = slideMoveTarget(
+          s.deck.slides.map((sl) => sl.id),
+          ids,
+          e.key === 'ArrowUp' ? 'up' : 'down',
+          e.shiftKey,
+        );
+        if (target !== undefined) s.moveSlides(ids, target);
+      } else if (
+        mod &&
         e.altKey &&
         (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
         s.selectedIds.length
@@ -430,6 +450,12 @@ export function Editor({
       } else if (mod && !e.shiftKey && key === 'a') {
         e.preventDefault();
         s.select(slide.elements.map((el) => el.id));
+      } else if (mod && !e.shiftKey && key === 'd' && inSlideStrip) {
+        // Same rule as ⌘C there: with the keyboard in the filmstrip the chord
+        // is about slides, so it copies the whole slide selection rather than
+        // whatever objects the canvas still has selected.
+        e.preventDefault();
+        s.duplicateSlides();
       } else if (mod && !e.shiftKey && key === 'd' && s.selectedIds.length) {
         e.preventDefault();
         // The copy lands directly under the original, left edges lined up, so a
@@ -472,7 +498,9 @@ export function Editor({
       <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
         <div className="flex items-center gap-2">
           <Link
-            href={templateId || layoutId ? '/admin' : '/'}
+            href={
+              templateId ? '/admin?tab=templates' : layoutId ? '/admin?tab=layouts' : '/'
+            }
             className="text-sm font-semibold tracking-tight hover:opacity-70"
             title={templateId || layoutId ? 'Back to Admin' : 'Back to documents'}
           >

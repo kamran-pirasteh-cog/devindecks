@@ -21,3 +21,41 @@ export function resizeFactor(startSize: number, live: number, dist: number): num
   const next = live > 0 ? live : startSize + dist;
   return next > 0 ? next / startSize : 1;
 }
+
+/**
+ * Where one object of an ungrouped multi-selection lands when ANOTHER object's
+ * handle is dragged — PowerPoint's behaviour, and the thing that separates a
+ * multi-selection from a group.
+ *
+ * A group scales as one object: its members take the group box's factors AND
+ * have their offsets from its held edge scaled, so they spread apart. Several
+ * ungrouped objects don't spread — each takes the same two factors about its
+ * OWN anchor edge and stays where it is. Two shapes an inch apart both get 40%
+ * wider and are still an inch apart.
+ *
+ * `dir` is Moveable's handle direction on the axis: +1 means the handle is on
+ * the high edge, so the low edge is what stays put; 0 is an edge handle, which
+ * has no say on its cross axis, so that axis grows about the centre — as does
+ * every axis when the drag is a ⌘/Ctrl resize-from-centre.
+ */
+export function individualBox(
+  start: { x: number; y: number; w: number; h: number },
+  sx: number,
+  sy: number,
+  dirX: number,
+  dirY: number,
+  fromCenter: boolean,
+): { x: number; y: number; w: number; h: number } {
+  const pivot = (dir: number, lo: number, size: number) =>
+    fromCenter || dir === 0 ? lo + size / 2 : dir > 0 ? lo : lo + size;
+  const px = pivot(dirX, start.x, start.w);
+  const py = pivot(dirY, start.y, start.h);
+  return {
+    // The 4px floor keeps an object grabbable; a line is 0 on its cross axis by
+    // definition and must stay 0, or it comes out of the resize a rectangle.
+    x: px + (start.x - px) * sx,
+    y: py + (start.y - py) * sy,
+    w: start.w === 0 ? 0 : Math.max(4, start.w * sx),
+    h: start.h === 0 ? 0 : Math.max(4, start.h * sy),
+  };
+}

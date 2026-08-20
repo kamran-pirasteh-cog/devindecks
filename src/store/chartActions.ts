@@ -181,12 +181,21 @@ export function insertChartInto(
   spec: ChartSpec,
   frame: Rect,
   ds: DesignSystem,
+  /**
+   * The brand style variant this chart is being inserted as.
+   *
+   * Stamped once, here, rather than resolved from the kind at every compile:
+   * an admin adding a first variant to a kind must not restyle charts that
+   * were made before it existed. See `chartStyleForVariant`.
+   */
+  variantId?: string,
 ): ChartInstance {
   const chart: ChartInstance = {
     id: newChartId(),
     groupId: newChartGroupId(),
     frame,
     spec,
+    ...(variantId ? { variantId } : {}),
   };
   slide.charts = [...(slide.charts ?? []), chart];
   recompileInto(slide, chart.id, ds);

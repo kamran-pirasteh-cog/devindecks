@@ -19,6 +19,17 @@ export interface ChartInstance {
   frame: Rect;
   spec: ChartSpec;
   /**
+   * The brand style variant this chart was inserted as, if any.
+   *
+   * A REFERENCE, not a copy: the variant's formatting resolves at compile time,
+   * so an admin editing "Column / gridless" reflows every chart inserted from
+   * it. That's the whole difference between a variant and a template — a
+   * template pins its formatting into the spec at creation and stops tracking.
+   * A dangling id (variant deleted) resolves to the conventions alone rather
+   * than failing, so deleting a variant never breaks a deck.
+   */
+  variantId?: string;
+  /**
    * Quarter-turn orientation, clockwise degrees: 0, 90, 180 or 270.
    *
    * A chart at 37° is never what anyone wanted — the axis titles go diagonal

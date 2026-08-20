@@ -90,7 +90,10 @@ describe('makeEyebrow', () => {
     if (body.type !== 'text') return;
     const run = body.body.paragraphs[0].runs[0];
     expect(run.text).toBe('');
-    expect(run.bold).toBe(true);
+    // Mono, regular and all caps — the label face, not the body face.
+    expect(run.font).toBe('Geist Mono');
+    expect(run.bold).toBeFalsy();
+    expect(run.caps).toBe(true);
     expect(run.sizePt).toBe(ds.type.caption.sizePt);
     // A fixed frame: a fit pass must not shrink-wrap it off the mark's spacing.
     expect(body.body.autofit).toBe('none');

@@ -35,20 +35,28 @@ import {
   type StoredChartTemplate,
 } from '@/charts/repository';
 import { CHART_TEMPLATE_CATEGORIES, type ChartTemplateCategory } from '@/charts/registry';
+import { CHART_KIND_LABELS } from '@/charts/kinds';
 import { dsForChartTemplate } from '@/charts/style';
 
 const SLIDE_SIZE = { w: SLIDE_16x9.w, h: SLIDE_16x9.h };
 
-const NEW_KINDS: { kind: ChartKind; label: string }[] = [
-  { kind: 'column', label: 'Column' },
-  { kind: 'bar', label: 'Bar' },
-  { kind: 'line', label: 'Line' },
-  { kind: 'area', label: 'Area' },
-  { kind: 'pie', label: 'Pie' },
-  { kind: 'waterfall', label: 'Waterfall' },
-  { kind: 'mekko', label: 'Mekko' },
-  { kind: 'scatter', label: 'Scatter' },
-  { kind: 'bubble', label: 'Bubble' },
+/**
+ * The kinds a new template can start from, in the order they're offered.
+ *
+ * A subset of the styleable kinds, not all of them: combo, donut and sankey are
+ * reached by editing a template, not by starting one. Words come from
+ * `CHART_KIND_LABELS` so this picker says what every other surface says.
+ */
+const NEW_KINDS: ChartKind[] = [
+  'column',
+  'bar',
+  'line',
+  'area',
+  'pie',
+  'waterfall',
+  'mekko',
+  'scatter',
+  'bubble',
 ];
 
 export function ChartTemplates({ ds }: { ds: DesignSystem }) {
@@ -100,12 +108,12 @@ export function ChartTemplates({ ds }: { ds: DesignSystem }) {
 
       {adding ? (
         <div className="flex flex-wrap gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          {NEW_KINDS.map(({ kind, label }) => (
+          {NEW_KINDS.map((kind) => (
             <button
               key={kind}
               onClick={() => {
                 const t = createChartTemplate({
-                  name: `New ${label.toLowerCase()} template`,
+                  name: `New ${CHART_KIND_LABELS[kind].toLowerCase()} template`,
                   spec: defaultChartSpec(kind, 'stacked', style),
                 });
                 setAdding(false);
@@ -113,7 +121,7 @@ export function ChartTemplates({ ds }: { ds: DesignSystem }) {
               }}
               className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
-              {label}
+              {CHART_KIND_LABELS[kind]}
             </button>
           ))}
         </div>

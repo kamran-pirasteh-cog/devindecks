@@ -111,3 +111,46 @@ describe('slide clipboard', () => {
     expect(s().selectedSlideIds).toEqual(['s1']);
   });
 });
+
+describe('duplicate slides', () => {
+  beforeEach(() => {
+    loadDeck(deck());
+  });
+
+  it('drops copies of the whole selection after the last of them', () => {
+    s().setCurrentSlide('s1');
+    s().selectSlideRange('s2');
+    s().duplicateSlides();
+
+    const ids = slideIds();
+    expect(ids.slice(0, 2)).toEqual(['s1', 's2']);
+    expect(ids[4]).toBe('s3');
+    const copies = ids.slice(2, 4);
+    expect(copies.every((id) => id !== 's1' && id !== 's2')).toBe(true);
+    expect(s().selectedSlideIds).toEqual(copies);
+    expect(s().currentSlideId).toBe(copies[0]);
+  });
+
+  it('falls back to the current slide when nothing is selected in the strip', () => {
+    s().setCurrentSlide('s2');
+    useEditor.setState({ selectedSlideIds: [] });
+    s().duplicateSlides();
+
+    expect(slideIds().slice(0, 2)).toEqual(['s1', 's2']);
+    expect(slideIds()).toHaveLength(4);
+    expect(s().currentSlideId).toBe(slideIds()[2]);
+  });
+
+  it('gives the copies their own elements, and undoes in one step', () => {
+    s().setCurrentSlide('s1');
+    s().duplicateSlides();
+    const copyId = slideIds()[1];
+    const original = s().deck.slides[0];
+    const copy = s().deck.slides[1];
+    expect(copy.elements[0].id).not.toBe(original.elements[0].id);
+
+    s().undo();
+    expect(slideIds()).toEqual(['s1', 's2', 's3']);
+    expect(copyId).not.toBe('s2');
+  });
+});

@@ -85,7 +85,9 @@ function textRuns(body: TextBody, ds: DesignSystem) {
     const runs = p.runs.length ? p.runs : [{ text: '' }];
     runs.forEach((r, i) => {
       out.push({
-        text: r.text,
+        // pptxgenjs has no `cap="all"`, so an all-caps run is uppercased on the
+        // way out — the same trick the chart emitter uses (`displayText`).
+        text: r.caps ? r.text.toUpperCase() : r.text,
         options: {
           fontFace: r.font,
           fontSize: r.sizePt,

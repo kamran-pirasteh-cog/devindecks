@@ -42,7 +42,7 @@ export interface ElementFormat {
   body?: BodyFormat;
 }
 
-const RUN_KEYS = ['font', 'sizePt', 'bold', 'italic', 'underline', 'color'] as const;
+const RUN_KEYS = ['font', 'sizePt', 'bold', 'italic', 'underline', 'caps', 'color'] as const;
 const PARA_KEYS = [
   'align',
   'level',
