@@ -212,6 +212,7 @@ function ParagraphView({
               fontWeight: runWeight(r),
               fontStyle: r.italic ? 'italic' : 'normal',
               textDecoration: r.underline ? 'underline' : 'none',
+              textTransform: r.caps ? 'uppercase' : 'none',
               color: resolveColor(r.color, ds),
               // `pre` keeps the run's own spaces without letting it wrap — the
               // <p>'s nowrap is otherwise overridden by this span.

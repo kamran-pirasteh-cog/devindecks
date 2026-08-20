@@ -46,6 +46,7 @@ function whenNext(report: Report): string {
 export function ReportCard({
   report,
   deck,
+  placeholderDeck,
   onOpen,
   onToggleStatus,
   onDuplicate,
@@ -56,6 +57,13 @@ export function ReportCard({
   report: Report;
   /** The attached deck, or undefined if it was deleted out from under us. */
   deck?: Deck;
+  /**
+   * A deck to draw in the thumbnail well when there's no attached deck — used
+   * by the Product Roadmap preview, which borrows the first of your own decks
+   * so a card shows a real slide instead of an empty grey box. The caption
+   * still says the deck is missing, so nothing here claims it's attached.
+   */
+  placeholderDeck?: Deck;
   onOpen: () => void;
   onToggleStatus: () => void;
   onDuplicate: () => void;
@@ -78,6 +86,8 @@ export function ReportCard({
     return () => window.removeEventListener('mousedown', onDown);
   }, [menuOpen]);
 
+  // The attached deck if there is one, else the borrowed placeholder.
+  const thumbDeck = deck ?? placeholderDeck;
   const asOf = describeAsOf(report.dataRefreshedAt);
   const recipients = report.recipients.filter((r) => r.name.trim() || r.address.trim());
   const shown = recipients.slice(0, 2);
@@ -93,8 +103,8 @@ export function ReportCard({
       }`}
     >
       <div className="relative overflow-hidden rounded-t-lg border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-        {deck ? (
-          <Thumb deck={deck} />
+        {thumbDeck ? (
+          <Thumb deck={thumbDeck} />
         ) : (
           <div className="flex aspect-video items-center justify-center bg-zinc-50 text-[11px] text-zinc-400 dark:bg-zinc-950">
             No deck attached

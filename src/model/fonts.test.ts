@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FONT_CHOICES, fontChoiceIdOf, fontChoicePatch } from './fonts';
+import { DEFAULT_DESIGN_SYSTEM } from './tokens';
 
 describe('font choices', () => {
   it('offers Geist Medium alongside the families', () => {
@@ -28,5 +29,12 @@ describe('font choices', () => {
     expect(fontChoicePatch('Geist Medium')).toEqual({ font: 'Geist', weight: 500 });
     expect(fontChoicePatch('Geist')).toEqual({ font: 'Geist', weight: 400 });
     expect(fontChoicePatch('Geist Mono')).toEqual({ font: 'Geist Mono', weight: 400 });
+  });
+});
+
+describe('the brand type ladder', () => {
+  it('sets titles in Geist Medium, so the dropdown reads that back', () => {
+    const title = DEFAULT_DESIGN_SYSTEM.type.title;
+    expect(fontChoiceIdOf(title, title.font)).toBe('Geist Medium');
   });
 });

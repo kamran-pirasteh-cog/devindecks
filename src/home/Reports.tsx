@@ -483,12 +483,17 @@ export function Reports({
                 ) : null}
               </div>
             ) : (
-              <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
+              // Two up, always: this grid only renders inside the Product
+              // Roadmap preview, where an auto-fill track stretched a single
+              // card across the whole dialog. A fixed pair keeps the cards
+              // (and their slide thumbnails) small enough to read as a grid.
+              <div className="grid gap-3 sm:grid-cols-2">
                 {visible.map((r) => (
                   <ReportCard
                     key={r.id}
                     report={r}
                     deck={r.deckId ? deckById.get(r.deckId) : undefined}
+                    placeholderDeck={docs[0]}
                     onOpen={() => setEditing(r)}
                     onToggleStatus={() => {
                       setReportStatus(r.id, r.status === 'active' ? 'paused' : 'active');

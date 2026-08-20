@@ -11,7 +11,8 @@
 
 import type { FontFamily } from './fonts';
 import { DEFAULT_PAGE_NUMBERS, type PageNumberStyle } from './pageNumbers';
-import { DEFAULT_CHART_STYLE, type ChartStyle } from './chart/style';
+import { DEFAULT_CHART_STYLE, type ChartStyle, type ChartStyleVariant } from './chart/style';
+import type { ChartPreviewData } from './chart/previewData';
 
 export interface ColorToken {
   /** Stable id referenced by elements, e.g. 'brand.accent'. */
@@ -24,6 +25,13 @@ export interface TypeRole {
   font: FontFamily;
   sizePt: number;
   bold?: boolean;
+  /**
+   * A face between regular and bold — Medium 500 — the same run-level attribute
+   * `TextRun.weight` carries, so a role can be set in Geist Medium without
+   * pretending Medium is its own family. `bold` still outranks it (see
+   * `runWeight`), and OOXML has no Medium, so it exports as regular.
+   */
+  weight?: number;
   colorToken: string;
 }
 
@@ -60,6 +68,23 @@ export interface DesignSystem {
    * deck at once.
    */
   chart: ChartStyle;
+
+  /**
+   * Named per-kind formatting variants — "our column charts, the gridless
+   * ones, the one with the last bar picked out".
+   *
+   * Optional because every design system stored before variants existed has no
+   * such field, and a kind with no variants resolves to `chart` alone, which is
+   * exactly what those decks already drew.
+   */
+  chartVariants?: ChartStyleVariant[];
+
+  /**
+   * The dummy numbers Admin's chart previews draw. Scaffolding for judging a
+   * style against the shape of data this brand actually charts — see
+   * `model/chart/previewData.ts`. Unset means the built-in sample.
+   */
+  previewData?: ChartPreviewData;
 }
 
 /** A color reference on any element. Prefer tokens; hex is an escape hatch. */
@@ -109,7 +134,7 @@ export const DEFAULT_DESIGN_SYSTEM: DesignSystem = {
   ],
   fonts: { heading: 'Geist', body: 'Geist', mono: 'Geist Mono' },
   type: {
-    title: { font: 'Geist', sizePt: 26, colorToken: 'ink.strong' },
+    title: { font: 'Geist', sizePt: 26, weight: 500, colorToken: 'ink.strong' },
     subtitle: { font: 'Geist', sizePt: 20, colorToken: 'ink.muted' },
     heading: { font: 'Geist', sizePt: 24, bold: true, colorToken: 'ink.strong' },
     body: { font: 'Geist', sizePt: 14, colorToken: 'ink.strong' },

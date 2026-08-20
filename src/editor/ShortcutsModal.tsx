@@ -128,7 +128,7 @@ const buildGroups = (MOD: string): Group[] => [
       {
         keys: ['Double-click'],
         label: 'Fit box to its text',
-        note: 'on the bottom-right handle',
+        note: 'on any resize handle',
       },
     ],
   },
@@ -140,8 +140,11 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: [MOD, 'C'], label: 'Copy the selected slides' },
       { keys: [MOD, 'X'], label: 'Cut the selected slides' },
       { keys: [MOD, 'V'], label: 'Paste slides', note: 'after the current one' },
+      { keys: [MOD, 'D'], label: 'Duplicate the selected slides', note: 'after the last of them' },
       { keys: ['Delete'], label: 'Delete selected slides' },
-      { keys: ['Drag'], label: 'Reorder slides' },
+      { keys: [MOD, '↑ / ↓'], label: 'Move the selected slides up or down' },
+      { keys: [MOD, '⇧', '↑ / ↓'], label: 'Move them to the start or end of the deck' },
+      { keys: ['Drag'], label: 'Reorder slides', note: 'a multi-slide drag carries a counted stack' },
     ],
   },
 ];

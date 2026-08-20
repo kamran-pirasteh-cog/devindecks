@@ -13,7 +13,12 @@
  */
 import { nanoid } from 'nanoid';
 import { SLIDE_16x9, type Deck, type PictureElement, type Slide } from '@/model';
-import { getTemplate, TEMPLATES, type TemplateDef } from './registry';
+import {
+  getTemplate,
+  RETIRED_TEMPLATE_IDS,
+  TEMPLATES,
+  type TemplateDef,
+} from './registry';
 import { defineCollection } from '@/platform/collection';
 import { localStorageAdapter } from '@/platform/store';
 
@@ -70,6 +75,14 @@ export function seedIfFirstRun(): void {
   if (typeof window === 'undefined') return;
   const map = read();
   let changed = false;
+  // Built-ins that shipped and were withdrawn. Seeding only ever ADDS, so a
+  // browser that saw one keeps serving it forever unless it's removed here —
+  // and Admin would show a template nothing can be started from.
+  for (const id of RETIRED_TEMPLATE_IDS) {
+    if (!map[id]) continue;
+    delete map[id];
+    changed = true;
+  }
   for (const t of TEMPLATES) {
     if (t.id === 'blank' || map[t.id]) continue;
     const ts = now();
@@ -146,6 +159,58 @@ export function updateTemplateMeta(
   const map = read();
   if (!map[id]) return;
   map[id] = { ...map[id], ...patch, updatedAt: now() };
+  write(map);
+}
+
+/**
+ * Start a template from a document someone already made — "this deck is how we
+ * do these, make it the house version".
+ *
+ * Slide and element ids are carried over as they are rather than regenerated:
+ * a template is never rendered onto a deck directly, `createDoc` re-keys every
+ * slide on the way out, and rewriting them here would have to reproduce that
+ * function's care around chart-owned ids (see `rekeySlide`) to no benefit.
+ */
+export function createTemplateFromDeck(
+  deck: Pick<Deck, 'title' | 'slides'>,
+  opts: { name?: string; description?: string; category: TemplateDef['category'] },
+): StoredTemplate {
+  return createTemplate({
+    name: opts.name?.trim() || deck.title,
+    description: opts.description,
+    category: opts.category,
+    slides: structuredClone(deck.slides),
+  });
+}
+
+/**
+ * Rebuild the built-in templates from the code, discarding Admin's edits to
+ * them. Templates Admin authored are left alone — the same split
+ * `seedLayoutsIfFirstRun` keeps, and the reason this is a button rather than
+ * something a version bump does behind everyone's back.
+ *
+ * It bumps `version`, because it rewrites the slides: decks built on the
+ * previous copy have genuinely drifted, and `templateDrift` is entitled to say
+ * so.
+ */
+export function resetBuiltInTemplates(): void {
+  const map = read();
+  for (const t of TEMPLATES) {
+    if (t.id === 'blank') continue;
+    const prev = map[t.id];
+    const ts = now();
+    map[t.id] = {
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      category: t.category,
+      order: t.order,
+      slides: t.buildSlides(),
+      version: (prev?.version ?? 0) + 1,
+      createdAt: prev?.createdAt ?? ts,
+      updatedAt: ts,
+    };
+  }
   write(map);
 }
 

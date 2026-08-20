@@ -34,7 +34,13 @@ import {
   type StoredChartTemplate,
 } from '@/charts/repository';
 import { stampProvenance } from '@/charts/provenance';
-import { dsForChartTemplate } from '@/charts/style';
+import {
+  chartStyleForVariant,
+  defaultVariantIdFor,
+  dsForChartTemplate,
+  dsForChartVariant,
+} from '@/charts/style';
+import { CHART_KIND_LABELS } from '@/charts/kinds';
 import {
   CHART_LAYOUTS,
   LAYOUT_GROUPS,
@@ -57,6 +63,7 @@ import {
   type ChartSpec,
   type DesignSystem,
   type SlideElement,
+  type ChartStyleVariant,
 } from '@/model';
 import { compileChart } from '@/chart/compile';
 import { OVERLAY_Z } from './layers';
@@ -108,7 +115,7 @@ export function ChartPopover({
 }: {
   ds: DesignSystem;
   context?: ChartPickerContext;
-  onPick: (spec: ChartSpec) => void;
+  onPick: (spec: ChartSpec, variantId?: string) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -174,7 +181,13 @@ export function ChartPopover({
         // The brand's chart style reaches a chart at the moment it's created,
         // so the tile shows what you'll actually get rather than the house
         // default the design system has since overridden.
-        const base = defaultChartSpec(o.kind, o.stack, withChartStyleDefaults(ds.chart));
+        //
+        // Including this kind's DEFAULT variant, which is what "a column
+        // chart" means once a brand has defined one. That's also why the
+        // "Brand styles" row below lists only the alternates: the default
+        // isn't a separate thing to pick, it's what these tiles already are.
+        const variantId = defaultVariantIdFor(ds, o.kind);
+        const base = defaultChartSpec(o.kind, o.stack, chartStyleForVariant(ds, variantId));
         if (o.waterfall && base.kind === 'waterfall') {
           base.data = sampleWaterfallData(o.waterfall);
         }
@@ -187,7 +200,11 @@ export function ChartPopover({
         return {
           option: o,
           spec,
-          slide: { id: `${o.id}-${orientation}`, elements: compilePreview(spec, ds) },
+          variantId,
+          slide: {
+            id: `${o.id}-${orientation}`,
+            elements: compilePreview(spec, dsForChartVariant(ds, variantId)),
+          },
         };
       }),
     [ds, orientation],
@@ -217,6 +234,38 @@ export function ChartPopover({
         };
       }),
     [templates, ds, orientation],
+  );
+
+  /**
+   * The brand's own styled types — "our gridless column", "our thin line".
+   *
+   * Formatting only, no data and no archetype: dropping one is dropping a
+   * blank chart of that kind drawn the house way. They keep tracking the
+   * variant afterwards (the instance stores an id, not a copy), which is the
+   * one behaviour that separates them from the templates above.
+   */
+  const variantPreviews = useMemo(
+    () =>
+      (ds.chartVariants ?? [])
+        // The defaults are already the plain tiles below; listing them here too
+        // would offer the same chart twice under two names.
+        .filter((v) => defaultVariantIdFor(ds, v.kind) !== v.id)
+        .map((v) => {
+        const styled = dsForChartVariant(ds, v.id);
+        const base = defaultChartSpec(v.kind, 'clustered', styled.chart);
+        const spec = supportsOrientation(v.kind)
+          ? setChartOrientation(base, orientation)
+          : base;
+        return {
+          variant: v,
+          spec,
+          slide: {
+            id: `var-${v.id}-${orientation}`,
+            elements: compilePreview(spec, styled),
+          },
+        };
+      }),
+    [ds, orientation],
   );
 
   const chosen: LayoutSuggestion | null = useMemo(() => {
@@ -339,8 +388,9 @@ export function ChartPopover({
               onOrientation={setOrientation}
               previews={previews}
               templatePreviews={templatePreviews}
-              onPick={(spec, template) => {
-                onPick(stampProvenance(structuredClone(spec), ds, template));
+              variantPreviews={variantPreviews}
+              onPick={(spec, template, variantId) => {
+                onPick(stampProvenance(structuredClone(spec), ds, template), variantId);
                 onClose();
               }}
             />
@@ -696,6 +746,14 @@ function OrientationToggle({
 interface LayoutPreview {
   option: ChartLayout;
   spec: ChartSpec;
+  /** This kind's default brand style, if it has one — stamped on insert. */
+  variantId?: string;
+  slide: { id: string; elements: SlideElement[] };
+}
+
+interface VariantPreview {
+  variant: ChartStyleVariant;
+  spec: ChartSpec;
   slide: { id: string; elements: SlideElement[] };
 }
 
@@ -711,6 +769,7 @@ function ManualGrid({
   onOrientation,
   previews,
   templatePreviews,
+  variantPreviews,
   onPick,
 }: {
   ds: DesignSystem;
@@ -718,7 +777,8 @@ function ManualGrid({
   onOrientation: (o: ChartOrientation) => void;
   previews: LayoutPreview[];
   templatePreviews: TemplatePreview[];
-  onPick: (spec: ChartSpec, template?: StoredChartTemplate) => void;
+  variantPreviews: VariantPreview[];
+  onPick: (spec: ChartSpec, template?: StoredChartTemplate, variantId?: string) => void;
 }) {
   return (
     <>
@@ -729,6 +789,33 @@ function ManualGrid({
         <OrientationToggle value={orientation} onChange={onOrientation} />
         <span className="text-[10px] text-zinc-400">Pies and scatters ignore this</span>
       </div>
+
+      {variantPreviews.length ? (
+        <div className="mb-3">
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+              Brand styles
+            </span>
+            <span className="text-[10px] text-zinc-400">
+              Blank charts drawn the house way — they follow Admin as it changes
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {variantPreviews.map(({ variant, spec, slide }) => (
+              <Tile
+                key={variant.id}
+                ds={ds}
+                slide={slide}
+                name={`${CHART_KIND_LABELS[variant.kind]} · ${variant.name}`}
+                title={`Insert a ${variant.name} ${CHART_KIND_LABELS[
+                  variant.kind
+                ].toLowerCase()} chart`}
+                onClick={() => onPick(spec, undefined, variant.id)}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {templatePreviews.length ? (
         <div className="mb-3">
@@ -767,7 +854,7 @@ function ManualGrid({
           <div className="grid grid-cols-4 gap-2">
             {previews
               .filter((p) => p.option.group === group)
-              .map(({ option, spec, slide }) => (
+              .map(({ option, spec, slide, variantId }) => (
                 <Tile
                   key={option.id}
                   ds={ds}
@@ -776,7 +863,7 @@ function ManualGrid({
                   title={`Insert ${option.name.toLowerCase()} — ${option.purpose}`}
                   // No template, but the brand version still gets stamped —
                   // that's what "Brand updated" later keys off.
-                  onClick={() => onPick(spec)}
+                  onClick={() => onPick(spec, undefined, variantId)}
                 />
               ))}
           </div>

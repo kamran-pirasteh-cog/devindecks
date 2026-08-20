@@ -37,6 +37,7 @@ import {
 } from '@/model';
 import { lineHeightEmu, type TextMeasurer } from '@/render/measureText';
 import { defaultMeasurer } from '@/render/measureText';
+import { dsForChartVariant } from '@/charts/style';
 import { formatSet } from './format/number';
 import { deriveGrid, type GridDerived } from './derive/grid';
 import { deriveWaterfall } from './derive/waterfall';
@@ -123,11 +124,25 @@ interface Placed {
 
 export function compileChart(
   chart: ChartInstance,
-  ds: DesignSystem,
+  designSystem: DesignSystem,
   measurer: TextMeasurer = defaultMeasurer(),
 ): CompileResult {
   const diagnostics: CompileDiagnostic[] = [];
   const { spec } = chart;
+
+  /**
+   * The chart's own style variant, folded into the design system before
+   * anything reads it.
+   *
+   * One swap here rather than a variant-aware branch in `resolveChartTheme`,
+   * the layout passes and each exporter: everything downstream already takes a
+   * `DesignSystem` and reads `ds.chart`, so a chart inserted as "Column /
+   * gridless" is gridless on the canvas, in a thumbnail and in the .pptx
+   * without any of them knowing variants exist.
+   *
+   * A chart with no `variantId` gets `designSystem` back untouched.
+   */
+  const ds = chart.variantId ? dsForChartVariant(designSystem, chart.variantId) : designSystem;
 
   if (!isSupported(spec)) {
     diagnostics.push({

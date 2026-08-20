@@ -16,6 +16,20 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+### Devin chat
+
+The editor's Devin column edits slides through Claude. It needs an API key on
+the server — the browser never sees it:
+
+```bash
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env.local
+```
+
+Without one the panel still opens and says Devin can't be reached. The model is
+only ever handed a snapshot of the open slide plus the tool schema; the deck
+itself stays in the browser, and every edit is applied client-side through the
+same store actions the toolbar uses, so ⌘Z undoes it.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

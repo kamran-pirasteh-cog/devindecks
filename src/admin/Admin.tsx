@@ -1,10 +1,13 @@
 'use client';
 
 /**
- * Admin view — Kamran's control room. Three areas:
+ * Admin view — Kamran's control room:
  *  - Design system: edit the brand palette + semantic type roles, with a live
  *    preview. Saving bumps the version; because decks reference tokens, the
  *    change reflows everywhere.
+ *  - Templates: the repo of whole decks everyone starts from, laid out like the
+ *    Documents tab. What's edited here is what the new-document picker offers.
+ *  - Charts: the house chart style, plus the chart-template library.
  *  - Layouts: the individual slide-layout library, bucketed by type (mirrors
  *    the RHS drawer's grouping). Build from scratch or upload a reference.
  *  - Artifacts: the shared asset library, browsed Drive-style by folder.
@@ -12,16 +15,20 @@
  * In Playground this route gets gated to a template-admin Okta group.
  */
 import { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   ALLOWED_FONTS,
   EMU_PER_INCH,
   EMU_PER_POINT,
+  FONT_CHOICES,
   FONTS,
+  fontChoiceIdOf,
+  fontChoicePatch,
   inchesToEmu,
   pageNumberInk,
   pageNumberLabel,
+  runWeight,
   type ColorToken,
   type DesignSystem,
   type FontFamily,
@@ -48,12 +55,29 @@ import {
   saveDesignDraft,
 } from '@/design/repository';
 import { PrimaryTabs, SubTabs } from '@/nav/PrimaryTabs';
+import { useToast } from '@/ui/Toast';
 import { ChartStyleSection } from './ChartStyleSection';
 import { ChartTemplates } from './ChartTemplates';
+import { ChartVariants } from './ChartVariants';
+import { DeckTemplates } from './DeckTemplates';
 import { Artifacts } from './Artifacts';
 import { LayoutCard } from './LayoutCard';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
+
+/**
+ * Reference-image picker filter. `image/*` alone is not enough: the OS matches
+ * it against the type it guesses from the extension, so anything it doesn't
+ * map to an image — HEIC on older systems, a file exported without an
+ * extension — is greyed out and unpickable. The explicit extensions widen the
+ * filter back to every format the browser can actually decode; whatever slips
+ * through is caught by the check in `uploadLayout`.
+ */
+const LAYOUT_IMAGE_ACCEPT =
+  'image/*,.png,.jpg,.jpeg,.gif,.webp,.avif,.svg,.bmp,.ico,.heic,.heif,.tif,.tiff';
+
+/** Extensions the accept list admits but a browser may still refuse to decode. */
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico|heic|heif|tiff?)$/i;
 const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
   'title',
   'subtitle',
@@ -63,14 +87,21 @@ const TYPE_ROLES: (keyof DesignSystem['type'])[] = [
   'kpiValue',
 ];
 
-type Tab = 'design' | 'charts' | 'templates' | 'artifacts';
+type Tab = 'design' | 'templates' | 'charts' | 'layouts' | 'artifacts';
 
-const ADMIN_TABS: Tab[] = ['design', 'charts', 'templates', 'artifacts'];
+/**
+ * Order matters: Templates sits directly after the design system because it's
+ * the level everyone else meets the brand at — a whole deck to start from —
+ * with the finer-grained libraries (charts, single slide layouts, assets)
+ * behind it.
+ */
+const ADMIN_TABS: Tab[] = ['design', 'templates', 'charts', 'layouts', 'artifacts'];
 
 const TAB_LABELS: Record<Tab, string> = {
   design: 'Design system',
+  templates: 'Templates',
   charts: 'Charts',
-  templates: 'Layouts',
+  layouts: 'Layouts',
   artifacts: 'Artifacts',
 };
 
@@ -81,13 +112,34 @@ const TAB_LABELS: Record<Tab, string> = {
  */
 const SAVEABLE_TABS: Tab[] = ['design', 'charts'];
 
+/**
+ * The Charts tab's two halves.
+ *
+ * `styles` is design-system state and rides the header's Save/Publish;
+ * `templates` is its own library with its own instant persistence.
+ */
+type ChartSection = 'styles' | 'templates';
+
+const CHART_SECTIONS: { value: ChartSection; label: string }[] = [
+  { value: 'styles', label: 'Chart styles' },
+  { value: 'templates', label: 'House templates' },
+];
+
 function stripExt(filename: string): string {
   return filename.replace(/\.[^./]+$/, '');
 }
 
 export function Admin() {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>('design');
+  // `?tab=` is how the editor's "Admin" link comes back to the area you left —
+  // edit a template's slides and the way out lands on Templates, not on the
+  // design system. Read once, at mount: the tab strip owns it from there.
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<Tab>(() => {
+    const requested = searchParams.get('tab');
+    return (ADMIN_TABS as string[]).includes(requested ?? '') ? (requested as Tab) : 'design';
+  });
+  const [chartSection, setChartSection] = useState<ChartSection>('styles');
   // Admin edits the DRAFT; the rest of the app renders the published copy.
   const [ds, setDs] = useState<DesignSystem>(() => getDraftDesignSystem());
   const [dirty, setDirty] = useState(false);
@@ -110,6 +162,7 @@ export function Admin() {
   const [colorDragFrom, setColorDragFrom] = useState<number | null>(null);
   const [colorDragOver, setColorDragOver] = useState<{ index: number; after: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const toast = useToast();
 
   useEffect(() => {
     seedLayoutsIfFirstRun();
@@ -141,11 +194,22 @@ export function Admin() {
     const category = uploadFolder;
     setUploadFolder(null);
     if (!file || !category) return;
+    // The picker's filter is deliberately loose, so the real check is here.
+    // Type can be empty for a file the OS didn't recognise, hence the fallback
+    // to the extension rather than a straight `type.startsWith('image/')`.
+    if (!(file.type.startsWith('image/') || IMAGE_EXT.test(file.name))) {
+      toast(
+        `“${file.name}” isn't an image. A layout reference is a picture — export a PDF or deck page to PNG first.`,
+        { tone: 'danger' },
+      );
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       const l = createLayoutFromImage(reader.result as string, stripExt(file.name), category);
       router.push(`/admin/layouts/${l.id}`);
     };
+    reader.onerror = () => toast(`Couldn't read “${file.name}”.`, { tone: 'danger' });
     reader.readAsDataURL(file);
   };
 
@@ -221,6 +285,17 @@ export function Admin() {
     setUnpublished(false);
   };
 
+  /**
+   * Does the header's Save/Publish/Reset govern what's on screen right now?
+   *
+   * The Charts tab is half design-system state and half its own instantly
+   * persisted library, so the tab alone isn't the answer any more — showing
+   * Save while someone edits a house template is exactly the ambiguity the
+   * section split exists to remove.
+   */
+  const saveable =
+    SAVEABLE_TABS.includes(tab) && !(tab === 'charts' && chartSection === 'templates');
+
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
       <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-black/70">
@@ -248,28 +323,28 @@ export function Admin() {
             </span>
             <button
               onClick={reset}
-              disabled={!SAVEABLE_TABS.includes(tab)}
+              disabled={!saveable}
               className={`rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 ${
-                SAVEABLE_TABS.includes(tab) ? '' : 'invisible'
+                saveable ? '' : 'invisible'
               }`}
             >
               Reset
             </button>
             <button
               onClick={save}
-              disabled={!dirty || !SAVEABLE_TABS.includes(tab)}
+              disabled={!dirty || !saveable}
               className={`rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black ${
-                SAVEABLE_TABS.includes(tab) ? '' : 'invisible'
+                saveable ? '' : 'invisible'
               }`}
             >
               {dirty ? 'Save draft' : savedAt ? 'Saved' : 'Saved'}
             </button>
             <button
               onClick={publish}
-              disabled={(!dirty && !unpublished) || !SAVEABLE_TABS.includes(tab)}
+              disabled={(!dirty && !unpublished) || !saveable}
               title="Make this the live brand for every deck"
               className={`rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40 ${
-                SAVEABLE_TABS.includes(tab) ? '' : 'invisible'
+                saveable ? '' : 'invisible'
               }`}
             >
               Publish
@@ -438,19 +513,58 @@ export function Admin() {
             </div>
           </div>
         ) : tab === 'charts' ? (
-          <div className="space-y-6">
-            <ChartStyleSection ds={ds} onChange={(chart) => patch({ chart })} />
-            <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-              <h3 className="mb-1 text-sm font-semibold">Chart templates</h3>
-              <p className="mb-3 text-[11px] leading-relaxed text-zinc-500">
-                Named archetypes authors drop in and repoint at their own data —
-                chart type, axes, formats and research framing already set.
-                Saved as you go.
-              </p>
-              <ChartTemplates ds={ds} />
-            </section>
+          <div className="space-y-4">
+            {/* Two different things with two different save models used to be
+                stacked on one page: chart style is part of the design system
+                (draft → Save → Publish), while the template library persists
+                the moment you touch it. The header's Save/Publish buttons are
+                visible either way, so nobody could tell what they governed.
+                Splitting them is what makes those buttons honest. */}
+            <div className="flex gap-1">
+              {CHART_SECTIONS.map((s) => (
+                <button
+                  key={s.value}
+                  onClick={() => setChartSection(s.value)}
+                  className={`rounded-md px-2.5 py-1 text-[12px] transition ${
+                    chartSection === s.value
+                      ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
+                      : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
+            {chartSection === 'styles' ? (
+              <div className="space-y-6">
+                <ChartStyleSection
+                  ds={ds}
+                  onChange={(chart) => patch({ chart })}
+                  onPreviewData={(previewData) => patch({ previewData })}
+                />
+                <ChartVariants
+                  ds={ds}
+                  onChange={(chartVariants) => patch({ chartVariants })}
+                  onPreviewData={(previewData) => patch({ previewData })}
+                />
+              </div>
+            ) : (
+              <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <h3 className="mb-1 text-sm font-semibold">House templates</h3>
+                <p className="mb-3 text-[11px] leading-relaxed text-zinc-500">
+                  Named archetypes authors drop in and repoint at their own data
+                  — chart type, axes, formats and research framing already set.
+                  Unlike chart styles, these save the moment you edit them and
+                  aren&rsquo;t part of the design system&rsquo;s publish cycle.
+                </p>
+                <ChartTemplates ds={ds} />
+              </section>
+            )}
           </div>
         ) : tab === 'templates' ? (
+          <DeckTemplates />
+        ) : tab === 'layouts' ? (
           <div>
             <div className="mb-4 flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
@@ -481,7 +595,7 @@ export function Admin() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept={LAYOUT_IMAGE_ACCEPT}
                   onChange={uploadLayout}
                   className="hidden"
                 />
@@ -659,7 +773,7 @@ function TypeRoleRow({
               fontFamily: font.cssStack,
               fontSize: style.sizePt * SAMPLE_PX_PER_PT,
               lineHeight: font.singleLineFactor,
-              fontWeight: style.bold ? 700 : 400,
+              fontWeight: runWeight(style),
               color: hex,
             }}
           >
@@ -668,15 +782,18 @@ function TypeRoleRow({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {/* Faces, not just families: the deck's title ladder is set in Geist
+            Medium, and a role that could only say "Geist" had no way to name
+            it. `fontChoicePatch` sets family and weight together. */}
         <select
-          value={style.font}
-          onChange={(e) => onChange({ font: e.target.value as FontFamily })}
+          value={fontChoiceIdOf(style, style.font)}
+          onChange={(e) => onChange(fontChoicePatch(e.target.value))}
           aria-label="Font"
           className="rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
         >
-          {ALLOWED_FONTS.map((f) => (
-            <option key={f} value={f}>
-              {f}
+          {FONT_CHOICES.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
             </option>
           ))}
         </select>
@@ -879,7 +996,11 @@ function PageNumbersSection({
   );
 }
 
-/** A miniature slide corner showing where the number lands and in which ink. */
+/**
+ * A zoomed-in crop of the slide corner the number lands in — the rest of the
+ * slide carries no information here, so showing it only shrinks the type past
+ * legibility. Dashed guides mark the two margins the controls above set.
+ */
 function PageNumberPreview({
   style,
   backgroundHex,
@@ -894,31 +1015,100 @@ function PageNumberPreview({
       : style.position === 'bottom-left'
         ? 'flex-start'
         : 'flex-end';
-  // 16:9 at a fixed 240px-wide mental slide, so the inset and type size shrink
-  // in the same proportion the real renderer uses.
-  const scale = 240 / SLIDE_SIZE.w;
+  // The crop: a corner-sized window onto the slide. The slide itself is laid
+  // out at full size behind it and anchored so the window lands on the corner,
+  // which keeps every inset in true slide proportion while the type comes out
+  // ~2.5x bigger than it would at whole-slide scale.
+  const CROP_W = 0.4;
+  const CROP_H = 0.34;
+  const VIEW_W = 240;
+  const scale = VIEW_W / CROP_W / SLIDE_SIZE.w;
+  const pct = (emu: number, of: number) => `${(emu / of) * 100}%`;
+  const ink = pageNumberInk(style, backgroundHex);
+  const inches = (emu: number) => Math.round((emu / EMU_PER_INCH) * 100) / 100;
+  const guide = { position: 'absolute', borderColor: ink, opacity: 0.35 } as const;
+  const tick = {
+    position: 'absolute',
+    color: ink,
+    opacity: 0.55,
+    fontSize: 9,
+    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+    whiteSpace: 'nowrap',
+  } as const;
+  const centered = style.position === 'bottom-center';
   return (
     <div
-      className="flex overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
+      className="relative overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
       style={{
         background: backgroundHex,
-        aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}`,
-        alignItems: 'flex-end',
-        justifyContent: justify,
-        padding: `0 ${style.marginXEmu * scale}px ${style.marginYEmu * scale}px`,
+        aspectRatio: `${CROP_W * SLIDE_SIZE.w} / ${CROP_H * SLIDE_SIZE.h}`,
       }}
     >
-      <span
+      <div
+        className="absolute flex"
         style={{
-          fontFamily: FONTS[style.font].cssStack,
-          fontSize: Math.max(7, style.sizePt * EMU_PER_POINT * scale),
-          lineHeight: FONTS[style.font].singleLineFactor,
-          fontWeight: style.bold ? 700 : 400,
-          color: pageNumberInk(style, backgroundHex),
+          bottom: 0,
+          left: centered ? '50%' : style.position === 'bottom-left' ? 0 : undefined,
+          right: style.position === 'bottom-right' ? 0 : undefined,
+          transform: centered ? 'translateX(-50%)' : undefined,
+          width: `${100 / CROP_W}%`,
+          aspectRatio: `${SLIDE_SIZE.w} / ${SLIDE_SIZE.h}`,
+          alignItems: 'flex-end',
+          justifyContent: justify,
+          padding: `0 ${style.marginXEmu * scale}px ${style.marginYEmu * scale}px`,
         }}
       >
-        {label}
-      </span>
+        {/* Bottom margin: the baseline the number sits on. */}
+        <div
+          style={{
+            ...guide,
+            left: 0,
+            right: 0,
+            bottom: pct(style.marginYEmu, SLIDE_SIZE.h),
+            borderTopWidth: 1,
+            borderTopStyle: 'dashed',
+          }}
+        />
+        {/* Side margin: one edge, or both when the number is centered. */}
+        {(centered || style.position === 'bottom-left') && (
+          <div
+            style={{
+              ...guide,
+              top: 0,
+              bottom: 0,
+              left: pct(style.marginXEmu, SLIDE_SIZE.w),
+              borderLeftWidth: 1,
+              borderLeftStyle: 'dashed',
+            }}
+          />
+        )}
+        {(centered || style.position === 'bottom-right') && (
+          <div
+            style={{
+              ...guide,
+              top: 0,
+              bottom: 0,
+              right: pct(style.marginXEmu, SLIDE_SIZE.w),
+              borderLeftWidth: 1,
+              borderLeftStyle: 'dashed',
+            }}
+          />
+        )}
+        <span
+          style={{
+            fontFamily: FONTS[style.font].cssStack,
+            fontSize: style.sizePt * EMU_PER_POINT * scale,
+            lineHeight: FONTS[style.font].singleLineFactor,
+            fontWeight: style.bold ? 700 : 400,
+            color: ink,
+          }}
+        >
+          {label}
+        </span>
+      </div>
+      {/* Guide readouts, pinned to the crop so they never sit under the number. */}
+      <div style={{ ...tick, left: 4, bottom: 3 }}>{inches(style.marginYEmu)}&Prime; bottom</div>
+      <div style={{ ...tick, right: 4, top: 3 }}>{inches(style.marginXEmu)}&Prime; side</div>
     </div>
   );
 }

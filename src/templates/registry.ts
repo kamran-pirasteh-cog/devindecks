@@ -1,19 +1,36 @@
 /**
- * Deck template registry. For now these are built-in starter decks; in Phase 2
- * the Admin view will let Kamran author/version these (and full named decks like
- * QBR / BVA / Power User) against the real Cognition brand. Each template only
- * uses safe primitives, so anything created from one is export-safe by birth.
+ * Deck template registry — the built-in starter decks, as the code ships them.
+ *
+ * These are the SEED, not the library: `repository.ts` copies them into the
+ * template store on first run, and Admin's Templates tab authors and versions
+ * them from there (`resetBuiltInTemplates` is the way back to what's here).
+ * Each template only uses safe primitives, so anything created from one is
+ * export-safe by birth.
  */
 import { nanoid } from 'nanoid';
 import { token } from '@/model';
 import type { Slide } from '@/model';
 import { DECK_DATA, importedDeckSlides } from './decks';
 
+/**
+ * The buckets a deck template files under, in the order Admin offers them.
+ * A tuple rather than a bare union so the Admin shelf can enumerate it — the
+ * category dropdown and the type stay one list.
+ */
+export const TEMPLATE_CATEGORIES = [
+  'Business Review',
+  'Value',
+  'Enablement',
+  'Blank',
+] as const;
+
+export type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
+
 export interface TemplateDef {
   id: string;
   name: string;
   description: string;
-  category: 'Blank' | 'Business Review' | 'Value' | 'Enablement';
+  category: TemplateCategory;
   /** Lower sorts first; built-ins without an order fall to the end, alphabetically. */
   order?: number;
   buildSlides: () => Slide[];

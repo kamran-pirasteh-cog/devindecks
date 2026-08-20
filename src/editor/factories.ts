@@ -181,6 +181,7 @@ export function makeTitle(ds: DesignSystem, slideSize: { w: EMU; h: EMU }): Text
               font: role.font,
               sizePt: role.sizePt,
               bold: role.bold,
+              weight: role.weight,
               color: token(role.colorToken),
             },
           ],

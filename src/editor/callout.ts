@@ -139,6 +139,7 @@ function paragraph(part: CalloutPart, ds: DesignSystem, onLight: boolean): Parag
         font: role.font,
         sizePt: role.sizePt,
         bold: role.bold,
+        weight: role.weight,
         color: slot.strong ? strong : muted,
       },
     ],

@@ -159,7 +159,7 @@ interface ObjectClipboard {
   pastes: number;
 }
 
-interface EditorState {
+export interface EditorState {
   deck: Deck;
   designSystem: DesignSystem;
   currentSlideId: string;
@@ -384,11 +384,17 @@ interface EditorState {
   addSlide: () => void;
   insertSlides: (slides: Slide[]) => void;
   duplicateSlide: (id: string) => void;
+  /**
+   * ⌘D in the filmstrip — copies of every given slide (the slide selection by
+   * default), landing together after the last of them and selected in the
+   * originals' place, so a repeated ⌘D stacks copies rather than interleaving.
+   */
+  duplicateSlides: (ids?: string[]) => void;
   deleteSlide: (id: string) => void;
 
   // charts
   /** Drop a new chart on the current slide and select it. */
-  insertChart: (spec: ChartSpec, frame?: Rect) => void;
+  insertChart: (spec: ChartSpec, frame?: Rect, variantId?: string) => void;
   /** Replace a chart's spec wholesale (the datasheet's save path). */
   updateChartSpec: (chartId: string, spec: ChartSpec, transient?: boolean) => void;
   /**
@@ -853,13 +859,13 @@ export const useEditor = create<EditorState>()(
 
     /* ---- charts ---- */
 
-    insertChart(spec, frame) {
+    insertChart(spec, frame, variantId) {
       get().commit();
       set((s) => {
         const slide = slideById(s.deck, s.currentSlideId);
         if (!slide) return;
         const box = frame ?? defaultChartFrame(s.deck.slideSize);
-        const chart = insertChartInto(slide, spec, box, s.designSystem);
+        const chart = insertChartInto(slide, spec, box, s.designSystem, variantId);
         // Select the whole chart, which is its group — the same thing a click
         // on the canvas would select.
         s.selectedIds = slide.elements
@@ -986,16 +992,27 @@ export const useEditor = create<EditorState>()(
     },
 
     duplicateSlide(id) {
+      get().duplicateSlides([id]);
+    },
+
+    duplicateSlides(ids) {
+      const { deck, selectedSlideIds, currentSlideId } = get();
+      const wanted = new Set(ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]));
+      // Deck order, so a multi-slide duplicate keeps the run's own order.
+      const sources = deck.slides.filter((sl) => wanted.has(sl.id));
+      if (!sources.length) return;
       get().commit();
       set((s) => {
-        const idx = s.deck.slides.findIndex((sl) => sl.id === id);
-        if (idx < 0) return;
-        const copy = freshSlideCopy(s.deck.slides[idx]);
-        s.deck.slides.splice(idx + 1, 0, copy);
-        s.currentSlideId = copy.id;
+        const copies = sources.map(freshSlideCopy);
+        const last = sources[sources.length - 1].id;
+        const at = s.deck.slides.findIndex((sl) => sl.id === last);
+        s.deck.slides.splice(at + 1, 0, ...copies);
+        s.currentSlideId = copies[0].id;
         s.selectedIds = [];
-        s.selectedSlideIds = [copy.id];
-        s.slideSelectionAnchor = copy.id;
+        s.editingId = null;
+        s.croppingId = null;
+        s.selectedSlideIds = copies.map((sl) => sl.id);
+        s.slideSelectionAnchor = copies[0].id;
       });
     },
 

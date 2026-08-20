@@ -13,11 +13,15 @@ import { makeArrow, makeShape } from './factories';
 import { LinePopover } from './LinePopover';
 import { TextPopover } from './TextPopover';
 import { CalloutPopover } from './CalloutPopover';
+import { BandPopover } from './BandPopover';
 import { ShortcutsModal } from './ShortcutsModal';
+import { RefreshPromptDialog } from './RefreshPromptDialog';
 import { ChartPopover } from './ChartPopover';
 import { ImportSlidesDialog } from './ImportSlidesDialog';
 import { OVERLAY_Z } from './layers';
 import { showsPageNumbers, type ShapePreset } from '@/model';
+import { buildDeckRefreshPrompt } from '@/devin/refresh';
+import { useToast } from '@/ui/Toast';
 
 const SHAPES: { preset: ShapePreset; label: string }[] = [{ preset: 'rect', label: '▭' }];
 
@@ -73,6 +77,8 @@ export function Toolbar() {
   const panelOpen = useComments((s) => s.panelOpen);
   const openThreads = useComments((s) => s.threads.filter((t) => !t.resolved).length);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showRefresh, setShowRefresh] = useState(false);
+  const toast = useToast();
   const [showCharts, setShowCharts] = useState(false);
   const insertChart = useEditor((s) => s.insertChart);
   const ds = useEditor((s) => s.designSystem);
@@ -104,6 +110,24 @@ export function Toolbar() {
   const textAnchorRef = useRef<HTMLDivElement>(null);
   const [showCallout, setShowCallout] = useState(false);
   const calloutAnchorRef = useRef<HTMLDivElement>(null);
+  const [showBand, setShowBand] = useState(false);
+  const bandAnchorRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * The prompt is built from the LIVE deck on every click, so it can never
+   * describe numbers that have since changed. `navigator.clipboard` doesn't
+   * exist on a non-secure origin, so a failure falls back to showing the text
+   * rather than dead-ending.
+   */
+  const copyRefreshPrompt = async () => {
+    const { text } = buildDeckRefreshPrompt(deck);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Devin prompt copied to clipboard');
+    } catch {
+      setShowRefresh(true);
+    }
+  };
 
   return (
     <div className="flex items-center gap-0.5 border-b border-zinc-200 bg-white px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-950">
@@ -125,6 +149,18 @@ export function Toolbar() {
         </Btn>
         {showCallout ? (
           <CalloutPopover onClose={() => setShowCallout(false)} anchorRef={calloutAnchorRef} />
+        ) : null}
+      </div>
+      <div ref={bandAnchorRef} className="relative flex">
+        <Btn onClick={() => setShowBand((v) => !v)} title="Add side band">
+          {/* The arrangement itself, in miniature: a filled panel down one edge
+              of the page, with the rest of the slide left open. */}
+          <span className="flex h-4 w-5 overflow-hidden rounded-[2px] border border-current opacity-80">
+            <span className="h-full w-1/3 bg-current" />
+          </span>
+        </Btn>
+        {showBand ? (
+          <BandPopover onClose={() => setShowBand(false)} anchorRef={bandAnchorRef} />
         ) : null}
       </div>
       <Btn onClick={insertEyebrow} title="Add eyebrow above the title (⌘⇧E)">
@@ -188,7 +224,7 @@ export function Toolbar() {
           <ChartPopover
             ds={ds}
             context={chartContext}
-            onPick={(spec) => insertChart(spec)}
+            onPick={(spec, variantId) => insertChart(spec, undefined, variantId)}
             onClose={() => setShowCharts(false)}
           />
         ) : null}
@@ -199,12 +235,6 @@ export function Toolbar() {
         title="Add a sticky note (it grows as you type)"
         className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
       >
-        {/* The object itself, in miniature: tilted yellow paper under a strip of
-            tape. */}
-        <span className="relative flex h-3.5 w-3.5 items-center justify-center">
-          <span className="absolute inset-0 rotate-[6deg] rounded-[1px] bg-[#F4E79F] ring-1 ring-black/10" />
-          <span className="absolute -top-0.5 left-1/2 h-1 w-2 -translate-x-1/2 rotate-[6deg] bg-zinc-400/70" />
-        </span>
         Stickies
       </button>
       {FLAGS.comments ? (
@@ -236,6 +266,14 @@ export function Toolbar() {
         Shortcuts
       </button>
       {showShortcuts ? <ShortcutsModal onClose={() => setShowShortcuts(false)} /> : null}
+      <button
+        onClick={copyRefreshPrompt}
+        title="Copy a Devin prompt describing every number in this deck, page by page"
+        className="ml-1 flex h-8 items-center rounded-md bg-blue-600 px-2.5 text-xs font-semibold text-white hover:bg-blue-700"
+      >
+        Refresh Data
+      </button>
+      {showRefresh ? <RefreshPromptDialog onClose={() => setShowRefresh(false)} /> : null}
     </div>
   );
 }

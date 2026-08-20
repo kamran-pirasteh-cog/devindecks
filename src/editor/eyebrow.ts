@@ -30,6 +30,7 @@ import type {
   DesignSystem,
   EMU,
   Fill,
+  FontFamily,
   ShapeElement,
   SlideElement,
   TextElement,
@@ -58,8 +59,18 @@ const TITLE_GAP_IN = 0.07;
 /** Leading the renderer gives an unspaced paragraph. */
 const LINE_HEIGHT = 1.25;
 
-/** The type role an eyebrow is set in — the deck's smallest, in its bold face. */
+/** The type role an eyebrow is sized from — the deck's smallest. */
 const typeOf = (ds: DesignSystem) => ds.type.caption;
+
+/**
+ * The face an eyebrow is set in: mono, regular, all caps.
+ *
+ * It takes the caption role's SIZE but not its family. An eyebrow is a label on
+ * the slide rather than a line of its prose — the same job the mono, uppercase
+ * furniture around a chart does (see `chart/theme.ts`) — and caps at this size
+ * already carry the emphasis, so the face stays regular rather than bold.
+ */
+const EYEBROW_FONT: FontFamily = 'Geist Mono';
 
 /** One line of eyebrow type, in EMU. */
 export function eyebrowTextHeight(ds: DesignSystem): EMU {
@@ -191,9 +202,9 @@ export function makeEyebrow(
           runs: [
             {
               text: '',
-              font: role.font,
+              font: EYEBROW_FONT,
               sizePt: role.sizePt,
-              bold: true,
+              caps: true,
               color: ink,
             },
           ],

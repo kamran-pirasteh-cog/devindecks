@@ -148,7 +148,10 @@ function Row({
         </span>
       ) : null}
       {trailing ? (
-        <span className="absolute right-1 top-1/2 -translate-y-1/2">{trailing}</span>
+        // z-30 on the wrapper, not just on the popup inside it: the -translate-y
+        // here makes this span a stacking context, so the menu's own z-index is
+        // scoped to it and a later row in the rail would otherwise paint on top.
+        <span className="absolute right-1 top-1/2 z-30 -translate-y-1/2">{trailing}</span>
       ) : null}
     </div>
   );

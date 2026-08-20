@@ -64,6 +64,14 @@ export interface TextRun {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  /**
+   * All caps. A DISPLAY transform, like OOXML's `cap="all"` — the typed text is
+   * kept as it was written and uppercased on the way to the screen and to the
+   * export, so turning caps off gives the original words back. Set it on a run
+   * rather than uppercasing the text, or "why now" typed into an eyebrow would
+   * be destroyed the moment it was committed.
+   */
+  caps?: boolean;
   color?: ColorRef;
 }
 

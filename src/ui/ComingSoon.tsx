@@ -15,6 +15,7 @@
  * itself is gone.
  */
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Deck } from '@/model';
 import { listDocs } from '@/docs/repository';
 import { MODAL_Z } from '@/editor/layers';
@@ -358,6 +359,15 @@ export function ComingSoonModal({
   const [docs, setDocs] = useState<Deck[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
 
+  // Portalled to <body>, and only after mount (there is no document to portal
+  // into during SSR). `position: fixed` is NOT enough on its own: both links
+  // that open this sit in a `backdrop-blur` header, and a backdrop-filtered
+  // ancestor becomes the containing block for fixed descendants — so `inset-0`
+  // resolved to the header's own 93px-tall strip and the centred dialog hung
+  // off the top of the screen.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // The reports preview shows each report against the deck it delivers, so it
   // needs the deck list. Read on mount: it comes from local storage.
   useEffect(() => setDocs(listDocs()), []);
@@ -375,15 +385,17 @@ export function ComingSoonModal({
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
 
-  // Opened from beside a particular feature? Start at that section.
+  // Opened from beside a particular feature? Start at that section. Waits on
+  // `mounted`: nothing is rendered until the portal exists, so the first pass
+  // has no body to scroll.
   useEffect(() => {
-    if (!section) return;
-    bodyRef.current
-      ?.querySelector(`#coming-soon-${section}`)
-      ?.scrollIntoView({ block: 'start' });
-  }, [section]);
+    if (!section || !mounted) return;
+    bodyRef.current?.querySelector(`#coming-soon-${section}`)?.scrollIntoView({ block: 'start' });
+  }, [section, mounted]);
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -470,6 +482,7 @@ export function ComingSoonModal({
           </Section>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
