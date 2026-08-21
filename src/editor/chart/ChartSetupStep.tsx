@@ -22,7 +22,7 @@
 import { useMemo, useState } from 'react';
 import { SlideView } from '@/render/SlideView';
 import { MEASURE_GROUPS, MEASURES, type MeasureDef } from '@/charts/measures';
-import { SEGMENTS, resolveSegment } from '@/charts/segments';
+import { SEGMENTS, namedMembers, resolveSegment, type SegmentDef } from '@/charts/segments';
 import {
   GRAINS_FOR,
   SPAN_PRESETS,
@@ -119,7 +119,9 @@ export function ChartSetupStep({
             <Field label="Across the bottom" hint="what the reader scans along">
               <Segmented
                 options={[
-                  { value: 'time', label: `Time (${periodNoun(setup.grain)}s)` },
+                  // No grain in the label — the grain picker sits directly
+                  // below, and naming it twice reads as two questions.
+                  { value: 'time', label: 'Time' },
                   { value: 'segment', label: 'A category' },
                 ]}
                 value={setup.axis}
@@ -143,7 +145,18 @@ export function ChartSetupStep({
                 key={slot.key}
                 slot={slot}
                 value={slot.key === 'primary' ? setup.segment : setup.segment2}
-                onChange={(v) => set(slot.key === 'primary' ? { segment: v } : { segment2: v })}
+                which={slot.key === 'primary' ? setup.which : setup.which2}
+                onChange={(v) =>
+                  // The "which ones?" answer belongs to the cut that was
+                  // chosen, so changing the cut clears it — "Engineering,
+                  // Go-to-market" is not an answer about cohorts.
+                  set(
+                    slot.key === 'primary'
+                      ? { segment: v, which: undefined }
+                      : { segment2: v, which2: undefined },
+                  )
+                }
+                onWhich={(v) => set(slot.key === 'primary' ? { which: v } : { which2: v })}
               />
             ))}
         </div>
@@ -570,15 +583,19 @@ function MeasureField({
 function SegmentField({
   slot,
   value,
+  which,
   onChange,
+  onWhich,
 }: {
   slot: SegmentSlot;
   value?: string;
+  which?: string;
   onChange: (v: string | undefined) => void;
+  onWhich: (v: string | undefined) => void;
 }) {
   const free = value?.startsWith('free:') ?? false;
   const [typed, setTyped] = useState(free ? value!.slice(5) : '');
-  const members = value && !free ? resolveSegment(value).members : [];
+  const cut = value ? resolveSegment(value) : undefined;
 
   return (
     <Field label={slot.label} hint={slot.hint}>
@@ -614,15 +631,72 @@ function SegmentField({
           />
         ) : null}
 
-        {/* The members are placeholders and say so, because the alternative is
-            an author discovering on the slide that "Customer A" was ours. */}
-        {members.length ? (
-          <p className="text-[10px] leading-snug text-zinc-400">
-            {members.join(', ')} — rename them on the chart.
-          </p>
-        ) : null}
+        {cut ? <WhichField cut={cut} value={which ?? ''} onChange={onWhich} /> : null}
       </div>
     </Field>
+  );
+}
+
+/**
+ * Which ones — the question a cut leaves open.
+ *
+ * Choosing "department" says what KIND of thing divides the chart and nothing
+ * about which of them, and the members underneath are ours: three lettered
+ * stand-ins, or the one real list we happen to know. Every author knew the
+ * answer at the moment they picked the cut, and without somewhere to put it the
+ * knowledge went into a Slack message, or nowhere.
+ *
+ * Read two ways, and it tells the author which one it took — see
+ * `namedMembers`. A comma-separated list IS the members, so the chart is
+ * labelled with the real names before it is inserted; anything else is prose
+ * about the scope ("only the orgs over 100 ACUs"), which no axis could carry,
+ * and it rides into the Devin prompt inside the brief.
+ */
+function WhichField({
+  cut,
+  value,
+  onChange,
+}: {
+  cut: SegmentDef;
+  value: string;
+  onChange: (v: string | undefined) => void;
+}) {
+  const named = namedMembers(value);
+  const id = `dd-which-${cut.id}`;
+
+  return (
+    <div className="pt-0.5">
+      <label htmlFor={id} className="mb-0.5 block text-[10px] text-zinc-500 dark:text-zinc-400">
+        Which {cut.plural}?{' '}
+        <span className="text-zinc-400">optional</span>
+      </label>
+      <input
+        id={id}
+        value={value}
+        placeholder={cut.examples}
+        onChange={(e) => onChange(e.target.value.trim() ? e.target.value : undefined)}
+        className="w-full rounded border border-zinc-200 bg-transparent px-1.5 py-1 text-[11px] outline-none placeholder:text-zinc-400 focus:border-indigo-400 dark:border-zinc-700"
+      />
+      {/* The members are placeholders and say so, because the alternative is
+          an author discovering on the slide that "Customer A" was ours. */}
+      <p className="mt-1 text-[10px] leading-snug text-zinc-400">
+        {named.length ? (
+          <>
+            {named.join(', ')} — {named.length} of them, on the chart exactly as typed.
+          </>
+        ) : value.trim() ? (
+          <>
+            Read as scope, not as names — carried into the Devin prompt. Separate names with commas
+            to label the chart with them.
+          </>
+        ) : (
+          <>
+            {cut.members.join(', ')} — placeholders. Name them here and they go straight onto the
+            chart.
+          </>
+        )}
+      </p>
+    </div>
   );
 }
 

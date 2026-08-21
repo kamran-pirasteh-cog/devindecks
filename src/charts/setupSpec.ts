@@ -34,7 +34,7 @@ import {
 } from './intent';
 import type { ChartLayout } from './layouts';
 import { measureFormat, resolveMeasure } from './measures';
-import { resolveSegment, type SegmentDef } from './segments';
+import { segmentWith, type SegmentDef } from './segments';
 import { formFor, shapeOf, timeQuestionFor, type ChartSetup } from './setupForm';
 import {
   cellCount,
@@ -106,17 +106,27 @@ export function setupSentence(layout: ChartLayout, setup: ChartSetup, periods: s
     if (second) parts.push(`with ${second} over the top`);
   }
 
-  const primary = setup.segment ? resolveSegment(setup.segment) : undefined;
-  const secondary = setup.segment2 ? resolveSegment(setup.segment2) : undefined;
+  const primary = setup.segment ? segmentWith(setup.segment, setup.which) : undefined;
+  const secondary = setup.segment2 ? segmentWith(setup.segment2, setup.which2) : undefined;
+
+  // "by department (Engineering, Go-to-market)" — the cut and which ones of it,
+  // because the answer to "which departments?" is half of what was asked for
+  // and the sentence is what the Devin prompt quotes back.
+  const scoped = (cut: SegmentDef, which?: string): string =>
+    which?.trim() ? `${cut.noun} (${which.trim()})` : cut.noun;
 
   if (form.shape === 'flow' && primary && secondary) {
-    parts.push(`flowing from ${primary.noun} to ${secondary.noun}`);
+    parts.push(
+      `flowing from ${scoped(primary, setup.which)} to ${scoped(secondary, setup.which2)}`,
+    );
   } else {
     // Whichever cut divides the marks is the one the sentence says "by".
-    const by = form.shape === 'categorical' && setup.axis === 'segment' ? primary : (secondary ?? primary);
-    if (by) parts.push(`by ${by.noun}`);
-    if (form.shape === 'categorical' && setup.axis === 'segment' && secondary && primary) {
-      parts.push(`split by ${secondary.noun}`);
+    const onPrimary = form.shape === 'categorical' && setup.axis === 'segment';
+    const by = onPrimary ? primary : (secondary ?? primary);
+    const byWhich = by === primary ? setup.which : setup.which2;
+    if (by) parts.push(`by ${scoped(by, byWhich)}`);
+    if (onPrimary && secondary && primary) {
+      parts.push(`split by ${scoped(secondary, setup.which2)}`);
     }
   }
 
@@ -263,8 +273,8 @@ export function briefFromSetup(
   const form = formFor(layout);
   const periods = setupPeriods(layout, setup);
 
-  const primary = setup.segment ? resolveSegment(setup.segment) : undefined;
-  const secondary = setup.segment2 ? resolveSegment(setup.segment2) : undefined;
+  const primary = setup.segment ? segmentWith(setup.segment, setup.which) : undefined;
+  const secondary = setup.segment2 ? segmentWith(setup.segment2, setup.which2) : undefined;
   const { categories, seriesNames, dimension, noun } = axes(layout, setup, periods, primary, secondary);
 
   const measure = setup.measure ? resolveMeasure(setup.measure) : undefined;
@@ -366,8 +376,8 @@ export function specFromSetup(
  * pairings exist is a claim we have no basis for.
  */
 function flowData(setup: ChartSetup, brief: ChartBrief): SankeyData {
-  const from = setup.segment ? resolveSegment(setup.segment).members : brief.categories;
-  const to = setup.segment2 ? resolveSegment(setup.segment2).members : brief.seriesNames;
+  const from = setup.segment ? segmentWith(setup.segment, setup.which).members : brief.categories;
+  const to = setup.segment2 ? segmentWith(setup.segment2, setup.which2).members : brief.seriesNames;
   const magnitude = brief.magnitude ?? 1_000;
   // Deterministic, and deliberately not `seeded` from this file: the weights
   // only have to differ from each other, and a stable ramp does that without a

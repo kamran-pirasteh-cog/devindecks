@@ -3,7 +3,7 @@ import { DEFAULT_DESIGN_SYSTEM, sheetSeriesFor, sheetSchemaFor } from '@/model';
 import { chartResultContract } from '@/devin/contract';
 import { buildDevinChartPrompt } from '@/devin/prompt';
 import { layoutById } from './layouts';
-import { defaultSetup, formFor, type ChartSetup } from './setupForm';
+import { carrySetup, defaultSetup, formFor, setupIssues, type ChartSetup } from './setupForm';
 import { cellLabel, rangeEndingAt, shiftCells } from './periodRange';
 import { briefFromSetup, scheduleWindow, setupSentence, setupPeriods, specFromSetup } from './setupSpec';
 
@@ -438,5 +438,110 @@ describe('the current period', () => {
     // Weekly labels are ISO dates, which read back as days on their own.
     const t = buildDevinChartPrompt(build('line', { measure: 'acus', grain: 'week', count: 6 })).text;
     expect(t).toContain('One row per calendar week');
+  });
+});
+
+describe('which ones of a cut, end to end', () => {
+  it('labels the chart with the members the author named', () => {
+    const data = grid(
+      build('clustered', {
+        axis: 'segment',
+        measure: 'acus',
+        segment: 'department',
+        which: 'Platform, Payments, Data',
+      }),
+    );
+    expect(data.categories.map((c) => c.label)).toEqual(['Platform', 'Payments', 'Data']);
+  });
+
+  it('names the series when the cut that was scoped is the one dividing them', () => {
+    const data = grid(
+      build('line', { measure: 'acus', segment: 'company', which: 'Acme, Globex', count: 4 }),
+    );
+    expect(data.series.map((s) => s.name)).toEqual(['Acme', 'Globex']);
+  });
+
+  it('keeps the placeholders when the answer was a rule rather than a list', () => {
+    const data = grid(
+      build('line', {
+        measure: 'acus',
+        segment: 'department',
+        which: 'only the ones over 100 ACUs',
+        count: 4,
+      }),
+    );
+    expect(data.series.map((s) => s.name)).toEqual(['Engineering', 'Go-to-market', 'G&A']);
+  });
+
+  it('puts the answer in the sentence either way, because the prompt quotes it', () => {
+    const named = setupFor('line', {
+      measure: 'acus',
+      segment: 'department',
+      which: 'Platform, Payments',
+      count: 4,
+    });
+    expect(setupSentence(L('line'), named, setupPeriods(L('line'), named))).toContain(
+      'by department (Platform, Payments)',
+    );
+
+    const scoped = { ...named, which: 'only the ones over 100 ACUs' };
+    expect(setupSentence(L('line'), scoped, setupPeriods(L('line'), scoped))).toContain(
+      'by department (only the ones over 100 ACUs)',
+    );
+  });
+
+  it('reaches the Devin prompt as the author\u2019s own words and as the rows to return', () => {
+    const t = buildDevinChartPrompt(
+      build('line', {
+        measure: 'acus',
+        segment: 'department',
+        which: 'Platform, Payments',
+        grain: 'year',
+        count: 3,
+      }),
+    ).text;
+    expect(t).toContain('by department (Platform, Payments)');
+    expect(t).toContain('Platform');
+    expect(t).toContain('Payments');
+    expect(t).not.toContain('Go-to-market');
+  });
+
+  it('counts named members when warning about too many of them', () => {
+    const many = setupFor('pie', {
+      measure: 'acus',
+      segment: 'department',
+      which: 'A1, A2, A3, A4, A5, A6, A7, A8',
+    });
+    expect(setupIssues(L('pie'), many).some((i) => i.text.includes('8 slices'))).toBe(true);
+  });
+
+  it('scopes both ends of a flow separately', () => {
+    const setup = setupFor('sankey', {
+      measure: 'acus',
+      segment: 'department',
+      which: 'Platform, Payments',
+      segment2: 'use-case',
+      which2: 'Feature work, Migrations',
+    });
+    const sentence = setupSentence(L('sankey'), setup, setupPeriods(L('sankey'), setup));
+    expect(sentence).toContain('flowing from department (Platform, Payments)');
+    expect(sentence).toContain('to use case (Feature work, Migrations)');
+    const nodes = (specFromSetup(L('sankey'), setup, ds, {
+      orientation: 'vertical',
+      asOf: AS_OF,
+    }) as { data: { nodes: { label: string }[] } }).data.nodes.map((n) => n.label);
+    expect(nodes).toEqual(['Platform', 'Payments', 'Feature work', 'Migrations']);
+  });
+
+  it('carries the answer with the cut when the chart kind changes', () => {
+    const from = setupFor('line', {
+      measure: 'acus',
+      segment: 'department',
+      which: 'Platform, Payments',
+      count: 4,
+    });
+    expect(carrySetup(from, L('pie'), AS_OF).which).toBe('Platform, Payments');
+    // A schedule has no cut to hang it on, so the answer goes with it.
+    expect(carrySetup(from, L('gantt'), AS_OF).which).toBeUndefined();
   });
 });

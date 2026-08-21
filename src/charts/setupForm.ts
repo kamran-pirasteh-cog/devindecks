@@ -28,7 +28,7 @@ import {
   type PeriodRange,
 } from './periodRange';
 import { additive, isRate, resolveMeasure, type MeasureDef } from './measures';
-import { resolveSegment } from './segments';
+import { segmentWith } from './segments';
 import type { ChartLayout } from './layouts';
 
 /* ------------------------------------------------------------------ */
@@ -329,6 +329,19 @@ export interface ChartSetup {
   /** Segment ids, likewise. */
   segment?: string;
   segment2?: string;
+  /**
+   * The author's answer to "which departments?" for each cut, in their own
+   * words.
+   *
+   * A cut names a KIND of thing; it doesn't say which ones, and "by department"
+   * is three departments or eleven depending on facts only the author has. Read
+   * two ways, both of them wanted — see `namedMembers`: a comma-separated list
+   * becomes the chart's actual labels, and anything else ("only the ones over
+   * 100 ACUs") stays prose and rides into the Devin prompt as the scope of that
+   * cut. Either way the placeholder members stop being the last word.
+   */
+  which?: string;
+  which2?: string;
   grain: DateGrain;
   /**
    * The periods covered, as their two ends rather than as a count.
@@ -482,8 +495,8 @@ export function carrySetup(from: ChartSetup, to: ChartLayout, asOf: string): Cha
     ...(slots.has('primary') ? { measure: from.measure } : {}),
     ...(slots.has('secondary') ? { secondaryMeasure: from.secondaryMeasure } : {}),
     ...(slots.has('size') ? { sizeMeasure: from.sizeMeasure } : {}),
-    ...(cuts.has('primary') ? { segment: from.segment } : {}),
-    ...(cuts.has('secondary') ? { segment2: from.segment2 } : {}),
+    ...(cuts.has('primary') ? { segment: from.segment, which: from.which } : {}),
+    ...(cuts.has('secondary') ? { segment2: from.segment2, which2: from.which2 } : {}),
   };
 }
 
@@ -589,8 +602,9 @@ export function setupIssues(layout: ChartLayout, setup: ChartSetup): SetupIssue[
   const totalsParts = stacking || shape === 'share' || shape === 'flow';
 
   /** The cut that divides the total, which differs by shape. */
-  const dividerId =
-    shape === 'categorical' ? setup.segment2 : shape === 'flow' ? setup.segment2 : setup.segment;
+  const dividesOnSecond = shape === 'categorical' || shape === 'flow';
+  const dividerId = dividesOnSecond ? setup.segment2 : setup.segment;
+  const dividerWhich = dividesOnSecond ? setup.which2 : setup.which;
 
   for (const slot of form.measures) {
     const id =
@@ -680,7 +694,7 @@ export function setupIssues(layout: ChartLayout, setup: ChartSetup): SetupIssue[
   }
 
   if (dividerId) {
-    const members = resolveSegment(dividerId).members.length;
+    const members = segmentWith(dividerId, dividerWhich).members.length;
     if (shape === 'share' && members > 7) {
       out.push({
         level: 'note',
@@ -698,7 +712,8 @@ export function setupIssues(layout: ChartLayout, setup: ChartSetup): SetupIssue[
 
   if (shape === 'categorical' && setup.axis === 'segment' && setup.segment && setup.segment2) {
     const bars =
-      resolveSegment(setup.segment).members.length * resolveSegment(setup.segment2).members.length;
+      segmentWith(setup.segment, setup.which).members.length *
+      segmentWith(setup.segment2, setup.which2).members.length;
     // Twenty is where a clustered chart genuinely stops being readable. No pair
     // on today's menu can reach it — the widest cross it offers is four use
     // cases by three of anything — so this guard is for typed cuts and for
