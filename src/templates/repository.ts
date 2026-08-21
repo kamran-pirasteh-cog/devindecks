@@ -12,13 +12,18 @@
  * gets stored here.
  */
 import { nanoid } from 'nanoid';
-import { SLIDE_16x9, type Deck, type PictureElement, type Slide } from '@/model';
+import { SLIDE_16x9, type Deck, type Slide } from '@/model';
 import {
   getTemplate,
   RETIRED_TEMPLATE_IDS,
   TEMPLATES,
   type TemplateDef,
 } from './registry';
+import {
+  listTemplateFolders,
+  seedTemplateFoldersIfFirstRun,
+  type TemplateFolder,
+} from './folders';
 import { defineCollection } from '@/platform/collection';
 import { localStorageAdapter } from '@/platform/store';
 
@@ -36,6 +41,15 @@ export interface StoredTemplate {
   name: string;
   description: string;
   category: TemplateDef['category'];
+  /**
+   * Which folder on Admin's Templates shelf this sits in (see
+   * `templates/folders.ts`). Unset means Unfiled — a real place, not a broken
+   * state: an unfiled template is still offered when anyone creates a deck.
+   *
+   * Distinct from `category`, which is fixed vocabulary baked into the built-in
+   * registry. Folders are the admin's own filing, renameable and disposable.
+   */
+  folderId?: string;
   /** Lower sorts first; carried over from the built-in def, if any. */
   order?: number;
   slides: Slide[];
@@ -70,9 +84,35 @@ const write = (map: TemplateMap) => collection.replace(map);
 
 const now = () => new Date().toISOString();
 
+/**
+ * Where a built-in's fixed `category` files on a fresh install.
+ *
+ * Only consulted while seeding, and only for a folder that actually exists: an
+ * admin who renamed or deleted these keeps their filing, and a built-in with
+ * nowhere to go lands in Unfiled rather than resurrecting a folder.
+ */
+const SEED_CATEGORY_FOLDERS: Record<string, string> = {
+  'Business Review': 'QBR',
+  Value: 'Sales decks',
+  Enablement: 'COE content',
+};
+
+function seedFolderFor(
+  category: string,
+  folders: TemplateFolder[],
+): string | undefined {
+  const want = SEED_CATEGORY_FOLDERS[category];
+  if (!want) return undefined;
+  return folders.find((f) => f.name.trim().toLowerCase() === want.toLowerCase())?.id;
+}
+
 /** Ensure every built-in template exists in storage (idempotent, safe to call every load). */
 export function seedIfFirstRun(): void {
   if (typeof window === 'undefined') return;
+  // Folders first: a built-in seeded below is filed into one, so they have to
+  // exist before it is written.
+  seedTemplateFoldersIfFirstRun();
+  const folders = listTemplateFolders();
   const map = read();
   let changed = false;
   // Built-ins that shipped and were withdrawn. Seeding only ever ADDS, so a
@@ -91,6 +131,7 @@ export function seedIfFirstRun(): void {
       name: t.name,
       description: t.description,
       category: t.category,
+      folderId: seedFolderFor(t.category, folders),
       order: t.order,
       slides: t.buildSlides(),
       version: 1,
@@ -133,6 +174,7 @@ export function createTemplate(opts: {
   name: string;
   description?: string;
   category: TemplateDef['category'];
+  folderId?: string;
   slides?: Slide[];
 }): StoredTemplate {
   const map = read();
@@ -142,6 +184,7 @@ export function createTemplate(opts: {
     name: opts.name,
     description: opts.description ?? '',
     category: opts.category,
+    folderId: opts.folderId,
     slides: opts.slides ?? [{ id: `s-${nanoid(8)}`, elements: [] }],
     version: 1,
     createdAt: ts,
@@ -154,7 +197,7 @@ export function createTemplate(opts: {
 
 export function updateTemplateMeta(
   id: string,
-  patch: Partial<Pick<StoredTemplate, 'name' | 'description' | 'category'>>,
+  patch: Partial<Pick<StoredTemplate, 'name' | 'description' | 'category' | 'folderId'>>,
 ): void {
   const map = read();
   if (!map[id]) return;
@@ -173,12 +216,18 @@ export function updateTemplateMeta(
  */
 export function createTemplateFromDeck(
   deck: Pick<Deck, 'title' | 'slides'>,
-  opts: { name?: string; description?: string; category: TemplateDef['category'] },
+  opts: {
+    name?: string;
+    description?: string;
+    category: TemplateDef['category'];
+    folderId?: string;
+  },
 ): StoredTemplate {
   return createTemplate({
     name: opts.name?.trim() || deck.title,
     description: opts.description,
     category: opts.category,
+    folderId: opts.folderId,
     slides: structuredClone(deck.slides),
   });
 }
@@ -204,6 +253,9 @@ export function resetBuiltInTemplates(): void {
       name: t.name,
       description: t.description,
       category: t.category,
+      // Filing is the admin's, not the registry's: a rebuild replaces slides,
+      // so it has no business moving the template to another folder.
+      folderId: prev?.folderId,
       order: t.order,
       slides: t.buildSlides(),
       version: (prev?.version ?? 0) + 1,
@@ -258,19 +310,21 @@ export function duplicateTemplate(id: string, name?: string): StoredTemplate | n
   return t;
 }
 
-/** Seed a new template from an uploaded reference image (a full-bleed picture, editable after). */
-export function createTemplateFromImage(dataUrl: string, name: string): StoredTemplate {
-  const picture: PictureElement = {
-    id: `picture-${nanoid(6)}`,
-    type: 'picture',
-    rect: { x: 0, y: 0, w: SLIDE_16x9.w, h: SLIDE_16x9.h },
-    src: dataUrl,
-  };
-  return createTemplate({
-    name,
-    category: 'Blank',
-    slides: [{ id: `s-${nanoid(8)}`, elements: [picture] }],
-  });
+/**
+ * Clear `folderId` on everything in a folder that's going away, so its templates
+ * fall back to Unfiled instead of pointing at a folder no rail row shows. The
+ * mirror of `unfileFolder` in the docs repository, and the reason deleting a
+ * folder never deletes a template.
+ */
+export function unfileTemplateFolder(folderId: string): void {
+  const map = read();
+  let changed = false;
+  for (const t of Object.values(map)) {
+    if (t.folderId !== folderId) continue;
+    map[t.id] = { ...t, folderId: undefined, updatedAt: now() };
+    changed = true;
+  }
+  if (changed) write(map);
 }
 
 export function deleteTemplate(id: string): void {
