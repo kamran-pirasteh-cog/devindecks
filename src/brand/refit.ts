@@ -52,12 +52,12 @@
  * growing is always rolled back.
  */
 import type { EMU, Rect, Slide, SlideElement, TextBody } from '@/model';
-import { DEFAULT_MARGINS, EMU_PER_POINT, marginBox, titleBand } from '@/model';
+import { EMU_PER_POINT, marginBox, titleBand } from '@/model';
 import type { DesignSystem } from '@/model/tokens';
 import type { TextMeasurer } from '@/render/measureText';
 import { measureTextBody, neededHeightEmu } from '@/render/measureTextBody';
 import { bodyOf, type BrandRole } from './classify';
-import { MIN_LEGIBLE_PT, stepDown, type SizeLadder } from './type';
+import { marginsForSlide, MIN_LEGIBLE_PT, stepDown, type SizeLadder } from './type';
 import type { RestyleTrace } from './restyle';
 
 /* ------------------------------------------------------------------ */
@@ -191,8 +191,9 @@ export function snapToMargins(
   role: BrandRole | undefined,
   slideSize: { w: EMU; h: EMU },
 ): Rect {
-  const box = marginBox(slideSize, DEFAULT_MARGINS);
-  const band = titleBand(slideSize, DEFAULT_MARGINS);
+  const margins = marginsForSlide(slideSize);
+  const box = marginBox(slideSize, margins);
+  const band = titleBand(slideSize, margins);
 
   const bleeds =
     rect.x <= 0 || rect.y <= 0 || rect.x + rect.w >= slideSize.w || rect.y + rect.h >= slideSize.h;
@@ -214,7 +215,12 @@ export function snapToMargins(
 /* ------------------------------------------------------------------ */
 
 /** Rescale every run in a body by a factor, half-point rounded. */
-export function scaleBody(body: TextBody, factor: number, ds: DesignSystem): TextBody {
+export function scaleBody(
+  body: TextBody,
+  factor: number,
+  ds: DesignSystem,
+  absMinPt: number = ABSOLUTE_MIN_PT,
+): TextBody {
   return {
     ...body,
     paragraphs: (body.paragraphs ?? []).map((p) => ({
@@ -232,7 +238,7 @@ export function scaleBody(body: TextBody, factor: number, ds: DesignSystem): Tex
         // impose their own, higher floors (`policy.floorFraction`), and the
         // restore-source-size step legitimately needs to go below 9pt to hand a
         // deck back the 8pt its author chose.
-        return { ...r, sizePt: Math.max(ABSOLUTE_MIN_PT, Math.round(from * factor * 2) / 2) };
+        return { ...r, sizePt: Math.max(absMinPt, Math.round(from * factor * 2) / 2) };
       }),
     })),
   };
@@ -290,6 +296,12 @@ export interface RefitContext {
    * layout. See `LABEL_CHARS`.
    */
   panelText: Set<string>;
+  /**
+   * The legibility floor for THIS slide size, from `minLegiblePtFor`. Absent
+   * means the reference floor, which is right for a reference-sized slide and
+   * wrong by the slide's own scale factor on any other — see `slideTypeScale`.
+   */
+  minPt?: number;
 }
 
 /**
@@ -297,6 +309,12 @@ export interface RefitContext {
  * deck's own choice. Below this it is not text any more.
  */
 export const ABSOLUTE_MIN_PT = 6;
+
+/** This context's legibility floor, and the hard floor below it. */
+const floorsOf = (ctx: RefitContext) => {
+  const minPt = ctx.minPt ?? MIN_LEGIBLE_PT;
+  return { minPt, absMinPt: (minPt * ABSOLUTE_MIN_PT) / MIN_LEGIBLE_PT };
+};
 
 /**
  * Characters below which a text box is a LABEL rather than a sentence.
@@ -354,7 +372,7 @@ export function freeSpaceBelow(
   siblings: SlideElement[],
   slideSize: { w: EMU; h: EMU },
 ): EMU {
-  const box = marginBox(slideSize, DEFAULT_MARGINS);
+  const box = marginBox(slideSize, marginsForSlide(slideSize));
   let limit = box.y + box.h;
   for (const other of siblings) {
     if (other.id === el.id) continue;
@@ -386,7 +404,7 @@ export function freeSpaceAbove(
   siblings: SlideElement[],
   slideSize: { w: EMU; h: EMU },
 ): EMU {
-  const box = marginBox(slideSize, DEFAULT_MARGINS);
+  const box = marginBox(slideSize, marginsForSlide(slideSize));
   let limit = box.y;
   for (const other of siblings) {
     if (other.id === el.id) continue;
@@ -415,6 +433,7 @@ export function refitElement(
   ctx: RefitContext,
 ): RefitOutcome {
   const { ds, measurer } = ctx;
+  const { minPt, absMinPt } = floorsOf(ctx);
   const role = ctx.roles.get(el.id);
   const policy = policyFor(role);
   const steps: RefitStep[] = [];
@@ -464,10 +483,10 @@ export function refitElement(
       // chip, whose alternative is not "slightly small text" but "a pill with
       // its label broken in half". So the label may give up a quarter of its
       // size, and never a point below what anyone can read.
-      const floor = Math.max(MIN_LEGIBLE_PT, brandPt * UNWRAP_FLOOR_FRACTION);
+      const floor = Math.max(minPt, brandPt * UNWRAP_FLOOR_FRACTION);
       let shrank = false;
       while (wrapped() && pt - 0.5 >= floor) {
-        current = scaleBody(current, (pt - 0.5) / pt, ds);
+        current = scaleBody(current, (pt - 0.5) / pt, ds, absMinPt);
         pt -= 0.5;
         shrank = true;
       }
@@ -499,11 +518,11 @@ export function refitElement(
     let pt = brandPt;
     // The floor for THIS step is the source's size: below that we are no longer
     // unwinding an overshoot, we are shrinking the author's type.
-    const floor = Math.max(trace.sourcePt, MIN_LEGIBLE_PT);
+    const floor = Math.max(trace.sourcePt, minPt);
     for (;;) {
       const nextPt = stepDown(ctx.ladder, pt);
       if (nextPt === null || nextPt < floor) break;
-      const candidate = scaleBody(current, nextPt / pt, ds);
+      const candidate = scaleBody(current, nextPt / pt, ds, absMinPt);
       current = candidate;
       pt = nextPt;
       steps.push('ladder-step-down');
@@ -538,9 +557,9 @@ export function refitElement(
    * source deck that was set in 8pt.
    */
   if (trace && maxRunPt(current, ds) > trace.sourcePt + 0.01 && measure(current, rect) > FIT_TOL) {
-    const target = Math.max(trace.sourcePt, ABSOLUTE_MIN_PT);
+    const target = Math.max(trace.sourcePt, absMinPt);
     if (target < maxRunPt(current, ds)) {
-      current = scaleBody(current, target / maxRunPt(current, ds), ds);
+      current = scaleBody(current, target / maxRunPt(current, ds), ds, absMinPt);
       steps.push('restore-source-size');
       if (measure(current, rect) <= FIT_TOL) {
         return {
@@ -605,11 +624,11 @@ export function refitElement(
    */
   const tryShrink = (): boolean => {
     let pt = maxRunPt(current, ds);
-    const floor = Math.max(MIN_LEGIBLE_PT, brandPt * policy.floorFraction);
+    const floor = Math.max(minPt, brandPt * policy.floorFraction);
     let shrank = false;
     while (pt - 0.5 >= floor) {
       const nextPt = pt - 0.5;
-      current = scaleBody(current, nextPt / pt, ds);
+      current = scaleBody(current, nextPt / pt, ds, absMinPt);
       pt = nextPt;
       shrank = true;
       offLadder = true;
@@ -654,13 +673,56 @@ export function siblingGroups(
   ctx: RefitContext,
 ): SlideElement[][] {
   const TOL: EMU = 91_440; // 0.1in
+  return bucketBy(elements, ctx, (el, tier) => `${tier}:${Math.round(el.rect.y / TOL)}`);
+}
+
+/**
+ * Groups that must end up the same size because they are ONE TIER OF TYPE on one
+ * slide — same role, same brand size, anywhere on the slide.
+ *
+ * `siblingGroups` only sees a row, and a row is not the unit a reader compares.
+ * The three-column layout every case-study slide is built from has nine body
+ * boxes in three rows: coupling by row made each row internally consistent and
+ * left the rows free to disagree, so the slide shipped with 11pt bullets beside
+ * 12pt ones — one box in nine happened to be short enough to keep the brand
+ * size while its eight neighbours stepped down. Nobody sees the row; everybody
+ * sees the column.
+ *
+ * The deck-wide coherence pass in `convert.ts` cannot cover this: it needs four
+ * instances of a tier and a 60% majority before it will move a whole deck, which
+ * is the right bar for a deck-wide decision and no bar at all for a single
+ * slide — least of all a one-slide deck, which is how these are converted.
+ *
+ * The bound on the damage is the role's `floorFraction`: no element can have
+ * shrunk more than that, so adopting the smallest in the tier can cost the tier
+ * at most that much. A fifth of a point size is cheap; two body sizes on one
+ * slide is not.
+ *
+ * Chip labels (`panelText`) are excluded. Their size is dictated by the pill
+ * drawn behind them and their unwrap floor is lower than any role's, so letting
+ * one govern the slide's body copy would shrink the whole tier to fit a pill.
+ */
+export function sizeCohorts(
+  elements: SlideElement[],
+  ctx: RefitContext,
+): SlideElement[][] {
+  const loose = elements.filter((el) => !ctx.panelText.has(el.id));
+  return bucketBy(loose, ctx, (_el, tier) => tier);
+}
+
+/** Bucket refittable elements by a key built from their role, size tier and box. */
+function bucketBy(
+  elements: SlideElement[],
+  ctx: RefitContext,
+  keyOf: (el: SlideElement, tier: string) => string,
+): SlideElement[][] {
   const buckets = new Map<string, SlideElement[]>();
   for (const el of elements) {
     const role = ctx.roles.get(el.id);
     if (!role || policyFor(role).prefer === 'none') continue;
     const trace = ctx.traces.get(el.id);
     if (!trace) continue;
-    const key = `${role}:${Math.round(el.rect.y / TOL)}:${trace.brandPt}`;
+    const key = keyOf(el, `${role}:${trace.brandPt}`);
     buckets.set(key, [...(buckets.get(key) ?? []), el]);
   }
   return [...buckets.values()].filter((g) => g.length >= 2);
@@ -718,6 +780,37 @@ function matchSiblingBoxes(slide: Slide, ctx: RefitContext): Map<string, Rect> {
     }
   }
   return matched;
+}
+
+/**
+ * The size a group agrees on: the smallest any member could hold, but never
+ * below `MIN_LEGIBLE_PT`.
+ *
+ * The floor is what stops uniformity from being bought at any price. A deck
+ * whose card captions were authored at 8.5pt and whose bullets were authored at
+ * 9.5pt maps both onto one brand rung — `restore-source-size` puts the captions
+ * back at 8.5 — and without the floor the whole tier followed them down to
+ * 8.5pt: smaller than the brand's legibility floor and smaller than the size
+ * the author chose for the text that had to follow. Consistency is worth a point
+ * of type; it is not worth text nobody can read, and this is the one step here
+ * that could cross a floor every other step respects.
+ *
+ * A label that shrank to avoid wrapping inside a pill (`unwrap-label`) does not
+ * govern: that licence to go small belongs to the pill, not to the slide.
+ */
+function couplingTarget(
+  group: SlideElement[],
+  outcomes: Map<string, RefitOutcome>,
+  minPt: number,
+): number | null {
+  const sizes = group
+    .map((el) => outcomes.get(el.id))
+    .filter(
+      (o): o is RefitOutcome => !!o && o.finalPt > 0 && !o.steps.includes('unwrap-label'),
+    )
+    .map((o) => o.finalPt);
+  if (!sizes.length) return null;
+  return Math.max(Math.min(...sizes), minPt);
 }
 
 /* ------------------------------------------------------------------ */
@@ -795,16 +888,19 @@ export function refitSlide(slide: Slide, ctx: RefitContext): SlideRefit {
     }
   }
 
-  // ---- Sibling coupling: one size per row ----
+  // ---- Coupling: one size per row, and one size per tier on the slide ----
+  // Rows first is not an ordering that matters — every group contributes a
+  // target and each element takes the smallest it is given — but both passes
+  // run: a row of chip labels is coupled by `siblingGroups` alone, since
+  // `sizeCohorts` leaves panel text out.
   const coupled = new Map<string, number>();
-  for (const group of siblingGroups(slide.elements, ctx)) {
-    const sizes = group.map((el) => outcomes.get(el.id)?.finalPt ?? 0).filter((n) => n > 0);
-    if (!sizes.length) continue;
-    const worst = Math.min(...sizes);
+  for (const group of [...siblingGroups(slide.elements, ctx), ...sizeCohorts(slide.elements, ctx)]) {
+    const target = couplingTarget(group, outcomes, floorsOf(ctx).minPt);
+    if (target === null) continue;
     for (const el of group) {
       const outcome = outcomes.get(el.id);
-      if (!outcome || outcome.finalPt <= worst) continue;
-      coupled.set(el.id, worst);
+      if (!outcome || outcome.finalPt <= target) continue;
+      coupled.set(el.id, Math.min(coupled.get(el.id) ?? Infinity, target));
     }
   }
   if (coupled.size) {
@@ -813,7 +909,7 @@ export function refitSlide(slide: Slide, ctx: RefitContext): SlideRefit {
       const body = bodyOf(el);
       if (target === undefined || !body) return el;
       const outcome = outcomes.get(el.id)!;
-      const scaled = scaleBody(body, target / outcome.finalPt, ctx.ds);
+      const scaled = scaleBody(body, target / outcome.finalPt, ctx.ds, floorsOf(ctx).absMinPt);
       const next = { ...el, body: scaled } as SlideElement;
       outcomes.set(el.id, {
         ...outcome,

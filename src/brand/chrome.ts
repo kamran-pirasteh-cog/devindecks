@@ -28,7 +28,8 @@
  * nowhere to put theirs.
  */
 import type { EMU, PictureElement, Rect, ShapeElement, Slide, SlideElement } from '@/model';
-import { DEFAULT_MARGINS, inchesToEmu, resolveColor, token } from '@/model';
+import { inchesToEmu, resolveColor, token } from '@/model';
+import { marginsForSlide } from './type';
 import type { SlideArchetype } from '@/model/archetype';
 import { logoPlacementFor, type BrandLogo, type DesignSystem, type LogoPlacement } from '@/model/tokens';
 
@@ -70,10 +71,11 @@ export function logoRect(
   const h = inchesToEmu(logo.heightIn);
   const w = Math.round(h * Math.max(0.05, logo.aspect));
   const inset = inchesToEmu(LOGO_INSET_IN);
-  const left = DEFAULT_MARGINS.left + inset;
-  const right = slideSize.w - DEFAULT_MARGINS.right - inset - w;
-  const top = DEFAULT_MARGINS.top + inset;
-  const bottom = slideSize.h - DEFAULT_MARGINS.bottom - inset - h;
+  const margins = marginsForSlide(slideSize);
+  const left = margins.left + inset;
+  const right = slideSize.w - margins.right - inset - w;
+  const top = margins.top + inset;
+  const bottom = slideSize.h - margins.bottom - inset - h;
 
   switch (placement) {
     case 'top-left':

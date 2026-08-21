@@ -6,7 +6,6 @@ import {
   currentCell,
   endsOnCurrent,
   midCell,
-  pickerFor,
   rangeEndingAt,
   shiftCells,
   snap,
@@ -103,7 +102,6 @@ describe('cellLabel', () => {
     expect(cellLabel('quarter', '2026-07-01')).toBe("Q3'26");
     expect(cellLabel('month', '2026-08-01')).toBe('Aug 2026');
     expect(cellLabel('year', '2026-01-01')).toBe('2026');
-    expect(cellLabel('year', '2026-01-01', true)).toBe('FY26');
     // Weeks and days both land on a real date; the label is the week beginning.
     expect(cellLabel('week', '2026-08-17')).toBe('2026-08-17');
   });
@@ -155,22 +153,6 @@ describe('cellOptions', () => {
     const opts = cellOptions('quarter', AS_OF);
     expect(opts.some((o) => o.label === "Q3'26")).toBe(true);
     expect(new Set(opts.map((o) => o.value)).size).toBe(opts.length);
-  });
-
-  it('follows the fiscal choice', () => {
-    expect(cellOptions('year', AS_OF, true).map((o) => o.label)).toContain('FY26');
-  });
-});
-
-describe('pickerFor', () => {
-  it('gives each grain the control that fits it', () => {
-    expect(pickerFor('day')).toBe('date');
-    expect(pickerFor('week')).toBe('date');
-    expect(pickerFor('month')).toBe('month');
-    // No native quarter or year picker, and a date input asks at the wrong
-    // precision.
-    expect(pickerFor('quarter')).toBe('select');
-    expect(pickerFor('year')).toBe('select');
   });
 });
 

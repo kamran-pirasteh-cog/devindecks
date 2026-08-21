@@ -84,13 +84,13 @@ export const rangeEndingAt = (grain: DateGrain, to: string, count: number): Peri
 });
 
 /** One cell's label, spelled exactly as it would be on an axis. */
-export const cellLabel = (grain: DateGrain, iso: string, fiscal = false): string =>
-  periodLabels(grain, 1, snap(grain, iso), fiscal)[0] ?? '';
+export const cellLabel = (grain: DateGrain, iso: string): string =>
+  periodLabels(grain, 1, snap(grain, iso), false)[0] ?? '';
 
 /** Every label in the range, oldest first. */
-export function rangeLabels(grain: DateGrain, range: PeriodRange, fiscal = false): string[] {
+export function rangeLabels(grain: DateGrain, range: PeriodRange): string[] {
   const count = cellCount(grain, range);
-  return count === 0 ? [] : periodLabels(grain, count, snap(grain, range.to), fiscal);
+  return count === 0 ? [] : periodLabels(grain, count, snap(grain, range.to), false);
 }
 
 /**
@@ -120,14 +120,13 @@ const BACK_YEARS = 6;
 const FORWARD_YEARS = 2;
 
 /**
- * The options for a period picker at this grain — used for the grains a native
- * input can't offer (quarters, years, halves). Newest last, so the list reads in
- * the direction the axis does.
+ * A flat window of cells at this grain, newest last — the year picker's whole
+ * list, since years have no enclosing period to page through the way the month
+ * and quarter grids page through a year.
  */
 export function cellOptions(
   grain: DateGrain,
   asOf: string,
-  fiscal = false,
 ): { value: string; label: string }[] {
   const per = grain === 'year' ? 1 : grain === 'half' ? 2 : 4;
   // Plus one: the window spans both endpoints, so six years back and two
@@ -137,18 +136,7 @@ export function cellOptions(
   const out: { value: string; label: string }[] = [];
   for (let i = total - 1; i >= 0; i--) {
     const value = shiftCells(grain, end, -i);
-    out.push({ value, label: cellLabel(grain, value, fiscal) });
+    out.push({ value, label: cellLabel(grain, value) });
   }
   return out;
 }
-
-/**
- * Which control a grain wants.
- *
- * Three, not one: a day is a date, a month is the `month` input every browser
- * already draws, and a quarter is neither — there is no native quarter picker
- * and a date input asking for one invites the wrong precision. A week is a date
- * input labelled as the week beginning, which is what a weekly axis means.
- */
-export const pickerFor = (grain: DateGrain): 'date' | 'month' | 'select' =>
-  grain === 'day' || grain === 'week' ? 'date' : grain === 'month' ? 'month' : 'select';

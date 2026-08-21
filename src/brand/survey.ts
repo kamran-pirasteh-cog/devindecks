@@ -22,7 +22,8 @@
  * repeat, in the margins, saying the same thing every time.
  */
 import type { EMU, Rect, Slide, SlideElement, TextBody } from '@/model';
-import { DEFAULT_MARGINS, marginBox, titleBand } from '@/model';
+import { marginBox, titleBand } from '@/model';
+import { marginsForSlide } from './type';
 import type { ColorRef, DesignSystem } from '@/model/tokens';
 import { resolveColor } from '@/model/tokens';
 
@@ -39,8 +40,9 @@ import { resolveColor } from '@/model/tokens';
 export type PositionBand = 'title' | 'content' | 'footer' | 'header' | 'bleed';
 
 export function bandOf(rect: Rect, slideSize: { w: EMU; h: EMU }): PositionBand {
-  const box = marginBox(slideSize, DEFAULT_MARGINS);
-  const band = titleBand(slideSize, DEFAULT_MARGINS);
+  const margins = marginsForSlide(slideSize);
+  const box = marginBox(slideSize, margins);
+  const band = titleBand(slideSize, margins);
   const midY = rect.y + rect.h / 2;
 
   // Full-bleed first: an element crossing the safe area on both sides is
@@ -50,7 +52,7 @@ export function bandOf(rect: Rect, slideSize: { w: EMU; h: EMU }): PositionBand 
 
   if (midY < band.y) return 'header';
   if (midY <= band.y + band.h) return 'title';
-  if (midY > slideSize.h - DEFAULT_MARGINS.bottom) return 'footer';
+  if (midY > slideSize.h - margins.bottom) return 'footer';
   return 'content';
 }
 

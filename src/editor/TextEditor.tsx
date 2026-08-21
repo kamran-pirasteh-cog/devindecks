@@ -648,20 +648,31 @@ export function TextEditor({
   }, []);
 
   /**
-   * B/I/U inside the editor. With text highlighted the format applies to the
-   * SELECTION — the browser splits the DOM and `commit` reads those spans back
-   * out as runs. With only a caret it falls back to the whole box, which is what
-   * PowerPoint does too.
+   * B/I/U inside the editor. Both cases are the browser's to handle, and that is
+   * the whole point:
    *
-   * `patchRuns` alone could never do the former: it assigns the patch to every
-   * run in the box, so a highlighted word came out bold along with everything
-   * else — and only in the filmstrip, since the open editor's DOM was built once
-   * on mount and never heard about the change.
+   *  - With text HIGHLIGHTED the format applies to the selection — the browser
+   *    splits the DOM and `commit` reads those spans back out as runs.
+   *  - With only a CARET it arms the format for what gets typed next, which is
+   *    what `execCommand` on a collapsed selection means. The characters carry it
+   *    as they arrive, and `commit` reads them back the same way.
+   *
+   * The caret case used to fall through to `patchRuns`, restyling the entire box
+   * — press ⌘B before typing a word and every character already in the box went
+   * bold with it. That was the wrong reading of PowerPoint, which arms the format
+   * for the next keystroke exactly as this does now.
+   *
+   * `patchRuns` survives only for a caret that isn't in this editor at all (focus
+   * moved, selection lost), where there is no "next character" to arm and the
+   * element is the only sensible target. It could never do the other two: it
+   * assigns the patch to every run in the box, so a highlighted word came out
+   * bold along with everything else — and only in the filmstrip, since the open
+   * editor's DOM was built once on mount and never heard about the change.
    */
   const applyFormat = (key: 'bold' | 'italic' | 'underline') => {
     const sel = window.getSelection();
     const inEditor = !!sel?.anchorNode && !!ref.current?.contains(sel.anchorNode);
-    if (inEditor && sel && !sel.isCollapsed) document.execCommand(key);
+    if (inEditor) document.execCommand(key);
     else store().patchRuns([el.id], { [key]: !firstRun[key] });
   };
 

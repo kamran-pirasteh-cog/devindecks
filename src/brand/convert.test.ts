@@ -22,6 +22,7 @@ import { buildColorMap } from './palette';
 import { surveyDeck } from './survey';
 import { LARGE_CONTRAST } from './legibility';
 import type { Slide, SlideElement, TextRun } from '@/model';
+import type { Diagnostic } from '@/model/ingest';
 import { metricMeasurer } from '@/render/measureText';
 import { measureTextBody } from '@/render/measureTextBody';
 import {
@@ -34,6 +35,7 @@ import {
 import { LOGO_PLACEHOLDER_ROLE, LOGO_ROLE } from './chrome';
 import { MIN_LEGIBLE_PT } from './type';
 import { at, resetIds, SIZE, shape, slide, sourceDeck, text } from './testkit';
+import { fitSlide, placementFor } from '@/import/fit';
 
 const measurer = metricMeasurer();
 const ds = DEFAULT_DESIGN_SYSTEM;
@@ -85,6 +87,41 @@ describe('convertDeck — shape', () => {
     const { slides } = convert([corners()]);
     expect(presetOf(slides, 'card')).toBe('rect');
     expect(presetOf(slides, 'chip')).toBe('rect');
+  });
+
+  it('drops the border from every filled shape', () => {
+    // Outlines are the source deck's design language, not the author's content:
+    // the grey rule around every card is exactly as loud as its pill corners.
+    const bordered = slide(
+      [
+        shape(at(0.6, 1.5, 2.4, 1.6), {
+          fill: '#FFFFFF',
+          outlineColor: '#B0B4BA',
+          id: 'card',
+        }),
+        shape(at(3.2, 1.5, 2.4, 1.6), { fill: '#6B2FA0', outlineColor: '#3A1A57', id: 'panel' }),
+      ],
+      '#FFFFFF',
+    );
+    const { slides } = convert([bordered]);
+    const outlineOf = (id: string) => {
+      const el = allElements(slides).find((e) => e.id === id);
+      return el && 'outline' in el ? el.outline : undefined;
+    };
+    expect(outlineOf('card')).toBeUndefined();
+    expect(outlineOf('panel')).toBeUndefined();
+  });
+
+  it('keeps the border when it is the only ink the shape has', () => {
+    // An unfilled outlined box IS its stroke. Removing it does not restyle the
+    // element, it deletes it.
+    const hollow = slide(
+      [shape(at(0.6, 1.5, 2.4, 1.6), { outlineColor: '#B0B4BA', id: 'hollow' })],
+      '#FFFFFF',
+    );
+    const { slides } = convert([hollow]);
+    const el = allElements(slides).find((e) => e.id === 'hollow');
+    expect(el && 'outline' in el ? el.outline : undefined).toBeDefined();
   });
 
   it('leaves shapes whose corners are not corners alone', () => {
@@ -687,8 +724,92 @@ describe('coherenceDecisions', () => {
     ]);
   });
 
+  it('decides each SIZE TIER of a role on its own', () => {
+    // `body` covering two brand sizes is the norm, not the exception — bullets
+    // at one size, card captions at another. Bucketing by role alone and
+    // bailing out on the disagreement meant one 11pt caption anywhere in the
+    // deck disabled coherence for every 14pt bullet in it.
+    const big = [12, 12, 12, 12].map((pt, i) => [`b${i}`, outcome(pt)] as const);
+    const small = [11, 11, 11, 11].map((pt, i) => [`s${i}`, outcome(pt)] as const);
+    const outcomes = new Map([...big, ...small]);
+    const traces = new Map(
+      [...outcomes.keys()].map((id) => [id, trace(id.startsWith('b') ? 14 : 12)] as const),
+    );
+    const roles = new Map([...outcomes.keys()].map((id) => [id, 'body' as const] as const));
+    expect(coherenceDecisions(outcomes, traces, roles)).toMatchObject([
+      { role: 'body', fromPt: 12, toPt: 11 },
+      { role: 'body', fromPt: 14, toPt: 12 },
+    ]);
+  });
+
+  it('never decides a size below the legibility floor', () => {
+    // A tier whose boxes were restored to a small source size has a small
+    // median. Adopting it deck-wide would take everything else in the tier with
+    // it, below the floor, on the strength of the boxes that could not hold the
+    // brand size in the first place.
+    const outcomes = new Map([7, 7, 7, 8].map((pt, i) => [`e${i}`, outcome(pt)] as const));
+    const traces = new Map([...outcomes.keys()].map((id) => [id, trace(14)] as const));
+    const roles = new Map([...outcomes.keys()].map((id) => [id, 'body' as const] as const));
+    expect(coherenceDecisions(outcomes, traces, roles)[0].toPt).toBe(MIN_LEGIBLE_PT);
+  });
+
   it('COHERENCE_THRESHOLD is a majority', () => {
     expect(COHERENCE_THRESHOLD).toBeGreaterThan(0.5);
+  });
+});
+
+describe('convertDeck — scale invariance', () => {
+  it('converts the same design the same way on a bigger canvas', () => {
+    /*
+     * The same deck, authored once at 13.33in and once at 20in — the second is
+     * the first scaled up, which is what a real 20in .pptx is: not a different
+     * design, a different unit. Every decision the engine makes should be the
+     * same decision, so every size should come out 1.5× and no diagnostic should
+     * appear or vanish.
+     *
+     * Before the brand was put on the slide's own scale, the big canvas measured
+     * its own 1.5× type against an unscaled 9pt floor and 11pt body rung, read
+     * dense body copy as text that needed ENLARGING, and spent the slide
+     * unwinding a decision that was never real.
+     */
+    const factor = 1.5;
+    const big = { w: Math.round(SIZE.w * factor), h: Math.round(SIZE.h * factor) };
+    const source = () =>
+      slide(
+        [
+          text('A comparison of two approaches', at(0.6, 0.5, 8, 0.6), { sizePt: 22 }),
+          text('Left column', at(0.6, 1.6, 3, 0.3), { sizePt: 13 }),
+          text(
+            'A dense paragraph of body copy that has to wrap at least twice inside the box it was drawn in.',
+            at(0.6, 2.0, 3, 0.9),
+            { sizePt: 9 },
+          ),
+          text('Right column', at(4.2, 1.6, 3, 0.3), { sizePt: 13 }),
+          text('A shorter note.', at(4.2, 2.0, 3, 0.9), { sizePt: 9 }),
+        ],
+        '#FFFFFF',
+      );
+    const ids = () => {
+      let n = 0;
+      return (p: string) => `${p}_${(n += 1)}`;
+    };
+    const small = convertDeck([source()], { ds, slideSize: SIZE, measurer, newId: ids() });
+    const scaled = fitSlide(source(), placementFor(SIZE, big));
+    const large = convertDeck([scaled], { ds, slideSize: big, measurer, newId: ids() });
+
+    const sizes = (slides: Slide[]) =>
+      allRuns(slides)
+        .map((r) => r.sizePt!)
+        .sort((a, b) => a - b);
+    const codes = (ds_: Diagnostic[]) => ds_.map((d) => d.code).sort();
+
+    expect(sizes(large.slides).length).toBe(sizes(small.slides).length);
+    for (const [i, pt] of sizes(small.slides).entries()) {
+      // Half-point rounding at both scales, so a rung can land half a point out.
+      expect(sizes(large.slides)[i]).toBeGreaterThanOrEqual(pt * factor - 0.5);
+      expect(sizes(large.slides)[i]).toBeLessThanOrEqual(pt * factor + 0.5);
+    }
+    expect(codes(large.diagnostics)).toEqual(codes(small.diagnostics));
   });
 });
 

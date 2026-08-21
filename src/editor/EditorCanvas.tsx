@@ -21,6 +21,7 @@ import {
   isShape,
   isSoleGroup,
   isText,
+  marginCornerTopRight,
   marginGuides,
   outerGroupId,
   pxToEmu,
@@ -52,7 +53,7 @@ import {
   shiftClickParts,
   toggleClickParts,
 } from './chart/partSelect';
-import { hitTestChart } from './chart/previewHitTest';
+import { hitTestChart, isStrokeOnly } from './chart/previewHitTest';
 import {
   ChartPartHighlights,
   LegendDropZones,
@@ -86,7 +87,7 @@ const CHART_HIT_SLOP_PX = 6;
  * a marquee.
  */
 const CHROME_SELECTOR =
-  '.dd-format-bar, .dd-comment-pin, .dd-crop-overlay, .dd-context-menu, .dd-add-title';
+  '.dd-format-bar, .dd-comment-pin, .dd-crop-overlay, .dd-context-menu, .dd-add-title, .dd-add-sticky';
 
 /** Rotations are stored 0–359, so 1° and 361° are the same stored value. */
 const normalizeDeg = (d: number) => ((Math.round(d) % 360) + 360) % 360;
@@ -332,6 +333,13 @@ export function EditorCanvas() {
    * the hover that offers to add one. See `titleSlot`.
    */
   const [titleSlotHover, setTitleSlotHover] = useState(false);
+  /**
+   * Whether the pointer is in the page's top-right margin corner — the hover
+   * that offers a sticky note. A note is an annotation ON the slide rather than
+   * content in it, so the offer lives in the margin the layout never uses, and
+   * the toolbar keeps no permanent button for it.
+   */
+  const [stickyCornerHover, setStickyCornerHover] = useState(false);
   /** A legend mid-drag, and the side it would snap to if dropped now. */
   /**
    * A legend mid-drag: which side it would land on, and — for the two positions
@@ -508,6 +516,15 @@ export function EditorCanvas() {
   // The title band in canvas px — the hover region that offers to add a title,
   // and where that button is drawn.
   const titleBand = titleBandPx(deck.slideSize, scale);
+  // The top-right margin corner in canvas px — the hover region that offers a
+  // sticky note, and where that button is drawn.
+  const stickyCornerBox = marginCornerTopRight(deck.slideSize);
+  const stickyCorner = {
+    x: stickyCornerBox.x * scale,
+    y: stickyCornerBox.y * scale,
+    w: stickyCornerBox.w * scale,
+    h: stickyCornerBox.h * scale,
+  };
 
   // Every shape's text area, as snap lines — so a text box dragged onto a shape
   // clicks into the same thin inset the shape's own text would use, and text
@@ -619,6 +636,23 @@ export function EditorCanvas() {
 
   /** Where the part panel hangs: the bounds of everything drilled into, in EMU. */
   const chartPartBox = chartPart && slide ? unionRect(slide.elements, selectedIds) : null;
+
+  /**
+   * A selected part that is a bare stroke — a line series.
+   *
+   * Its box is the bounding box of the path, so Moveable's control box would
+   * draw a rectangle across the plot around a line that merely climbs through
+   * it. `ChartPartHighlights` marks the stroke itself instead, and the box comes
+   * off; the part is untransformable either way, so no handle is lost with it.
+   */
+  const chartPartStroked =
+    !!chartPart &&
+    !!slide &&
+    selectedIds.length > 0 &&
+    selectedIds.every((id) => {
+      const el = slide.elements.find((e) => e.id === id);
+      return !!el && isStrokeOnly(el);
+    });
 
   const chartBackdropId = soleChart ? `${soleChart.id}::plot` : null;
 
@@ -777,7 +811,13 @@ export function EditorCanvas() {
     const ref = els.find((e) => e.id === id)?.chartRef;
     if (!ref || !isPopulationPart(ref)) return [id];
     const parts = els.filter((e) => e.chartRef?.chartId === ref.chartId);
-    return clickSelectParts(id, parts, clicks) ?? [id];
+    // Already inside the legend — one entry selected rather than the lot — so a
+    // plain click stays at entry level instead of stepping back out to the
+    // whole legend on every click.
+    const legendIds = parts.filter((e) => e.chartRef?.part === 'legend.item').map((e) => e.id);
+    const inLegend = legendIds.filter((pid) => store().selectedIds.includes(pid)).length;
+    const drilled = inLegend > 0 && inLegend < legendIds.length;
+    return clickSelectParts(id, parts, clicks, drilled) ?? [id];
   };
 
   /** The side a pointer at these client coordinates would drop the legend on. */
@@ -1436,8 +1476,16 @@ export function EditorCanvas() {
     clientY: number,
   ): string | undefined => {
     if (!id || !slide || !selectionChart) return id;
-    const ref = slide.elements.find((x) => x.id === id)?.chartRef;
-    if (ref?.chartId !== selectionChart.id || ref.part !== 'plot') return id;
+    const el = slide.elements.find((x) => x.id === id);
+    const ref = el?.chartRef;
+    if (ref?.chartId !== selectionChart.id) return id;
+    // A line series' wrapper is the bounding box of its path, and the DOM
+    // answers with it anywhere inside — including the acres of plot the line
+    // only spans. Like the backdrop, it is a box standing in for something that
+    // isn't one, so it goes to the geometry too: `hitTestChart` takes a stroke
+    // on its ink, and a press that missed the line falls through to whatever is
+    // really under the pointer.
+    if (ref.part !== 'plot' && !(el && isStrokeOnly(el))) return id;
     const box = canvasRef.current?.getBoundingClientRect();
     if (!box) return id;
     const hit = hitTestChart(
@@ -1657,6 +1705,16 @@ export function EditorCanvas() {
     store().setEditing(el.id);
   };
 
+  /**
+   * Drop a sticky note on the slide, caret already in it. The button vanishes
+   * with the click: the note lands under the pointer's corner, and a hover
+   * offer still standing over it would read as a second one.
+   */
+  const addSticky = () => {
+    setStickyCornerHover(false);
+    store().insertSticky();
+  };
+
   if (!slide) return null;
 
   // Zoomed past the window the slide has to be pannable, so the surround
@@ -1762,6 +1820,20 @@ export function EditorCanvas() {
             }
             if (overBand !== titleSlotHover) setTitleSlotHover(overBand);
 
+            // Same deal in the top-right margin corner, which offers a sticky
+            // note. Bare corner only — a pointer over an object parked there is
+            // aimed at that object, not at the margin.
+            const overCorner =
+              !!box &&
+              !editingId &&
+              !croppingId &&
+              !legendDrag &&
+              !liveRotate &&
+              !liveResize &&
+              inRect(stickyCorner, e.clientX - box.left, e.clientY - box.top) &&
+              !elementAtPoint(e.clientX, e.clientY);
+            if (overCorner !== stickyCornerHover) setStickyCornerHover(overCorner);
+
             if (!selectionChart || legendDrag || liveRotate || liveResize) {
               if (hoverPartId) setHoverPartId(null);
               return;
@@ -1777,6 +1849,7 @@ export function EditorCanvas() {
           onMouseLeave={() => {
             setHoverPartId(null);
             setTitleSlotHover(false);
+            setStickyCornerHover(false);
           }}
           // The browser's menu is suppressed everywhere on the slide, and ours
           // takes over for the selection that has commands worth reaching at the
@@ -1993,6 +2066,47 @@ export function EditorCanvas() {
           </div>
         ) : null}
 
+        {/* The sticky-note offer, parked in the top-right margin corner: the
+            page's own edge, where an annotation belongs. Chrome like the title
+            offer — `dd-add-sticky` is in CHROME_SELECTOR — and centred in the
+            corner cell at a fixed size, so it stays pressable at any zoom. */}
+        {stickyCornerHover ? (
+          <div
+            className="dd-add-sticky absolute flex items-center justify-center"
+            style={{
+              left: stickyCorner.x,
+              top: stickyCorner.y,
+              width: stickyCorner.w,
+              height: stickyCorner.h,
+              zIndex: OVERLAY_Z,
+            }}
+          >
+            <button
+              onClick={addSticky}
+              title="Add a sticky note (it grows as you type)"
+              aria-label="Add a sticky note"
+              className="flex h-6 w-6 items-center justify-center rounded-md border border-dashed border-zinc-400 bg-white/90 text-zinc-600 shadow-sm backdrop-blur hover:border-solid hover:border-sky-500 hover:text-sky-600 dark:border-zinc-500 dark:bg-zinc-900/90 dark:text-zinc-300 dark:hover:text-sky-400"
+            >
+              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+                <path
+                  d="M2.5 2.5h11v7l-4 4h-7z"
+                  fill="#F4E79F"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M13.5 9.5h-4v4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+        ) : null}
+
         {/* Comment markers for this slide, above the elements they annotate. */}
         {FLAGS.comments ? <CommentPins slide={slide} scale={scale} /> : null}
 
@@ -2140,6 +2254,9 @@ export function EditorCanvas() {
             snapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             elementSnapDirections={{ top: true, left: true, bottom: true, right: true, center: true, middle: true }}
             snapThreshold={6}
+            // A line series is marked on its own stroke, not boxed — see
+            // `chartPartStroked`.
+            hideDefaultLines={chartPartStroked}
             // One box for a group, rather than the group's box plus every
             // member's own — see `groupBoxOnly`.
             hideChildMoveableDefaultLines={groupBoxOnly}

@@ -352,10 +352,12 @@ function agreedOn<T extends string>(values: T[]): T | '' {
 }
 
 /**
- * Whether an element reads as a text box — a text element, or a shape whose
- * body carries text. An imported box with a fill lands as a shape rather than
- * a text element, and a caption in a rounded rect is still a caption: either
- * way the corner and border controls are noise next to the type controls.
+ * Whether an element reads as a text box, and so answers to the type controls
+ * rather than the corner and border ones.
+ *
+ * Only a text element does. A shape is a shape even when it carries a body:
+ * type belongs in text boxes, so a filled rect gets fill, corners and border,
+ * and the words inside it are the text box's job.
  *
  * A sticky's parts count too. A sticky is a piece of paper you write on, not a
  * shape you style: its corners, its border and its tape's transparency are the
@@ -364,8 +366,7 @@ function agreedOn<T extends string>(values: T[]): T | '' {
  */
 function isTextBoxLike(el: SlideElement): boolean {
   if (el.type === 'text') return true;
-  if (isStickyPart(el)) return true;
-  return el.type === 'shape' && !!el.body?.paragraphs.length;
+  return isStickyPart(el);
 }
 
 function outlineOf(el: SlideElement | undefined): Outline | undefined {
@@ -396,7 +397,10 @@ export function SelectionFormatBar({
   const isChart = chartRefs.length > 0 && chartRefs.length === selected.length;
   const chartId = isChart ? chartRefs[0]!.chartId : null;
 
-  const hasText = !isChart && selected.some((e) => e.type === 'text' || (e.type === 'shape' && e.body));
+  // Type controls belong to text boxes. A shape — even one that happens to
+  // carry a body from an import — is a colored object here: offering Font and
+  // Align on it invites people to write in shapes instead of in text boxes.
+  const hasText = !isChart && selected.some(isTextBoxLike);
   const hasFillable = selected.some((e) => e.type === 'text' || e.type === 'shape');
   // Transparency rides with the border controls, not the type controls: a text
   // box's fill is almost always flat or absent, so the dropdown is noise there.

@@ -24,13 +24,13 @@
  */
 import type { Diagnostic } from '@/model/ingest';
 import type { EMU, Rect, Slide, SlideElement } from '@/model';
-import { DEFAULT_MARGINS, EMU_PER_POINT, emuToPoints, marginBox, resolveColor } from '@/model';
+import { EMU_PER_POINT, emuToPoints, marginBox, resolveColor } from '@/model';
 import type { DesignSystem } from '@/model/tokens';
 import { contrastRatio } from '@/chart/color';
 import type { TextMeasurer } from '@/render/measureText';
 import { measureTextBody } from '@/render/measureTextBody';
 import { bodyOf, type BrandRole } from './classify';
-import { MIN_LEGIBLE_PT } from './type';
+import { marginsForSlide, MIN_LEGIBLE_PT } from './type';
 import { freeSpaceBelow, overlapPairs } from './refit';
 import { isBrandChrome } from './chrome';
 import { groundBehind } from './legibility';
@@ -76,6 +76,8 @@ export interface LintContext {
   offLadder: Set<string>;
   /** Each element's largest size in the SOURCE deck, for judging `tiny-text`. */
   sourceSizes: Map<string, number>;
+  /** The legibility floor for this slide size — see `minLegiblePtFor`. */
+  minPt?: number;
   /** True when the logo slot is a placeholder rather than a real mark. */
   logoPlaceholder: boolean;
   logoRect: Rect | null;
@@ -115,7 +117,7 @@ export function lintSlide(slide: Slide, slideNumber: number, ctx: LintContext): 
     elementId?: string,
   ) => out.push({ severity, code, slide: slideNumber, message, ...(elementId ? { elementId } : {}) });
 
-  const box = marginBox(ctx.slideSize, DEFAULT_MARGINS);
+  const box = marginBox(ctx.slideSize, marginsForSlide(ctx.slideSize));
 
   for (const el of slide.elements) {
     const role = ctx.roles.get(el.id);
@@ -200,11 +202,12 @@ export function lintSlide(slide: Slide, slideNumber: number, ctx: LintContext): 
           // Half a point of tolerance, because `scaleBody` rounds to half
           // points: restoring a source size of 8.1pt lands on 8.0pt, and
           // reporting that 0.1pt as "reduced" is reporting our own rounding.
-          if (sizePt < MIN_LEGIBLE_PT && (sourcePt === undefined || sizePt < sourcePt - 0.5)) {
+          const floorPt = ctx.minPt ?? MIN_LEGIBLE_PT;
+          if (sizePt < floorPt && (sourcePt === undefined || sizePt < sourcePt - 0.5)) {
             push(
               'warning',
               'tiny-text',
-              `Text was reduced to ${sizePt}pt — below the ${MIN_LEGIBLE_PT}pt floor` +
+              `Text was reduced to ${sizePt}pt — below the ${floorPt}pt floor` +
                 `${sourcePt !== undefined ? `, from ${sourcePt}pt in the original` : ''}.`,
               el.id,
             );

@@ -75,9 +75,18 @@ const printableSubject = (brief: ChartBrief): string | undefined =>
     : undefined;
 
 /**
- * The chart's title: what it shows, for whom, over what. Assembled from what
- * the brief actually knows — an unknown subject leaves the subject out rather
- * than writing "for [client]".
+ * The chart's title: what it shows, and for whom. Assembled from what the brief
+ * actually knows — an unknown subject leaves the subject out rather than writing
+ * "for [client]".
+ *
+ * The TIMEFRAME is deliberately absent. The axis already carries it — the
+ * categories read Q4'25 … Q3'26 — so printing "· Q4'25–Q3'26" after the title
+ * says the same thing twice, in the one place on the chart where space is
+ * tightest and where a long title is what forces a wrap. It's the same call the
+ * axis title makes a few lines down: labels that name the period make a
+ * "Quarter" heading over them noise. The range is still on the spec, in
+ * `authorBrief`, for the research prompt and for anyone asking why the axis
+ * starts where it does.
  *
  * With no measure named there is nothing to assemble. It used to fall back to
  * the word "Data" and print the surrounding scraps anyway — a slide title, a
@@ -89,15 +98,9 @@ export function briefTitle(brief: ChartBrief): string {
   if (!brief.measure) return DEFAULT_CHART_TITLE;
   const measure = brief.measure;
   const by = brief.dimension ? ` by ${brief.dimension}` : '';
-  const labels = brief.period?.labels ?? [];
-  // One period prints once. "FY25–FY25" reads as a broken range rather than as
-  // a single year.
-  const span = labels.length
-    ? ` · ${labels.length > 1 ? `${labels[0]}–${labels[labels.length - 1]}` : labels[0]}`
-    : '';
   const subject = printableSubject(brief);
   const who = subject ? `${subject} — ` : '';
-  return `${who}${measure}${by}${span}`;
+  return `${who}${measure}${by}`;
 }
 
 /**

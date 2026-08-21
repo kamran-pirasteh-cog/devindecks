@@ -3,8 +3,9 @@
 /**
  * "Start something new" picker, in two steps.
  *
- * Step 1 picks where the slides come from: browse a template, start from a
- * prior document (duplicate it), or start blank. Step 2 asks the four questions
+ * Step 1 picks where the slides come from: browse a template — grouped by the
+ * folders Admin files them into — start from a prior document (duplicate it), or
+ * start blank. Step 2 asks the four questions
  * worth answering while the deck is still empty — what to call it, who it's
  * for, when the meeting is, and who's presenting — then creates + persists the
  * document and opens it in the editor.
@@ -28,6 +29,8 @@ import {
 import { getFolder } from '@/docs/folders';
 import { useToast } from '@/ui/Toast';
 import { listTemplates, seedIfFirstRun, type StoredTemplate } from '@/templates/repository';
+import { listTemplateFolders, type TemplateFolder } from '@/templates/folders';
+import { groupTemplatesByFolder } from '@/templates/grouping';
 import { createDocFromSlides } from '@/docs/repository';
 import { getActiveDesignSystem } from '@/design/repository';
 import type { Slide } from '@/model';
@@ -95,6 +98,7 @@ export function NewDocModal({
   const toast = useToast();
   const [tab, setTab] = useState<Tab>('templates');
   const [templates, setTemplates] = useState<StoredTemplate[]>([]);
+  const [templateFolders, setTemplateFolders] = useState<TemplateFolder[]>([]);
   const docs = listDocs();
 
   /** Unset while browsing; set means we're on the details step. */
@@ -108,6 +112,7 @@ export function NewDocModal({
   useEffect(() => {
     seedIfFirstRun();
     setTemplates(listTemplates());
+    setTemplateFolders(listTemplateFolders());
   }, []);
 
   // Escape backs out of the details step rather than closing: the answers are
@@ -191,6 +196,17 @@ export function NewDocModal({
             : `Created “${deck.title}”`,
     );
   };
+
+  /**
+   * The templates on offer, in the folders Admin filed them into.
+   *
+   * Grouped rather than laid out flat because the folders ARE the vocabulary —
+   * "the QBR one" is how people ask for a template, and Admin maintains those
+   * names precisely so this list can be read that way. What lands in which group
+   * is `groupTemplatesByFolder`'s call, shared with Admin's own shelf so the two
+   * can't disagree about where a template lives.
+   */
+  const templateGroups = groupTemplatesByFolder(templates, templateFolders);
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'templates', label: 'Templates' },
@@ -335,36 +351,51 @@ export function NewDocModal({
 
             <div className="overflow-y-auto p-5">
               {tab === 'templates' ? (
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                  {templates.map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() =>
-                        choose({
-                          kind: 'template',
-                          id: t.id,
-                          label: t.name,
-                          // `createDoc`'s own default naming, made unique.
-                          defaultTitle: uniqueTitle(
-                            t.name === 'Blank' ? 'Untitled presentation' : t.name,
-                          ),
-                        })
-                      }
-                      className="group overflow-hidden rounded-lg border border-zinc-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
-                      title={t.description}
-                    >
-                      <div className="border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
-                        <Thumb deck={{ slides: t.slides, slideSize: SLIDE_SIZE }} />
-                      </div>
-                      <div className="px-3 py-2">
-                        <div className="truncate text-xs font-medium">{t.name}</div>
-                        <div className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
-                          {t.category}
+                templateGroups.length === 0 ? (
+                  <div className="py-12 text-center text-sm text-zinc-400">
+                    No templates available yet.
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {templateGroups.map((group) => (
+                      <section key={group.key}>
+                        <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+                          {group.label}
+                        </h3>
+                        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                          {group.items.map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={() =>
+                                choose({
+                                  kind: 'template',
+                                  id: t.id,
+                                  label: t.name,
+                                  // `createDoc`'s own default naming, made unique.
+                                  defaultTitle: uniqueTitle(
+                                    t.name === 'Blank' ? 'Untitled presentation' : t.name,
+                                  ),
+                                })
+                              }
+                              className="group overflow-hidden rounded-lg border border-zinc-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
+                              title={t.description}
+                            >
+                              <div className="border-b border-zinc-100 dark:border-zinc-800 [&>div]:!w-full">
+                                <Thumb deck={{ slides: t.slides, slideSize: SLIDE_SIZE }} />
+                              </div>
+                              <div className="px-3 py-2">
+                                <div className="truncate text-xs font-medium">{t.name}</div>
+                                <div className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+                                  {t.category}
+                                </div>
+                              </div>
+                            </button>
+                          ))}
                         </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
+                      </section>
+                    ))}
+                  </div>
+                )
               ) : null}
 
               {tab === 'upload' ? (

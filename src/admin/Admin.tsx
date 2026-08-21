@@ -433,8 +433,8 @@ export function Admin() {
                   screens and stack below lg. The logo rides under the palette
                   rather than spanning the page: it's a narrow panel, and full
                   width only stretched its two upload slots. */}
-              <div className="grid items-start gap-6 lg:grid-cols-2">
-                <div className="min-w-0 space-y-6">
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="flex min-w-0 flex-col gap-6">
                   {/* Colors */}
                   <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
                     <div className="mb-4 flex items-center justify-between gap-4">
@@ -1094,7 +1094,7 @@ function PageNumbersSection({
   const check = "flex items-center gap-1 text-[11px] text-zinc-500";
 
   return (
-    <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <section className="flex min-w-0 flex-1 flex-col rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="mb-3 flex items-baseline justify-between gap-3">
         <h3 className="text-sm font-semibold">Page numbers</h3>
         <span className="text-[11px] text-zinc-400">
@@ -1219,8 +1219,11 @@ function PageNumbersSection({
         </label>
       </div>
 
-      {/* Both cases side by side: the same corner on white and on near-black. */}
-      <div className="mt-3 grid grid-cols-2 gap-2">
+      {/* Both cases side by side: the same corner on white and on near-black.
+          The pair takes whatever height the column has left over rather than
+          forcing a square, so this panel's bottom lands on the type roles
+          panel's bottom instead of hanging past it. */}
+      <div className="mt-3 grid min-h-24 flex-1 grid-cols-2 gap-2">
         {["#FFFFFF", "#0A0A0A"].map((bg) => (
           <PageNumberPreview key={bg} style={style} backgroundHex={bg} />
         ))}
@@ -1252,9 +1255,10 @@ function PageNumberPreview({
   // out at full size behind it and anchored so the window lands on the corner,
   // which keeps every inset in true slide proportion while the type comes out
   // ~2.5x bigger than it would at whole-slide scale.
-  // A square window onto the corner. The slide behind it is still laid out at
-  // true slide proportion and anchored to the corner, so every inset stays
-  // honest while a tighter crop makes the number itself read bigger.
+  // The window's width is the crop below; its height is whatever the column
+  // has left. The slide behind it is still laid out at true slide proportion
+  // and anchored to the corner, so every inset stays honest however short the
+  // window gets, while the tight crop makes the number itself read bigger.
   const CROP_W = 0.25;
   // Narrow column now: the crop renders ~150px wide, so scale to that.
   const VIEW_W = 150;
@@ -1279,10 +1283,7 @@ function PageNumberPreview({
   return (
     <div
       className="relative overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
-      style={{
-        background: backgroundHex,
-        aspectRatio: "1 / 1",
-      }}
+      style={{ background: backgroundHex }}
     >
       <div
         className="absolute flex"

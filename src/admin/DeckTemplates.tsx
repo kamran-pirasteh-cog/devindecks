@@ -19,11 +19,18 @@
  * moved — surfaced here as the "out of date" count on each row, so an edit's
  * reach is visible from the place the edit was made.
  *
+ * Organized in folders, laid out like the Documents tab: a rail on the left, the
+ * templates in the selected folder on the right, and a card dragged onto a row
+ * files it there. Those folders are the admin's own vocabulary — created,
+ * renamed and deleted here (see `templates/folders.ts`) — and the new-document
+ * picker groups by them, so filing a template is what decides where the next
+ * person finds it.
+ *
  * Auto-persisting, like Layouts and Charts: every action writes immediately, so
  * there's no Save button here and the header's one belongs to the design
  * system.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Deck } from '@/model';
 import { listDocs } from '@/docs/repository';
@@ -31,19 +38,23 @@ import { Thumb } from '@/home/Thumb';
 import { ConfirmDialog } from '@/home/ConfirmDialog';
 import { timeAgo } from '@/home/timeAgo';
 import { useToast } from '@/ui/Toast';
-import { TEMPLATE_CATEGORIES, type TemplateCategory } from '@/templates/registry';
+import { TEMPLATE_CATEGORIES } from '@/templates/registry';
 import {
-  createTemplate,
-  createTemplateFromDeck,
-  createTemplateFromImage,
   deleteTemplate,
   duplicateTemplate,
   listTemplates,
-  resetBuiltInTemplates,
   seedIfFirstRun,
   updateTemplateMeta,
   type StoredTemplate,
 } from '@/templates/repository';
+import { listTemplateFolders, type TemplateFolder } from '@/templates/folders';
+import { countTemplatesByFolder, templatesInFolder } from '@/templates/grouping';
+import {
+  TEMPLATE_DRAG_TYPE,
+  TemplateFolderRail,
+  type TemplateScope,
+} from './TemplateFolderRail';
+import { NewTemplateModal } from './NewTemplateModal';
 import { templateDrift } from '@/templates/provenance';
 import {
   DEFAULT_TEMPLATE_SORT,
@@ -61,15 +72,6 @@ const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 /** Where the Thumbnails switch remembers itself. Unset means on — same rule as
  *  the dashboard's, and a separate key so the two shelves stay independent. */
 const THUMBS_KEY = 'devindesign.templatethumbs.v1';
-
-/** The same loose picker filter Layouts uses — see `LAYOUT_IMAGE_ACCEPT`. */
-const IMAGE_ACCEPT =
-  'image/*,.png,.jpg,.jpeg,.gif,.webp,.avif,.svg,.bmp,.ico,.heic,.heif,.tif,.tiff';
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico|heic|heif|tiff?)$/i;
-
-function stripExt(filename: string): string {
-  return filename.replace(/\.[^./]+$/, '');
-}
 
 /** How many decks came from a template, and how many are on an older version. */
 export interface TemplateUsage {
@@ -214,14 +216,16 @@ function UsageBadge({ usage }: { usage?: TemplateUsage }) {
   );
 }
 
-/** Rename · category · duplicate · delete, on both the card and the row. */
+/** Rename · folder · category · duplicate · delete, on both the card and the row. */
 function TemplateMenu({
   template,
+  folders,
   onRename,
   onChange,
   buttonClassName = '',
 }: {
   template: StoredTemplate;
+  folders: TemplateFolder[];
   onRename: () => void;
   onChange: () => void;
   buttonClassName?: string;
@@ -230,11 +234,20 @@ function TemplateMenu({
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [categories, setCategories] = useState(false);
+  const [foldersOpen, setFoldersOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
   const close = () => {
     setOpen(false);
     setCategories(false);
+    setFoldersOpen(false);
+  };
+
+  const fileInto = (folderId: string | undefined, label: string) => {
+    updateTemplateMeta(template.id, { folderId });
+    close();
+    onChange();
+    toast(`“${template.name}” moved to ${label}.`);
   };
 
   return (
@@ -272,6 +285,31 @@ function TemplateMenu({
           >
             Rename
           </MenuItem>
+          {/* The keyboard-free twin of dragging the card onto a rail row. */}
+          <MenuItem onClick={() => setFoldersOpen((f) => !f)}>Move to folder…</MenuItem>
+          {foldersOpen ? (
+            <div className="border-y border-zinc-100 bg-zinc-50 py-1 dark:border-zinc-700 dark:bg-zinc-900/60">
+              {folders.map((f) => (
+                <MenuItem key={f.id} onClick={() => fileInto(f.id, `“${f.name}”`)}>
+                  <span className={f.id === template.folderId ? 'font-medium' : ''}>
+                    {f.id === template.folderId ? '✓ ' : '   '}
+                    {f.name}
+                  </span>
+                </MenuItem>
+              ))}
+              <MenuItem onClick={() => fileInto(undefined, 'Unfiled')}>
+                <span className={template.folderId ? '' : 'font-medium'}>
+                  {template.folderId ? '   ' : '✓ '}
+                  Unfiled
+                </span>
+              </MenuItem>
+              {folders.length === 0 ? (
+                <span className="block px-2.5 py-1 text-[11px] text-zinc-400">
+                  No folders yet.
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           <MenuItem onClick={() => setCategories((c) => !c)}>Move to category…</MenuItem>
           {categories ? (
             <div className="border-y border-zinc-100 bg-zinc-50 py-1 dark:border-zinc-700 dark:bg-zinc-900/60">
@@ -393,10 +431,12 @@ function NameInput({
 
 function TemplateCard({
   template,
+  folders,
   usage,
   onChange,
 }: {
   template: StoredTemplate;
+  folders: TemplateFolder[];
   usage?: TemplateUsage;
   onChange: () => void;
 }) {
@@ -406,6 +446,14 @@ function TemplateCard({
   return (
     <div
       onClick={() => !renaming && router.push(`/admin/templates/${template.id}`)}
+      // Dragged onto a rail row to file it — the same gesture, and the same kind
+      // of payload, as a document card (see `DocCard`). Suspended while renaming,
+      // where a drag would fight text selection in the input.
+      draggable={!renaming}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(TEMPLATE_DRAG_TYPE, template.id);
+        e.dataTransfer.effectAllowed = 'move';
+      }}
       className="group relative cursor-pointer rounded-lg border border-zinc-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
     >
       <div className="border-b border-zinc-100 px-3 py-2 dark:border-zinc-800">
@@ -442,6 +490,7 @@ function TemplateCard({
           <div onClick={(e) => e.stopPropagation()}>
             <TemplateMenu
               template={template}
+              folders={folders}
               onRename={() => setRenaming(true)}
               onChange={onChange}
               buttonClassName="opacity-0 group-hover:opacity-100"
@@ -505,12 +554,14 @@ function SortHeader({
 
 function TemplateTable({
   templates,
+  folders,
   usage,
   sort,
   onSort,
   onChange,
 }: {
   templates: StoredTemplate[];
+  folders: TemplateFolder[];
   usage: Map<string, TemplateUsage>;
   sort: TemplateSort;
   onSort: (by: TemplateSortBy) => void;
@@ -538,6 +589,13 @@ function TemplateTable({
             <tr
               key={t.id}
               onClick={() => renaming !== t.id && router.push(`/admin/templates/${t.id}`)}
+              // Rows file by drag too, so the table isn't a second-class way to
+              // organize — same payload the cards write.
+              draggable={renaming !== t.id}
+              onDragStart={(e) => {
+                e.dataTransfer.setData(TEMPLATE_DRAG_TYPE, t.id);
+                e.dataTransfer.effectAllowed = 'move';
+              }}
               className="group cursor-pointer border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-800/70 dark:hover:bg-zinc-800/40"
             >
               <td className="w-full max-w-0 py-2 pl-3 pr-3">
@@ -577,6 +635,7 @@ function TemplateTable({
                 <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
                   <TemplateMenu
                     template={t}
+                    folders={folders}
                     onRename={() => setRenaming(t.id)}
                     onChange={onChange}
                     buttonClassName="opacity-0 group-hover:opacity-100"
@@ -591,31 +650,29 @@ function TemplateTable({
   );
 }
 
-/** What "New template" is waiting for a category before it can do. */
-type Pending = 'build' | 'upload' | { kind: 'doc'; id: string };
-
 export function DeckTemplates() {
-  const router = useRouter();
   const toast = useToast();
   const [templates, setTemplates] = useState<StoredTemplate[]>([]);
+  const [folders, setFolders] = useState<TemplateFolder[]>([]);
   const [docs, setDocs] = useState<Deck[]>([]);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('');
   const [sort, setSort] = useState<TemplateSort>(DEFAULT_TEMPLATE_SORT);
   const [showThumbs, setShowThumbs] = useState(true);
-  // Every entry point picks a category first, so a new template can't land
-  // somewhere nobody browses — the same two-step Layouts uses for folders.
-  const [pending, setPending] = useState<Pending | null>(null);
-  const [pickingDoc, setPickingDoc] = useState(false);
-  const [pendingCategory, setPendingCategory] = useState<TemplateCategory | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Which rail row is selected. A place, not a filter — it survives searching,
+  // the same way the Documents tab's scope does.
+  const [scope, setScope] = useState<TemplateScope>({ kind: 'all' });
+  const [creating, setCreating] = useState(false);
 
   const refresh = () => {
     setTemplates(listTemplates());
+    setFolders(listTemplateFolders());
     setDocs(listDocs());
   };
 
   useEffect(() => {
+    // Seeds the default folders as well as the built-in templates, and files
+    // those templates into them — see `seedIfFirstRun`.
     seedIfFirstRun();
     refresh();
     // Read in an effect, not in the initializer: there's no localStorage during
@@ -632,264 +689,219 @@ export function DeckTemplates() {
 
   const usage = useMemo(() => templateUsage(docs, templates), [docs, templates]);
 
-  const visible = useMemo(
-    () => sortTemplates(filterTemplates(templates, { query, category }), sort),
-    [templates, query, category, sort],
+  /** Templates per folder, with the unfiled tally under `''` — the rail's badges. */
+  const folderCounts = useMemo(
+    () => countTemplatesByFolder(templates, folders),
+    [folders, templates],
   );
 
-  /** Category chosen: build opens the editor, upload the file dialog, and a
-   *  document is promoted on the spot. */
-  const startInCategory = (chosen: TemplateCategory) => {
-    const action = pending;
-    setPending(null);
-    if (action === 'build') {
-      const t = createTemplate({ name: 'Untitled template', category: chosen });
-      router.push(`/admin/templates/${t.id}`);
-    } else if (action === 'upload') {
-      setPendingCategory(chosen);
-      fileInputRef.current?.click();
-    } else if (action && typeof action === 'object') {
-      const deck = docs.find((d) => d.id === action.id);
-      if (!deck) return;
-      const t = createTemplateFromDeck(deck, {
-        category: chosen,
-        description: `Started from the “${deck.title}” document.`,
-      });
-      refresh();
-      toast(`“${t.name}” is now a template.`);
-      router.push(`/admin/templates/${t.id}`);
-    }
-  };
+  /** The rail's selection, applied before the search box and the sort. */
+  const inScope = useMemo(() => {
+    if (scope.kind === 'all') return templates;
+    return templatesInFolder(templates, folders, scope.kind === 'unfiled' ? null : scope.id);
+  }, [templates, folders, scope]);
 
-  const uploadReference = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    const chosen = pendingCategory;
-    setPendingCategory(null);
-    if (!file || !chosen) return;
-    // The picker's filter is deliberately loose, so the real check is here —
-    // `type` is empty for a file the OS didn't recognise.
-    if (!(file.type.startsWith('image/') || IMAGE_EXT.test(file.name))) {
-      toast(
-        `“${file.name}” isn't an image. A reference is a picture — export a PDF or deck page to PNG first.`,
-        { tone: 'danger' },
-      );
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const t = createTemplateFromImage(reader.result as string, stripExt(file.name));
-      updateTemplateMeta(t.id, { category: chosen });
-      router.push(`/admin/templates/${t.id}`);
-    };
-    reader.onerror = () => toast(`Couldn't read “${file.name}”.`, { tone: 'danger' });
-    reader.readAsDataURL(file);
+  const visible = useMemo(
+    () => sortTemplates(filterTemplates(inScope, { query, category }), sort),
+    [inScope, query, category, sort],
+  );
+
+  /** Drop a card on a rail row, or pick a folder from the ••• menu. */
+  const fileTemplate = (templateId: string, folderId: string | undefined) => {
+    const template = templates.find((t) => t.id === templateId);
+    if (!template || template.folderId === folderId) return;
+    updateTemplateMeta(templateId, { folderId });
+    refresh();
+    const folder = folderId ? folders.find((f) => f.id === folderId) : null;
+    toast(`“${template.name}” moved to ${folder ? `“${folder.name}”` : 'Unfiled'}.`);
   };
 
   const hasFilters = Boolean(query || category);
+  const currentFolder = scope.kind === 'folder' ? folders.find((f) => f.id === scope.id) : null;
 
   return (
     <div>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept={IMAGE_ACCEPT}
-        onChange={uploadReference}
-        className="hidden"
-      />
-
       <p className="mb-4 max-w-3xl text-[11px] leading-relaxed text-zinc-500">
         The decks everyone starts from. These are the templates the new-document
-        picker offers, so an edit here is what the next person gets when they
-        create a deck from the same template — decks already made keep the slides
-        they were created with.
+        picker offers, grouped there by the folders you keep them in — so an edit
+        here is what the next person gets when they create a deck from the same
+        template, and a move is where they will look for it. Decks already made
+        keep the slides they were created with.
       </p>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      {/* One button, at the pane's right edge — the shelf below is what this tab
+          is for, and the toolbar under the rail is where browsing happens. */}
+      <div className="mb-4 flex items-center justify-end">
         <button
-          onClick={() => {
-            setPending((p) => (p === 'build' ? null : 'build'));
-            setPickingDoc(false);
-          }}
+          onClick={() => setCreating(true)}
           className="rounded-md bg-black px-2.5 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black"
         >
           + New template
         </button>
-        <button
-          onClick={() => {
-            setPending((p) => (p === 'upload' ? null : 'upload'));
-            setPickingDoc(false);
-          }}
-          className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          Upload a reference deck page
-        </button>
-        <button
-          onClick={() => {
-            setPickingDoc((p) => !p);
-            setPending(null);
-          }}
-          title="Promote a document to a template everyone can start from"
-          className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          From a document
-        </button>
-        <button
-          onClick={() => {
-            resetBuiltInTemplates();
-            refresh();
-            toast('Built-in templates rebuilt from the reference decks.');
-          }}
-          title="Rebuild the three standard reference decks from the shipped source, discarding edits made to them here. Templates you authored are left alone."
-          className="ml-auto rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          Reset built-ins
-        </button>
       </div>
 
-      {/* Step one of "From a document": which document. Picking one leaves
-          `pending` set, so the category row below takes over. */}
-      {pickingDoc ? (
-        <div className="mb-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
-            Which document?
-          </div>
-          {docs.length === 0 ? (
-            <p className="text-xs text-zinc-400">There are no documents to promote yet.</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {docs.map((d) => (
+      {/* Two panes, laid out like the Documents tab: folders on the left, the
+          templates in the selected one on the right, with a rule between them
+          that runs the full height of the taller column. */}
+      <section className="flex min-h-[60vh] items-stretch">
+        <TemplateFolderRail
+          folders={folders}
+          counts={folderCounts}
+          scope={scope}
+          onSelect={setScope}
+          onFileTemplate={fileTemplate}
+          onFoldersChange={refresh}
+        />
+
+        <div className="min-w-0 flex-1 pl-6">
+          {/* Says where you are, as a path rather than a bare heading — the first
+              crumb being the way back out. Skipped on "All templates", which the
+              shelf header below already names. */}
+          {scope.kind !== 'all' ? (
+            <div className="mb-3 flex items-center gap-1.5 text-sm">
+              <button
+                onClick={() => setScope({ kind: 'all' })}
+                className="text-zinc-500 hover:text-zinc-800 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+              >
+                All templates
+              </button>
+              <span aria-hidden className="text-zinc-300 dark:text-zinc-600">
+                /
+              </span>
+              <span className="font-medium text-zinc-800 dark:text-zinc-100">
+                {scope.kind === 'unfiled' ? 'Unfiled' : (currentFolder?.name ?? 'Folder')}
+              </span>
+            </div>
+          ) : null}
+
+          {/* One toolbar row, laid out like the dashboard's: search and filter on
+              the left, sort at the right edge. */}
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <div className="flex items-center gap-2">
+              <div className="relative w-72">
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search templates…"
+                  className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 pr-7 text-sm outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
+                />
+                {query ? (
+                  <button
+                    onClick={() => setQuery('')}
+                    title="Clear search"
+                    className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                  >
+                    ×
+                  </button>
+                ) : null}
+              </div>
+              <ToolbarSelect
+                label="Filter by category"
+                value={category}
+                onChange={setCategory}
+                active={Boolean(category)}
+              >
+                <option value="">All categories</option>
+                {TEMPLATE_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </ToolbarSelect>
+              {hasFilters ? (
                 <button
-                  key={d.id}
                   onClick={() => {
-                    setPickingDoc(false);
-                    setPending({ kind: 'doc', id: d.id });
+                    setQuery('');
+                    setCategory('');
                   }}
-                  className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  className="shrink-0 rounded px-1 text-xs font-medium text-red-500 hover:text-red-600 hover:underline dark:text-red-400 dark:hover:text-red-300"
                 >
-                  {d.title}
-                  <span className="ml-1.5 text-[10px] text-zinc-400">{d.slides.length} slides</span>
+                  Clear
                 </button>
+              ) : null}
+            </div>
+
+            <label className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400">
+              Sort by
+              <ToolbarSelect
+                label="Sort by"
+                value={sort.by}
+                // Picking a key here takes that key's own direction; the column
+                // headers are where you reverse one.
+                onChange={(v) =>
+                  setSort({
+                    by: v as TemplateSortBy,
+                    dir: TEMPLATE_SORT_DEFAULT_DIR[v as TemplateSortBy],
+                  })
+                }
+              >
+                {TEMPLATE_SORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </ToolbarSelect>
+            </label>
+          </div>
+
+          <ShelfHeader
+            label={
+              hasFilters
+                ? 'Results'
+                : scope.kind === 'all'
+                  ? 'All templates'
+                  : scope.kind === 'unfiled'
+                    ? 'Unfiled'
+                    : (currentFolder?.name ?? 'Folder')
+            }
+            showThumbs={showThumbs}
+            onToggleThumbs={toggleThumbs}
+          />
+
+          {visible.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
+              {hasFilters
+                ? 'No templates match your search.'
+                : scope.kind === 'all'
+                  ? 'No templates yet.'
+                  : 'Nothing filed here yet — drag a template onto this folder, or create one in it.'}
+            </div>
+          ) : showThumbs ? (
+            <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
+              {visible.map((t) => (
+                <TemplateCard
+                  key={t.id}
+                  template={t}
+                  folders={folders}
+                  usage={usage.get(t.id)}
+                  onChange={refresh}
+                />
               ))}
             </div>
+          ) : (
+            <TemplateTable
+              templates={visible}
+              folders={folders}
+              usage={usage}
+              sort={sort}
+              onSort={(by) => setSort((s) => nextTemplateSort(s, by))}
+              onChange={refresh}
+            />
           )}
         </div>
-      ) : null}
+      </section>
 
-      {pending ? (
-        <div className="mb-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
-            Which category?
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {TEMPLATE_CATEGORIES.map((c) => (
-              <button
-                key={c}
-                onClick={() => startInCategory(c)}
-                className="rounded-md border border-zinc-200 px-2.5 py-1.5 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-              >
-                {c}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {/* One toolbar row, laid out like the dashboard's: search and filter on
-          the left, sort at the right edge. */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-        <div className="flex items-center gap-2">
-          <div className="relative w-72">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search templates…"
-              className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 pr-7 text-sm outline-none focus:border-indigo-300 dark:border-zinc-700 dark:bg-zinc-900"
-            />
-            {query ? (
-              <button
-                onClick={() => setQuery('')}
-                title="Clear search"
-                className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-              >
-                ×
-              </button>
-            ) : null}
-          </div>
-          <ToolbarSelect
-            label="Filter by category"
-            value={category}
-            onChange={setCategory}
-            active={Boolean(category)}
-          >
-            <option value="">All categories</option>
-            {TEMPLATE_CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </ToolbarSelect>
-          {hasFilters ? (
-            <button
-              onClick={() => {
-                setQuery('');
-                setCategory('');
-              }}
-              className="shrink-0 rounded px-1 text-xs font-medium text-red-500 hover:text-red-600 hover:underline dark:text-red-400 dark:hover:text-red-300"
-            >
-              Clear
-            </button>
-          ) : null}
-        </div>
-
-        <label className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400">
-          Sort by
-          <ToolbarSelect
-            label="Sort by"
-            value={sort.by}
-            // Picking a key here takes that key's own direction; the column
-            // headers are where you reverse one.
-            onChange={(v) =>
-              setSort({
-                by: v as TemplateSortBy,
-                dir: TEMPLATE_SORT_DEFAULT_DIR[v as TemplateSortBy],
-              })
-            }
-          >
-            {TEMPLATE_SORT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </ToolbarSelect>
-        </label>
-      </div>
-
-      <ShelfHeader
-        label={hasFilters ? 'Results' : 'All templates'}
-        showThumbs={showThumbs}
-        onToggleThumbs={toggleThumbs}
-      />
-
-      {visible.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-zinc-300 py-16 text-center text-sm text-zinc-400 dark:border-zinc-700">
-          {hasFilters ? 'No templates match your search.' : 'No templates yet.'}
-        </div>
-      ) : showThumbs ? (
-        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(280px,1fr))]">
-          {visible.map((t) => (
-            <TemplateCard key={t.id} template={t} usage={usage.get(t.id)} onChange={refresh} />
-          ))}
-        </div>
-      ) : (
-        <TemplateTable
-          templates={visible}
-          usage={usage}
-          sort={sort}
-          onSort={(by) => setSort((s) => nextTemplateSort(s, by))}
-          onChange={refresh}
+      {creating ? (
+        <NewTemplateModal
+          folders={folders}
+          // Creating from inside a folder files it there without asking again.
+          initialFolderId={scope.kind === 'folder' ? scope.id : undefined}
+          templates={templates}
+          docs={docs}
+          onClose={() => setCreating(false)}
+          onCreated={refresh}
         />
-      )}
+      ) : null}
     </div>
   );
 }

@@ -8,6 +8,7 @@ import {
   isReady,
   setupIssues,
   shapeOf,
+  DEFAULT_SPAN,
   SPAN_PRESETS,
   timeQuestionFor,
   type ChartSetup,
@@ -15,6 +16,7 @@ import {
   withGrain,
 } from './setupForm';
 import { cellCount, cellLabel, rangeEndingAt } from './periodRange';
+import type { DateGrain } from '@/model';
 
 const AS_OF = '2026-08-21';
 
@@ -136,10 +138,12 @@ describe('defaultSetup', () => {
     expect(s.range.from).toBe(s.range.to);
   });
 
-  it('opens a bridge wide rather than on two adjacent periods', () => {
-    // A bridge exists to show a change; this year to this year is not one.
+  it('opens a bridge a year wide rather than on two adjacent periods', () => {
+    // A bridge exists to show a change; this quarter to this quarter is not
+    // one. Five quarters is the same year apart the year grain used to give.
     const s = defaultSetup(formFor(L('waterfall-up')), AS_OF);
-    expect(setupCount(s)).toBe(2);
+    expect(s.grain).toBe('quarter');
+    expect(setupCount(s)).toBe(5);
     expect(s.range.from).not.toBe(s.range.to);
   });
 });
@@ -147,6 +151,18 @@ describe('defaultSetup', () => {
 describe('clampCount', () => {
   it('is gone — the range bounds itself, and its ends are what get stored', () => {
     expect(setupCount(spanning('line', 'quarter', 8))).toBe(8);
+  });
+});
+
+describe('GRAINS_FOR', () => {
+  it('does not offer years — a decade is four ticks nobody can read a change off', () => {
+    for (const grains of Object.values(GRAINS_FOR)) expect(grains).not.toContain('year');
+  });
+
+  it('offers preset spans at every grain it does ask for', () => {
+    for (const grains of Object.values(GRAINS_FOR)) {
+      for (const g of grains) expect(SPAN_PRESETS[g].length).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -269,10 +285,9 @@ describe('carrySetup', () => {
     expect(setupCount(to)).toBe(12);
   });
 
-  it('keeps the calendar choice and the notes', () => {
-    const from = setupFor('line', { grain: 'year', fiscal: true, notes: 'exclude internal orgs' });
+  it('keeps the notes', () => {
+    const from = setupFor('line', { grain: 'year', notes: 'exclude internal orgs' });
     const to = carrySetup(from, L('clustered'), AS_OF);
-    expect(to.fiscal).toBe(true);
     expect(to.notes).toBe('exclude internal orgs');
   });
 
@@ -298,18 +313,18 @@ describe('carrySetup', () => {
   });
 
   it('translates a grain the new question does not offer to the nearest it does', () => {
-    // A bridge bridges by quarter or year, never by the day.
-    const from = spanning('line', 'week', 8);
-    expect(carrySetup(from, L('waterfall-up'), AS_OF).grain).toBe('quarter');
+    // A bridge bridges by month or quarter, never by the day.
+    const from = spanning('line', 'day', 30);
+    expect(carrySetup(from, L('waterfall-up'), AS_OF).grain).toBe('month');
   });
 
   it('keeps the DATES when the grain has to change, rather than the number', () => {
     // Sixteen weeks is about four months. Carried onto a bridge it becomes the
-    // quarters those weeks fall in — not sixteen quarters, which is four years.
+    // months those weeks fall in — not sixteen months, which is over a year.
     const from = spanning('line', 'week', 16);
     const to = carrySetup(from, L('waterfall-up'), AS_OF);
-    expect(setupCount(to)).toBeLessThanOrEqual(3);
-    expect(to.range.to).toBe('2026-07-01');
+    expect(setupCount(to)).toBeLessThanOrEqual(5);
+    expect(to.range.to).toBe('2026-08-01');
   });
 
   it('collapses a moment to its single end', () => {
@@ -340,17 +355,31 @@ describe('carrySetup', () => {
 });
 
 describe('withGrain', () => {
-  it('keeps a real span across a change of unit', () => {
-    // Twelve months ending in Aug 2026 runs from Sep 2025, and those months
-    // touch five quarters — Q3'25 through Q3'26. The ends snap OUTWARD, so
-    // every period the author picked is still covered; a span that shrank to
-    // four would drop one of them.
+  it("re-spans a range on the new grain's own default, keeping the end", () => {
+    // Picking "Quarters" asks for the chart quarters are usually looked at
+    // over, not for the five quarters twelve months happen to touch.
     const from = spanning('line', 'month', 12);
     const to = withGrain(from, 'quarter', 'range');
     expect(to.grain).toBe('quarter');
-    expect(cellCount('quarter', to.range)).toBe(5);
-    expect(cellLabel('quarter', to.range.from)).toBe("Q3'25");
+    expect(cellCount('quarter', to.range)).toBe(DEFAULT_SPAN.quarter);
     expect(cellLabel('quarter', to.range.to)).toBe("Q3'26");
+  });
+
+  it('opens each grain on its own default span', () => {
+    const grains = ['day', 'week', 'month', 'quarter', 'year'] as const;
+    // Each starts from a different grain, since selecting the grain you are
+    // already on is a no-op rather than a reset.
+    const from = (g: DateGrain) => spanning('line', g === 'year' ? 'quarter' : 'year', 8);
+    expect(grains.map((g) => [g, cellCount(g, withGrain(from(g), g, 'range').range)])).toEqual([
+      ['day', 30],
+      ['week', 12],
+      ['month', 6],
+      ['quarter', 2],
+      ['year', 3],
+    ]);
+    // Every one of them is also an offered preset, so the default reads as one
+    // of the chips rather than as a number nobody can get back to.
+    for (const g of grains) expect(SPAN_PRESETS[g]).toContain(DEFAULT_SPAN[g]);
   });
 
   it('re-spans when the dates collapse into one cell of the new grain', () => {
@@ -362,7 +391,7 @@ describe('withGrain', () => {
 
   it('holds a moment to one cell', () => {
     const from = setupFor('pie', { grain: 'quarter' });
-    const to = withGrain(from, 'year', 'moment');
+    const to = withGrain(from, 'month', 'moment');
     expect(to.range.from).toBe(to.range.to);
   });
 });

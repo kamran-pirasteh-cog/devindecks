@@ -493,7 +493,70 @@ describe('inheritance', () => {
     expect(el.body.paragraphs[0].runs[0]).toMatchObject({ sizePt: 44, bold: true });
     expect(el.role).toBe('title');
   });
+
+  it('keeps the master bullet scheme off text boxes that are not placeholders', async () => {
+    // A deck drawn with text boxes rather than placeholders: the master's
+    // bodyStyle states a bullet at every level, and PowerPoint applies it to
+    // body PLACEHOLDERS only. Reading it for plain boxes bulleted every line on
+    // the slide, headings and labels included.
+    const pkg = await buildBulletSchemePackage();
+    const imported = await parsePptx(pkg, ds);
+    const paras = (name: string) => {
+      const el = imported.slides[0].slide.elements.filter(isText).find((e) => e.name === name)!;
+      return el.body.paragraphs;
+    };
+    expect(paras('Box').map((p) => p.bullet)).toEqual(['none']);
+    expect(paras('Body').map((p) => p.bullet)).toEqual(['bullet']);
+  });
 });
+
+/**
+ * A package whose master bodyStyle carries the deck's bullet scheme, with both
+ * a plain text box and a body placeholder on the slide.
+ */
+async function buildBulletSchemePackage(): Promise<ArrayBuffer> {
+  const emu = (n: number) => inchesToEmu(n);
+  const box = (id: number, name: string, ph: string, y: number) => `
+    <p:sp>
+      <p:nvSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvSpPr/><p:nvPr>${ph}</p:nvPr></p:nvSpPr>
+      <p:spPr><a:xfrm><a:off x="${emu(1)}" y="${emu(y)}"/><a:ext cx="${emu(8)}" cy="${emu(1)}"/></a:xfrm></p:spPr>
+      <p:txBody><a:bodyPr/><a:p><a:r><a:t>${name}</a:t></a:r></a:p></p:txBody>
+    </p:sp>`;
+  return makeStoredZip({
+    '_rels/.rels': `<?xml version="1.0"?><Relationships xmlns="R">
+      <Relationship Id="rId1" Type="http://x/officeDocument" Target="ppt/presentation.xml"/>
+    </Relationships>`,
+    'ppt/presentation.xml': `<p:presentation xmlns:p="P" xmlns:r="R">
+      <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+      <p:sldSz cx="${SLIDE_16x9.w}" cy="${SLIDE_16x9.h}"/>
+    </p:presentation>`,
+    'ppt/_rels/presentation.xml.rels': `<Relationships xmlns="R">
+      <Relationship Id="rId1" Type="http://x/slide" Target="slides/slide1.xml"/>
+    </Relationships>`,
+    'ppt/slides/slide1.xml': `<p:sld xmlns:p="P" xmlns:a="A"><p:cSld><p:spTree>
+      ${box(2, 'Box', '', 0.5)}
+      ${box(3, 'Body', '<p:ph type="body" idx="1"/>', 2)}
+    </p:spTree></p:cSld></p:sld>`,
+    'ppt/slides/_rels/slide1.xml.rels': `<Relationships xmlns="R">
+      <Relationship Id="rId1" Type="http://x/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+    </Relationships>`,
+    'ppt/slideLayouts/slideLayout1.xml': `<p:sldLayout xmlns:p="P" xmlns:a="A"><p:cSld><p:spTree/></p:cSld></p:sldLayout>`,
+    'ppt/slideLayouts/_rels/slideLayout1.xml.rels': `<Relationships xmlns="R">
+      <Relationship Id="rId1" Type="http://x/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
+    </Relationships>`,
+    'ppt/slideMasters/slideMaster1.xml': `<p:sldMaster xmlns:p="P" xmlns:a="A">
+      <p:cSld><p:spTree/></p:cSld>
+      <p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2"/>
+      <p:txStyles>
+        <p:bodyStyle><a:lvl1pPr marL="228600" indent="-228600">
+          <a:buChar char="\u2022"/><a:defRPr sz="1800"/>
+        </a:lvl1pPr></p:bodyStyle>
+        <p:otherStyle><a:lvl1pPr><a:defRPr sz="1800"/></a:lvl1pPr></p:otherStyle>
+      </p:txStyles>
+    </p:sldMaster>`,
+    'ppt/slideMasters/_rels/slideMaster1.xml.rels': `<Relationships xmlns="R"></Relationships>`,
+  });
+}
 
 /**
  * A hand-rolled four-part package: presentation, slide, layout, master. Small

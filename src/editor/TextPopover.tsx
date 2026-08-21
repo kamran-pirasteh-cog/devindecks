@@ -10,9 +10,11 @@
  * which is what survives the .pptx and Slides round-trip.
  */
 import { useEffect, useRef, useState } from 'react';
-import { FONTS } from '@/model';
+import { FONTS, hex as hexRef, resolveColor, token, type ColorRef } from '@/model';
 import { useEditor } from '@/store/editorStore';
+import { CustomColorSwatch, customHexOf } from './color';
 import {
+  DEFAULT_TEXT_COLOR,
   DEFAULT_TEXT_SIZE_PT,
   TEXT_SIZES,
   TEXT_STYLES,
@@ -33,8 +35,10 @@ export function TextPopover({
    *  the close-then-toggle race would leave the popover stuck open. */
   anchorRef?: React.RefObject<HTMLElement | null>;
 }) {
+  const ds = useEditor((s) => s.designSystem);
   const addElement = useEditor((s) => s.addElement);
   const [sizePt, setSizePt] = useState<number>(DEFAULT_TEXT_SIZE_PT);
+  const [color, setColor] = useState<ColorRef>(DEFAULT_TEXT_COLOR);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -55,9 +59,11 @@ export function TextPopover({
   }, [onClose, anchorRef]);
 
   const insert = (style: TextStyle) => {
-    addElement(makeText(style, sizePt));
+    addElement(makeText(style, sizePt, color));
     onClose();
   };
+
+  const previewColor = resolveColor(color, ds);
 
   return (
     <div
@@ -97,6 +103,39 @@ export function TextPopover({
 
         <div className="flex flex-col gap-1.5">
           <span className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+            Color
+          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {ds.colors.map((c) => {
+              const active = color.kind === 'token' && color.token === c.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  title={c.name}
+                  aria-label={c.name}
+                  aria-pressed={active}
+                  onClick={() => setColor(token(c.id))}
+                  className={`h-6 w-6 rounded-full border ${
+                    active
+                      ? 'border-zinc-900 ring-2 ring-zinc-900 ring-offset-1 dark:border-white dark:ring-white dark:ring-offset-zinc-900'
+                      : 'border-zinc-300 dark:border-zinc-600'
+                  }`}
+                  style={{ background: c.hex }}
+                />
+              );
+            })}
+            <CustomColorSwatch
+              value={customHexOf(color)}
+              active={color.kind === 'hex'}
+              onPick={(h) => setColor(hexRef(h))}
+              shape="rounded-full"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
             Typeface
           </span>
           <div className="flex flex-col">
@@ -109,8 +148,9 @@ export function TextPopover({
                 className="flex items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800"
               >
                 <span
-                  className="truncate text-zinc-900 dark:text-zinc-100"
+                  className="truncate"
                   style={{
+                    color: previewColor,
                     fontFamily: FONTS[s.font].cssStack,
                     fontWeight: s.weight,
                     fontStyle: s.italic ? 'italic' : 'normal',

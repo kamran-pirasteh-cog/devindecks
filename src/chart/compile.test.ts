@@ -270,6 +270,102 @@ describe('compileChart — axis scale and ticks', () => {
   });
 });
 
+describe('compileChart — category labels that do not fit', () => {
+  /** A line chart of `n` daily categories, on a frame `wIn` inches wide. */
+  const daily = (n: number, wIn = 8) => {
+    const spec = defaultChartSpec('line') as LineSpec;
+    const day = (i: number) => {
+      const d = new Date(Date.UTC(2025, 0, 6 + i));
+      return d.toISOString().slice(0, 10);
+    };
+    spec.data.categories = Array.from({ length: n }, (_, i) => ({ key: `c${i}`, label: day(i) }));
+    spec.data.series = [
+      { key: 's0', name: 'A', values: Array.from({ length: n }, (_, i) => i * 10) },
+    ];
+    return compileChart(
+      { id: 'c1', groupId: 'g1', frame: { ...FRAME, w: inchesToEmu(wIn) }, spec },
+      DEFAULT_DESIGN_SYSTEM,
+      metricMeasurer(),
+    ).elements;
+  };
+
+  /** The category index a tick or tick mark carries. */
+  const at = (e: SlideElement): number | undefined =>
+    e.chartRef && 'i' in e.chartRef ? e.chartRef.i : undefined;
+
+  const catTicks = (els: SlideElement[]) =>
+    els.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tick' && e.chartRef.axis === 'x',
+    );
+
+  it('writes every category when they all fit', () => {
+    expect(catTicks(daily(6))).toHaveLength(6);
+  });
+
+  it('thins a long daily axis instead of stacking labels on top of each other', () => {
+    const labels = catTicks(daily(90));
+    expect(labels.length).toBeLessThan(90);
+    // Nothing overlaps its neighbour, which is the whole point.
+    const boxes = labels.map((e) => e.rect).sort((a, b) => a.x - b.x);
+    for (let i = 1; i < boxes.length; i++) {
+      expect(boxes[i].x).toBeGreaterThanOrEqual(boxes[i - 1].x + boxes[i - 1].w - 1);
+    }
+  });
+
+  it('strides a daily axis by the week, so every label falls on the same weekday', () => {
+    const kept = catTicks(daily(90)).map((e) => at(e) ?? 0);
+    const steps = kept.slice(1).map((i, n) => i - kept[n]);
+    expect(new Set(steps).size).toBe(1);
+    expect(steps[0] % 7).toBe(0);
+  });
+
+  it('writes more of them the wider the chart gets', () => {
+    const narrow = catTicks(daily(90, 4)).length;
+    const wide = catTicks(daily(90, 13)).length;
+    expect(wide).toBeGreaterThan(narrow);
+  });
+
+  it('keeps the first label, so the axis never comes back empty', () => {
+    expect(at(catTicks(daily(90))[0])).toBe(0);
+  });
+
+  it('leaves no tick mark standing under a label it dropped', () => {
+    const spec = defaultChartSpec('line') as LineSpec;
+    const n = 90;
+    spec.data.categories = Array.from({ length: n }, (_, i) => ({
+      key: `c${i}`,
+      label: new Date(Date.UTC(2025, 0, 6 + i)).toISOString().slice(0, 10),
+    }));
+    spec.data.series = [{ key: 's0', name: 'A', values: Array.from({ length: n }, (_, i) => i) }];
+    spec.axes.x.tickMarks = 'out';
+    const els = compileChart(
+      { id: 'c1', groupId: 'g1', frame: FRAME, spec },
+      DEFAULT_DESIGN_SYSTEM,
+      metricMeasurer(),
+    ).elements;
+    const marks = els.filter(
+      (e) => e.chartRef?.part === 'axis' && e.chartRef.sub === 'tickMark' && e.chartRef.axis === 'x',
+    );
+    expect(marks.map(at)).toEqual(catTicks(els).map(at));
+  });
+
+  it('thins an undated axis of long names too', () => {
+    const spec = defaultChartSpec('column') as ColumnBarSpec;
+    const n = 40;
+    spec.data.categories = Array.from({ length: n }, (_, i) => ({
+      key: `c${i}`,
+      label: `Distribution centre ${i + 1}`,
+    }));
+    spec.data.series = [{ key: 's0', name: 'A', values: Array.from({ length: n }, (_, i) => i) }];
+    const els = compileChart(
+      { id: 'c1', groupId: 'g1', frame: FRAME, spec },
+      DEFAULT_DESIGN_SYSTEM,
+      metricMeasurer(),
+    ).elements;
+    expect(catTicks(els).length).toBeLessThan(n);
+  });
+});
+
 describe('compileChart — geometry', () => {
   it('keeps every element inside the chart frame', () => {
     const { elements } = compile(chart());

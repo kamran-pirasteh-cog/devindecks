@@ -25,11 +25,11 @@ const compiles = (spec: ChartSpec) =>
   compileChart({ id: 'c', groupId: 'g', frame: FRAME, spec }, DS).elements;
 
 describe('specFromBrief', () => {
-  it('names the client and the period on the title', () => {
+  it('names the client on the title, and leaves the period to the axis', () => {
     const spec = build('quarterly ARR by segment for the last 4 quarters in $M', {
       deckTags: ['Globex'],
     });
-    expect(spec.title).toBe("Globex — ARR by segment · Q4'25–Q3'26");
+    expect(spec.title).toBe('Globex — ARR by segment');
   });
 
   it('leaves the subject out rather than writing a placeholder for it', () => {
@@ -178,9 +178,18 @@ describe('the brief kept on the chart', () => {
 });
 
 describe('briefTitle', () => {
-  it('prints a single period once rather than as a range', () => {
-    const rec = recommendLayouts('revenue mix by region for FY25', { asOf: AS_OF });
-    expect(briefTitle(rec.brief)).toBe('Revenue by region · FY25');
+  it('leaves the timeframe off, however it was described', () => {
+    // A single period and a multi-period range are both the axis's business —
+    // the categories spell them out, so a title that repeats them costs the one
+    // line where space is tightest.
+    const one = recommendLayouts('revenue mix by region for FY25', { asOf: AS_OF });
+    expect(briefTitle(one.brief)).toBe('Revenue by region');
+    const many = recommendLayouts('revenue mix by region over the last 8 quarters', {
+      asOf: AS_OF,
+    });
+    expect(briefTitle(many.brief)).toBe('Revenue by region');
+    // The range itself is not lost — it's on the brief for the research prompt.
+    expect(many.brief.period?.labels?.length).toBe(8);
   });
 
   it('falls back to the placeholder when no measure was named', () => {
@@ -206,7 +215,7 @@ describe('briefTitle', () => {
       deckTags: ['Acme Corp'],
       deckTitle: 'BVA Pitch (2)',
     });
-    expect(briefTitle(rec.brief)).toBe('Acme Corp — ARR by segment · FY25');
+    expect(briefTitle(rec.brief)).toBe('Acme Corp — ARR by segment');
   });
 
   it('drops a subject that reads as a sentence rather than a name', () => {
@@ -214,7 +223,7 @@ describe('briefTitle', () => {
       asOf: AS_OF,
       slideTitle: 'Session insights, merged PRs, comps, usage analytics',
     });
-    expect(briefTitle(rec.brief)).toBe('Revenue by region · FY25');
+    expect(briefTitle(rec.brief)).toBe('Revenue by region');
   });
 });
 

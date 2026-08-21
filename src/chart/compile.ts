@@ -983,6 +983,9 @@ function compileCartesian(
     showValueAxisLabels: valueAxis.show,
     showCategoryAxisLabels: categoryAxis.show,
     continuousCategoryAxis: edgeCategories,
+    // A dated axis thins its labels in its own units — every week, every
+    // quarter — rather than in whatever integer happens to fit.
+    categoryGrain: dated.grain,
     // The house style leaves the value axis unruled and draws the category
     // baseline; `line` overrides either, per chart. See `axisLineVisible`.
     showValueAxisLine: axisLineVisible(spec, 'y'),

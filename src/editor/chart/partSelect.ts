@@ -187,6 +187,17 @@ export function clickSelectParts(
   clicked: string,
   parts: PartEl[],
   clicks: number,
+  /**
+   * Already INSIDE the legend — one entry selected rather than all of them.
+   *
+   * Once someone has double-clicked their way in, the next plain click means
+   * the entry they clicked, not the whole legend again: stepping back out on
+   * every click makes the drilled-in state impossible to move around in, the
+   * same way a text box you've entered doesn't spit you back out to the object
+   * when you click the next word. Leaving the legend — clicking a bar, an axis,
+   * the plot — ends it, because the selection stops being a legend subset.
+   */
+  drilledLegend = false,
 ): string[] | null {
   const ref = refIn(parts, clicked);
   if (!ref || !isPopulationPart(ref)) return null;
@@ -219,5 +230,6 @@ export function clickSelectParts(
   // one — a swatch with no name — is not a selection anyone means.
   if (ref.part !== 'legend.item') add([clicked]);
 
-  return levels[Math.min(Math.max(clicks, 1), levels.length) - 1];
+  const from = ref.part === 'legend.item' && drilledLegend ? clicks + 1 : clicks;
+  return levels[Math.min(Math.max(from, 1), levels.length) - 1];
 }

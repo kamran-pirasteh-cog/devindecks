@@ -84,15 +84,21 @@ export function restyleChart(
 }
 
 /**
- * The author's own words, carried across a template adoption.
+ * The author's own words — and the answers they gave — carried across a
+ * template adoption.
  *
  * Kept out of `extractData` deliberately — that function is documented as the
  * DATA, and a brief is not data. Same reasoning though: adopting a template
  * replaces everything nobody carries back, and a template has no business
  * telling us what this chart's author asked for.
  */
-const carryBrief = (from: ChartSpec, to: ChartSpec): ChartSpec =>
-  from.authorBrief ? { ...to, authorBrief: from.authorBrief } : to;
+const carryBrief = (from: ChartSpec, to: ChartSpec): ChartSpec => ({
+  ...to,
+  ...(from.authorBrief ? { authorBrief: from.authorBrief } : {}),
+  // The setup answers travel with the brief for the same reason: they are what
+  // this chart's author said, and a template has none of its own to offer.
+  ...(from.setup ? { setup: from.setup } : {}),
+});
 
 /**
  * The data-bearing fields, whatever shape this spec's data takes.

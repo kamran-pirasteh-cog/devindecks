@@ -342,15 +342,23 @@ function inheritedPlaceholder(
   return undefined;
 }
 
-/** Which master text style a placeholder type reads from. */
-function masterStyleFor(type: string | undefined, ctx: SlideContext): XmlNode | undefined {
+/**
+ * Which master text style a shape reads from.
+ *
+ * A shape with no placeholder at all reads `otherStyle`, NOT `bodyStyle`, and
+ * the distinction is not academic: a master's `bodyStyle` states the deck's
+ * bullet scheme at every level, so handing it to plain text boxes gave every
+ * paragraph on the slide a bullet — titles, eyebrows and KPI labels included —
+ * on decks whose real content is drawn with text boxes rather than
+ * placeholders. PowerPoint reserves `bodyStyle` for body placeholders, which is
+ * what `ph` being present means here (a `<p:ph>` without a type attribute is
+ * already defaulted to `body` by `placeholderOf`).
+ */
+function masterStyleFor(ph: PlaceholderKey | undefined, ctx: SlideContext): XmlNode | undefined {
+  if (!ph) return ctx.masterStyles.other;
+  const { type } = ph;
   if (type === 'title' || type === 'ctrTitle') return ctx.masterStyles.title;
-  if (
-    type === 'body' ||
-    type === 'subTitle' ||
-    type === 'obj' ||
-    type === undefined
-  ) {
+  if (type === 'body' || type === 'subTitle' || type === 'obj') {
     return ctx.masterStyles.body;
   }
   return ctx.masterStyles.other;
@@ -473,7 +481,7 @@ async function parseSp(
     ...ctx,
     layers: [
       ctx.defaultTextStyle,
-      masterStyleFor(ph?.type, ctx),
+      masterStyleFor(ph, ctx),
       child(child(inherited, 'txBody'), 'lstStyle'),
     ],
   };
