@@ -6,7 +6,7 @@
  * canonical left-to-right space, and transposes on the way out if the flow runs
  * top to bottom. One solve, two orientations.
  */
-import { hex, pointsToEmu, type EMU, type Rect, type SankeySpec } from '@/model';
+import { hex, pointsToEmu, type EMU, type LabelSpec, type Rect, type SankeySpec } from '@/model';
 import type { TextMeasurer } from '@/render/measureText';
 import { lineHeightEmu } from '@/render/measureText';
 import type { ChartTheme } from '../theme';
@@ -16,6 +16,7 @@ import { flowTint } from '../color';
 import { formatNumber } from '../format/number';
 import { layoutSankey, type SankeyDiagnostic } from '../derive/sankey';
 import { textStyle } from './cartesian';
+import { labelSpecFor } from './labelSpec';
 
 export interface SankeyInput {
   chartId: string;
@@ -89,6 +90,21 @@ export function placeSankey(input: SankeyInput): {
   // single line of type. Both gutters hit the 30% cap, which squeezed a
   // vertical Sankey into the middle third of its own frame and left its
   // selection box floating clear of the diagram on every side.
+  /**
+   * What each node's label SAYS, resolved once — chart default under the node's
+   * own override, the way every other placer resolves a label.
+   *
+   * `show` here means the label itself, name and all, not just the number: a
+   * Sankey's label is one string, so "don't draw this" can't mean half of it.
+   * Which is what makes Delete on a node label work — see `hidePointParts`.
+   * Whether the throughput rides along with the name is the CONTENT's business.
+   */
+  const resolved = new Map(
+    spec.data.nodes.map((n) => [n.key, labelSpecFor(spec.decorations.labels, n.labels)] as const),
+  );
+  const labelsOf = (key: string): LabelSpec => resolved.get(key) ?? spec.decorations.labels;
+  const anyLabels = spec.data.nodes.some((n) => labelsOf(n.key).show);
+
   const gap = theme.sizes.labelGapEmu;
   const flowExtent = vertical ? plot.h : plot.w;
   const acrossExtent = Math.max(1, vertical ? plot.w : plot.h);
@@ -107,9 +123,14 @@ export function placeSankey(input: SankeyInput): {
   // Running down the slide the gutter is a line of type and nothing else, so
   // it's known before the layout is: no re-measure, no second solve.
   const firstPass = vertical
-    ? labelH
+    ? anyLabels
+      ? labelH
+      : 0
     : spec.data.nodes.reduce(
-        (w, n) => Math.max(w, measurer.measure(labelText(n.label, undefined), labelStyle).wEmu),
+        (w, n) =>
+          labelsOf(n.key).show
+            ? Math.max(w, measurer.measure(labelText(n.label, undefined), labelStyle).wEmu)
+            : w,
         0,
       );
   let gutter = gutterFor(firstPass);
@@ -123,8 +144,10 @@ export function placeSankey(input: SankeyInput): {
   if (!vertical && layout.nodes.length) {
     const peers = layout.nodes.map((n) => n.value);
     const widest = layout.nodes.reduce((w, n) => {
-      const value = spec.decorations.labels.show
-        ? formatNumber(n.value, spec.numberFormat, { peers }).text
+      const labels = labelsOf(n.key);
+      if (!labels.show) return w;
+      const value = withValue(labels)
+        ? formatNumber(n.value, labels.numberFormat ?? spec.numberFormat, { peers }).text
         : undefined;
       return Math.max(w, measurer.measure(labelText(n.label, value), labelStyle).wEmu);
     }, 0);
@@ -215,8 +238,10 @@ export function placeSankey(input: SankeyInput): {
     });
 
     /* --- its label --- */
-    const value = spec.decorations.labels.show
-      ? formatNumber(node.value, spec.numberFormat, {
+    const labels = labelsOf(node.key);
+    if (!labels.show) continue;
+    const value = withValue(labels)
+      ? formatNumber(node.value, labels.numberFormat ?? spec.numberFormat, {
           peers: layout.nodes.map((n) => n.value),
         }).text
       : undefined;
@@ -256,6 +281,16 @@ export function placeSankey(input: SankeyInput): {
 
 const nameOf = (layout: ReturnType<typeof layoutSankey>, key: string): string =>
   layout.nodes.find((n) => n.key === key)?.label ?? key;
+
+/**
+ * Does this label carry its node's throughput as well as its name?
+ *
+ * A Sankey names every node it labels — that's what the gutters are for — so the
+ * content kind decides only whether the NUMBER rides along. 'Category' (and
+ * 'Series', which a Sankey has none of) is the name on its own.
+ */
+const withValue = (labels: LabelSpec): boolean =>
+  labels.content.kind !== 'category' && labels.content.kind !== 'seriesName';
 
 const labelText = (label: string, value: string | undefined): string =>
   value ? `${label}  ${value}` : label;

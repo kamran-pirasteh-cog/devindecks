@@ -856,6 +856,35 @@ describe('compileChart — sankey', () => {
     expect(named('Segment A')).toBe(true);
   });
 
+  it('drops the label of a node whose own label is switched off', () => {
+    const labels = texts(
+      sankey((s) => {
+        s.data.nodes.find((n) => n.key === 'n0')!.labels = { show: false };
+      }).elements.filter((e) => e.chartRef?.part === 'label'),
+    );
+    expect(labels.some((t) => t.toUpperCase().startsWith('TOTAL'))).toBe(false);
+    // The rest of the diagram keeps its names AND its numbers.
+    expect(labels.some((t) => t.toUpperCase().startsWith('SEGMENT A'))).toBe(true);
+    expect(labels.some((t) => /\d/.test(t))).toBe(true);
+  });
+
+  it('labels nothing when the chart-wide switch is off', () => {
+    const { elements } = sankey((s) => {
+      s.decorations.labels.show = false;
+    });
+    expect(elements.filter((e) => e.chartRef?.part === 'label')).toHaveLength(0);
+  });
+
+  it("prints the name alone when the label's content is the category", () => {
+    const labels = texts(
+      sankey((s) => {
+        s.decorations.labels.content = { kind: 'category' };
+      }).elements.filter((e) => e.chartRef?.part === 'label'),
+    );
+    expect(labels.length).toBeGreaterThan(0);
+    expect(labels.every((t) => !/\d/.test(t))).toBe(true);
+  });
+
   it('keeps everything inside the frame, labels included', () => {
     for (const el of sankey().elements) {
       expect(el.rect.x).toBeGreaterThanOrEqual(FRAME.x - 1);

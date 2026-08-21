@@ -9,6 +9,7 @@ import {
   reidentifyCharts,
   type ChartRef,
   type ColumnBarSpec,
+  type SankeySpec,
   type LineSpec,
   type Deck,
   type ShapeElement,
@@ -1031,6 +1032,36 @@ describe('deleteChartParts', () => {
     expect(partIds(slide, (r) => r.part === 'label' && r.series === 's0')).toEqual([]);
     // The other series still has its numbers.
     expect(partIds(slide, (r) => r.part === 'label' && r.series === 's1').length).toBeGreaterThan(0);
+  });
+
+  it("switches off one sankey node's label, leaving the others labelled", () => {
+    const slide = emptySlide();
+    const spec = defaultChartSpec('sankey') as SankeySpec;
+    insertChartInto(slide, spec, FRAME, DS);
+    const one = slide.elements.find(
+      (e) => e.chartRef?.part === 'label' && e.chartRef.point === 'n0',
+    )!;
+
+    deleteChartParts(slide, [one.id], DS);
+    const live = slide.charts![0].spec as SankeySpec;
+    expect(live.data.nodes.find((n) => n.key === 'n0')!.labels?.show).toBe(false);
+    // NOT the chart-wide switch, which here only decides whether the
+    // throughput rides along with the name.
+    expect(live.decorations.labels.show).toBe(true);
+    expect(partIds(slide, (r) => r.part === 'label' && r.point === 'n0')).toEqual([]);
+    expect(partIds(slide, (r) => r.part === 'label').length).toBe(5);
+  });
+
+  it('writes to the chart when every sankey label is selected', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('sankey') as SankeySpec, FRAME, DS);
+    deleteChartParts(slide, partIds(slide, (r) => r.part === 'label'), DS);
+
+    const live = slide.charts![0].spec as SankeySpec;
+    expect(live.decorations.labels.show).toBe(false);
+    expect(live.data.nodes.every((n) => n.labels?.show === undefined)).toBe(true);
+    expect(partIds(slide, (r) => r.part === 'label')).toEqual([]);
+    expect(slide.charts).toHaveLength(1);
   });
 
   it('hides an axis, and its gridlines separately', () => {

@@ -248,6 +248,17 @@ export interface SankeyNode {
    */
   layer?: number;
   format?: SeriesFormat;
+  /**
+   * This node's own label settings, over the chart's. A Sankey has no series to
+   * hang a `PointOverride` on, so the node IS the narrowest node there is —
+   * without it, Delete on one node's label could only mean "no labels anywhere".
+   *
+   * Plural, like `WaterfallItem.labels`, because `label` on a node is already
+   * its NAME. Partial because it is only ever the DIFFERENCE from the chart's
+   * settings — `labelSpecFor` resolves it — so switching one node's label off
+   * can be undone by dropping the one field it wrote.
+   */
+  labels?: Partial<LabelSpec>;
 }
 
 export interface SankeyLink {
