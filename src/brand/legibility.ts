@@ -24,7 +24,7 @@
  */
 import type { Slide, SlideElement, TextRun } from '@/model';
 import { resolveColor, token, type ColorRef, type DesignSystem } from '@/model/tokens';
-import { contrastRatio } from '@/chart/color';
+import { contrastRatio, parseHex } from '@/chart/color';
 import { bodyOf } from './classify';
 
 /** WCAG AA: 4.5:1 for body text, 3:1 for large or bold text. */
@@ -59,20 +59,84 @@ export function groundBehind(slide: Slide, el: SlideElement, ds: DesignSystem): 
     return w > 0 && h > 0 ? (w * h) / own : 0;
   };
 
-  for (let i = index - 1; i >= 0; i -= 1) {
+  /*
+   * SEMI-TRANSPARENT PANELS DO NOT STOP THE WALK.
+   *
+   * The frosted card is how every modern deck builds a panel on a coloured
+   * ground: white at 14%, which on a dark page reads as a slightly lighter
+   * dark. Returning the panel's own token as the ground answered "white" for a
+   * card that is visibly near-black, so this pass reversed the card's type to
+   * dark ink — and put black text on black. The whole point of the pass,
+   * inverted, by one ignored attribute.
+   *
+   * So a translucent fill is COLLECTED and the walk continues underneath it,
+   * and the stack is composited bottom-up at the end. Only an opaque fill ends
+   * the search, because only an opaque fill actually hides what it covers.
+   */
+  const stack: { hex: string; alpha: number }[] = [];
+  let base: string | null = null;
+
+  for (let i = index - 1; i >= 0 && base === null; i -= 1) {
     const under = slide.elements[i];
     const share = covered(under);
     if (share <= 0) continue;
     // A photo has no single colour, so the answer is unknowable rather than
     // wrong — decline, and let the linter report what this pass couldn't judge.
     if (under.type === 'picture' && share > PICTURE_DOUBT) return null;
-    if (under.type === 'shape' && under.fill?.kind === 'solid' && share >= GROUND_SHARE) {
-      return resolveColor(under.fill.color, ds);
+    if (under.type === 'shape' && under.fill?.kind === 'solid') {
+      if (share >= GROUND_SHARE) {
+        const hex = resolveColor(under.fill.color, ds);
+        const alpha = under.fill.alpha ?? 1;
+        if (alpha >= OPAQUE) base = hex;
+        else if (alpha > 0) stack.push({ hex, alpha });
+        continue;
+      }
+      // Substantially on a fill but not mostly on it — a numeral in a box a
+      // shade bigger than the disc it is centred on, a title straddling a
+      // panel's edge. The area says "40% off the panel"; the glyphs say "on the
+      // disc", and neither this pass nor `lint.ts` can tell which from a
+      // rectangle. Unknowable, exactly like a photo: decline, and leave the
+      // colour the palette chose.
+      if (share > GROUND_DOUBT) return null;
     }
   }
 
-  if (slide.background?.kind === 'solid') return resolveColor(slide.background.color, ds);
-  return ds.colors.find((c) => c.id === 'surface.base')?.hex ?? '#FFFFFF';
+  if (base === null) {
+    base =
+      slide.background?.kind === 'solid'
+        ? resolveColor(slide.background.color, ds)
+        : (ds.colors.find((c) => c.id === 'surface.base')?.hex ?? '#FFFFFF');
+  }
+
+  // Bottom-up: the last layer collected is the lowest, so composite in reverse.
+  let ground = base;
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    ground = blend(stack[i].hex, ground, stack[i].alpha);
+  }
+  return ground;
+}
+
+/** Opacity at or above which a fill hides everything behind it. */
+const OPAQUE = 0.99;
+
+/**
+ * `top` at `alpha` over `bottom`, in sRGB.
+ *
+ * Straight sRGB compositing rather than anything perceptual, because that is
+ * literally what the renderers do — CSS `rgba()` and PowerPoint's `<a:alpha>`
+ * both blend in the encoded space — and this function's only job is to predict
+ * the pixel a reader will see.
+ */
+function blend(top: string, bottom: string, alpha: number): string {
+  // `parseHex` answers in 0..1 per channel, so the mix happens there and the
+  // scale back to bytes happens once, at the end.
+  const t = parseHex(top);
+  const b = parseHex(bottom);
+  const byte = (i: number) =>
+    Math.max(0, Math.min(255, Math.round((t[i] * alpha + b[i] * (1 - alpha)) * 255)))
+      .toString(16)
+      .padStart(2, '0');
+  return `#${byte(0)}${byte(1)}${byte(2)}`.toUpperCase();
 }
 
 /**
@@ -93,6 +157,13 @@ const GROUND_SHARE = 0.66;
 
 /** Overlap with a picture beyond which the ground is unknowable. */
 const PICTURE_DOUBT = 0.25;
+
+/**
+ * Overlap with a fill that is too much to ignore and too little to be the
+ * ground. Between this and `GROUND_SHARE` the answer is a coin flip, and the
+ * one thing worse than no contrast decision is a confident wrong one.
+ */
+const GROUND_DOUBT = 0.25;
 
 /**
  * The most readable brand token on this ground, preferring the ones that carry

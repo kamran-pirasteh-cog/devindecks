@@ -68,7 +68,6 @@ import { ChartVariants } from "./ChartVariants";
 import { DeckTemplates } from "./DeckTemplates";
 import { Artifacts } from "./Artifacts";
 import { LayoutCard } from "./LayoutCard";
-import { LogoSection } from './LogoSection';
 
 const SLIDE_SIZE = { w: 12_192_000, h: 6_858_000 };
 
@@ -431,145 +430,162 @@ export function Admin() {
             <div className="space-y-6">
               {/* Palette and type are the two halves of one decision — which
                   ink, and how it's set — so they sit side by side on wide
-                  screens and stack below lg. */}
+                  screens and stack below lg. The logo rides under the palette
+                  rather than spanning the page: it's a narrow panel, and full
+                  width only stretched its two upload slots. */}
               <div className="grid items-start gap-6 lg:grid-cols-2">
-                {/* Colors */}
-                <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-                  <div className="mb-4 flex items-center justify-between gap-4">
-                    <h3 className="text-sm font-semibold">Brand palette</h3>
-                    <button
-                      onClick={addColor}
-                      className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    >
-                      + Add color
-                    </button>
-                  </div>
-                  <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                    {ds.colors.map((c, i) => (
-                      <div
-                        key={i}
-                        className={`relative flex items-center gap-3 py-2 first:pt-0 last:pb-0 ${
-                          colorDragFrom === i ? "opacity-40" : ""
-                        }`}
-                        draggable={colorDragArmed === i}
-                        onDragStart={(e) => {
-                          setColorDragFrom(i);
-                          e.dataTransfer.effectAllowed = "move";
-                          e.dataTransfer.setData("text/plain", c.id);
-                        }}
-                        onDragEnd={() => {
-                          setColorDragArmed(null);
-                          setColorDragFrom(null);
-                          setColorDragOver(null);
-                        }}
-                        onDragOver={(e) => {
-                          if (colorDragFrom === null || colorDragFrom === i)
-                            return;
-                          e.preventDefault();
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          setColorDragOver({
-                            index: i,
-                            after: e.clientY - rect.top > rect.height / 2,
-                          });
-                        }}
-                        onDragLeave={() => {
-                          setColorDragOver((cur) =>
-                            cur?.index === i ? null : cur,
-                          );
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          if (colorDragFrom !== null && colorDragOver) {
-                            // Splice-out shifts everything after `from` down one,
-                            // so an insert point past it loses an index.
-                            const raw =
-                              colorDragOver.index +
-                              (colorDragOver.after ? 1 : 0);
-                            moveColor(
-                              colorDragFrom,
-                              raw > colorDragFrom ? raw - 1 : raw,
-                            );
-                          }
-                          setColorDragArmed(null);
-                          setColorDragFrom(null);
-                          setColorDragOver(null);
-                        }}
+                <div className="min-w-0 space-y-6">
+                  {/* Colors */}
+                  <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+                    <div className="mb-4 flex items-center justify-between gap-4">
+                      <h3 className="text-sm font-semibold">Brand palette</h3>
+                      <button
+                        onClick={addColor}
+                        className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                       >
-                        {colorDragOver?.index === i ? (
-                          <div
-                            className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-indigo-500 ${
-                              colorDragOver.after ? "bottom-0" : "top-0"
-                            }`}
-                          />
-                        ) : null}
-                        {/* Grip, not a whole-row drag target: the row is mostly
+                        + Add color
+                      </button>
+                    </div>
+                    <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                      {ds.colors.map((c, i) => (
+                        <div
+                          key={i}
+                          className={`relative flex items-center gap-3 py-2 first:pt-0 last:pb-0 ${
+                            colorDragFrom === i ? "opacity-40" : ""
+                          }`}
+                          draggable={colorDragArmed === i}
+                          onDragStart={(e) => {
+                            setColorDragFrom(i);
+                            e.dataTransfer.effectAllowed = "move";
+                            e.dataTransfer.setData("text/plain", c.id);
+                          }}
+                          onDragEnd={() => {
+                            setColorDragArmed(null);
+                            setColorDragFrom(null);
+                            setColorDragOver(null);
+                          }}
+                          onDragOver={(e) => {
+                            if (colorDragFrom === null || colorDragFrom === i)
+                              return;
+                            e.preventDefault();
+                            const rect =
+                              e.currentTarget.getBoundingClientRect();
+                            setColorDragOver({
+                              index: i,
+                              after: e.clientY - rect.top > rect.height / 2,
+                            });
+                          }}
+                          onDragLeave={() => {
+                            setColorDragOver((cur) =>
+                              cur?.index === i ? null : cur,
+                            );
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (colorDragFrom !== null && colorDragOver) {
+                              // Splice-out shifts everything after `from` down one,
+                              // so an insert point past it loses an index.
+                              const raw =
+                                colorDragOver.index +
+                                (colorDragOver.after ? 1 : 0);
+                              moveColor(
+                                colorDragFrom,
+                                raw > colorDragFrom ? raw - 1 : raw,
+                              );
+                            }
+                            setColorDragArmed(null);
+                            setColorDragFrom(null);
+                            setColorDragOver(null);
+                          }}
+                        >
+                          {colorDragOver?.index === i ? (
+                            <div
+                              className={`pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded bg-indigo-500 ${
+                                colorDragOver.after ? "bottom-0" : "top-0"
+                              }`}
+                            />
+                          ) : null}
+                          {/* Grip, not a whole-row drag target: the row is mostly
                           inputs, and making those draggable kills click-to-place
                           the caret and drag-to-select inside them. */}
-                        <button
-                          onPointerDown={() => setColorDragArmed(i)}
-                          onPointerUp={() => setColorDragArmed(null)}
-                          aria-label={`Reorder ${c.name}`}
-                          title="Drag to reorder"
-                          className="grid size-5 shrink-0 cursor-grab place-items-center text-zinc-300 hover:text-zinc-500 active:cursor-grabbing dark:text-zinc-600 dark:hover:text-zinc-400"
-                        >
-                          <svg
-                            width="10"
-                            height="14"
-                            viewBox="0 0 10 14"
-                            aria-hidden="true"
+                          <button
+                            onPointerDown={() => setColorDragArmed(i)}
+                            onPointerUp={() => setColorDragArmed(null)}
+                            aria-label={`Reorder ${c.name}`}
+                            title="Drag to reorder"
+                            className="grid size-5 shrink-0 cursor-grab place-items-center text-zinc-300 hover:text-zinc-500 active:cursor-grabbing dark:text-zinc-600 dark:hover:text-zinc-400"
                           >
-                            <g fill="currentColor">
-                              {[2, 7, 12].map((y) =>
-                                [2, 8].map((x) => (
-                                  <circle
-                                    key={`${x}-${y}`}
-                                    cx={x}
-                                    cy={y}
-                                    r="1"
-                                  />
-                                )),
-                              )}
-                            </g>
-                          </svg>
-                        </button>
-                        {/* Square, not a pill: a swatch reads as the flat fill it
+                            <svg
+                              width="10"
+                              height="14"
+                              viewBox="0 0 10 14"
+                              aria-hidden="true"
+                            >
+                              <g fill="currentColor">
+                                {[2, 7, 12].map((y) =>
+                                  [2, 8].map((x) => (
+                                    <circle
+                                      key={`${x}-${y}`}
+                                      cx={x}
+                                      cy={y}
+                                      r="1"
+                                    />
+                                  )),
+                                )}
+                              </g>
+                            </svg>
+                          </button>
+                          {/* Square, not a pill: a swatch reads as the flat fill it
                           will become on a slide, and rounded corners next to a
                           rounded input made both look like buttons. */}
-                        <input
-                          type="color"
-                          value={c.hex}
-                          onChange={(e) => setColor(i, { hex: e.target.value })}
-                          aria-label={`${c.name} hex`}
-                          className="size-9 shrink-0 cursor-pointer rounded-none border border-zinc-200 p-0 dark:border-zinc-700"
-                        />
-                        <input
-                          value={c.name}
-                          onChange={(e) =>
-                            setColor(i, { name: e.target.value })
-                          }
-                          aria-label="Color name"
-                          className="min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-                        />
-                        <input
-                          value={c.hex}
-                          onChange={(e) => setColor(i, { hex: e.target.value })}
-                          aria-label="Hex"
-                          className="w-24 shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1.5 font-mono text-xs uppercase dark:border-zinc-700 dark:bg-zinc-800"
-                        />
-                        <code className="truncate font-mono text-[11px] text-zinc-400">
-                          {c.id}
-                        </code>
-                        <button
-                          onClick={() => removeColor(i)}
-                          className="ml-auto grid size-7 shrink-0 place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-red-500 dark:hover:bg-zinc-800"
-                          title="Remove"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </section>
+                          <input
+                            type="color"
+                            value={c.hex}
+                            onChange={(e) =>
+                              setColor(i, { hex: e.target.value })
+                            }
+                            aria-label={`${c.name} hex`}
+                            className="size-9 shrink-0 cursor-pointer rounded-none border border-zinc-200 p-0 dark:border-zinc-700"
+                          />
+                          <input
+                            value={c.name}
+                            onChange={(e) =>
+                              setColor(i, { name: e.target.value })
+                            }
+                            aria-label="Color name"
+                            className="min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+                          />
+                          <input
+                            value={c.hex}
+                            onChange={(e) =>
+                              setColor(i, { hex: e.target.value })
+                            }
+                            aria-label="Hex"
+                            className="w-24 shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1.5 font-mono text-xs uppercase dark:border-zinc-700 dark:bg-zinc-800"
+                          />
+                          <code className="truncate font-mono text-[11px] text-zinc-400">
+                            {c.id}
+                          </code>
+                          <button
+                            onClick={() => removeColor(i)}
+                            className="ml-auto grid size-7 shrink-0 place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-red-500 dark:hover:bg-zinc-800"
+                            title="Remove"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* Page numbers ride under the palette for the same reason
+                      the logo did: a narrow panel of brand chrome, not a
+                      full-width one. */}
+                  <PageNumbersSection
+                    style={ds.pageNumbers}
+                    onChange={setPageNumbers}
+                  />
+                </div>
 
                 {/* Type roles */}
                 <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
@@ -600,17 +616,6 @@ export function Admin() {
                   </div>
                 </section>
               </div>
-
-              {/* Logo and page numbers: the two pieces of chrome the BRAND
-                  owns rather than any individual deck, so they sit together and
-                  share the design system's own Save/Publish cycle. */}
-              <LogoSection logo={ds.logo} onChange={(logo) => patch({ logo })} />
-
-              {/* Page numbers */}
-              <PageNumbersSection
-                style={ds.pageNumbers}
-                onChange={setPageNumbers}
-              />
             </div>
           </div>
         ) : tab === "charts" ? (
@@ -952,7 +957,9 @@ function TypeRoleRow({
         aria-expanded={open}
         aria-label={`Edit ${roleLabel(role, style)}`}
         className={`mt-1 block w-full overflow-hidden rounded-md bg-white px-3 py-2 text-left ring-1 transition hover:ring-zinc-300 dark:hover:ring-zinc-600 ${
-          open ? "ring-zinc-400 dark:ring-zinc-500" : "ring-zinc-100 dark:ring-zinc-800"
+          open
+            ? "ring-zinc-400 dark:ring-zinc-500"
+            : "ring-zinc-100 dark:ring-zinc-800"
         }`}
       >
         <div
@@ -1082,22 +1089,20 @@ function PageNumbersSection({
 }) {
   const inches = (emu: number) => Math.round((emu / EMU_PER_INCH) * 100) / 100;
   const field =
-    "rounded border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800";
+    "rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[11px] dark:border-zinc-700 dark:bg-zinc-800";
+  const num = `w-14 ${field}`;
+  const check = "flex items-center gap-1 text-[11px] text-zinc-500";
 
   return (
-    <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="mb-1 flex items-baseline justify-between">
+    <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
         <h3 className="text-sm font-semibold">Page numbers</h3>
         <span className="text-[11px] text-zinc-400">
-          Turned on per deck from the editor toolbar
+          Turned on per deck from the toolbar
         </span>
       </div>
-      <p className="mb-3 text-[11px] text-zinc-400">
-        Numbers are drawn from each slide&rsquo;s position, so decks renumber
-        themselves as slides are added, removed or reordered.
-      </p>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <select
           value={style.font}
           onChange={(e) => onChange({ font: e.target.value as FontFamily })}
@@ -1116,17 +1121,9 @@ function PageNumbersSection({
           onChange={(e) =>
             onChange({ sizePt: parseFloat(e.target.value) || 1 })
           }
-          className={`w-16 ${field}`}
+          className={`w-12 ${field}`}
           title="Size (pt)"
         />
-        <label className="flex items-center gap-1 text-xs text-zinc-500">
-          <input
-            type="checkbox"
-            checked={!!style.bold}
-            onChange={(e) => onChange({ bold: e.target.checked })}
-          />
-          Bold
-        </label>
         <select
           value={style.position}
           onChange={(e) =>
@@ -1153,19 +1150,27 @@ function PageNumbersSection({
             </option>
           ))}
         </select>
-        <label className="flex items-center gap-1 text-xs text-zinc-500">
+        <label className={check} title="Bold">
+          <input
+            type="checkbox"
+            checked={!!style.bold}
+            onChange={(e) => onChange({ bold: e.target.checked })}
+          />
+          Bold
+        </label>
+        <label className={check} title="Skip the title slide">
           <input
             type="checkbox"
             checked={style.skipFirst}
             onChange={(e) => onChange({ skipFirst: e.target.checked })}
           />
-          Skip title slide
+          Skip 1st
         </label>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-4">
-        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
-          Side margin
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <label className={check} title="Side margin (in)">
+          Side
           <input
             type="number"
             step={0.05}
@@ -1175,12 +1180,11 @@ function PageNumbersSection({
                 marginXEmu: inchesToEmu(parseFloat(e.target.value) || 0),
               })
             }
-            className={`w-16 ${field}`}
+            className={num}
           />
-          in
         </label>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
-          Bottom margin
+        <label className={check} title="Bottom margin (in)">
+          Bottom
           <input
             type="number"
             step={0.05}
@@ -1190,34 +1194,33 @@ function PageNumbersSection({
                 marginYEmu: inchesToEmu(parseFloat(e.target.value) || 0),
               })
             }
-            className={`w-16 ${field}`}
+            className={num}
           />
-          in
         </label>
         {/* Two inks, picked per slide from its own background — that's why this
             is a pair rather than one color token. */}
-        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
-          On light
+        <label className={check} title="Ink on light backgrounds">
           <input
             type="color"
             value={style.onLightHex}
             onChange={(e) => onChange({ onLightHex: e.target.value })}
-            className="h-7 w-7 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700"
+            className="size-6 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700"
           />
+          Light
         </label>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
-          On dark
+        <label className={check} title="Ink on dark backgrounds">
           <input
             type="color"
             value={style.onDarkHex}
             onChange={(e) => onChange({ onDarkHex: e.target.value })}
-            className="h-7 w-7 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700"
+            className="size-6 cursor-pointer rounded border border-zinc-200 dark:border-zinc-700"
           />
+          Dark
         </label>
       </div>
 
-      {/* Both cases side by side: the same slide on white and on near-black. */}
-      <div className="mt-4 grid grid-cols-2 gap-3">
+      {/* Both cases side by side: the same corner on white and on near-black. */}
+      <div className="mt-3 grid grid-cols-2 gap-2">
         {["#FFFFFF", "#0A0A0A"].map((bg) => (
           <PageNumberPreview key={bg} style={style} backgroundHex={bg} />
         ))}
@@ -1249,9 +1252,12 @@ function PageNumberPreview({
   // out at full size behind it and anchored so the window lands on the corner,
   // which keeps every inset in true slide proportion while the type comes out
   // ~2.5x bigger than it would at whole-slide scale.
-  const CROP_W = 0.4;
-  const CROP_H = 0.34;
-  const VIEW_W = 240;
+  // A square window onto the corner. The slide behind it is still laid out at
+  // true slide proportion and anchored to the corner, so every inset stays
+  // honest while a tighter crop makes the number itself read bigger.
+  const CROP_W = 0.25;
+  // Narrow column now: the crop renders ~150px wide, so scale to that.
+  const VIEW_W = 150;
   const scale = VIEW_W / CROP_W / SLIDE_SIZE.w;
   const pct = (emu: number, of: number) => `${(emu / of) * 100}%`;
   const ink = pageNumberInk(style, backgroundHex);
@@ -1265,7 +1271,7 @@ function PageNumberPreview({
     position: "absolute",
     color: ink,
     opacity: 0.55,
-    fontSize: 9,
+    fontSize: 8,
     fontFamily: "ui-sans-serif, system-ui, sans-serif",
     whiteSpace: "nowrap",
   } as const;
@@ -1275,7 +1281,7 @@ function PageNumberPreview({
       className="relative overflow-hidden rounded border border-zinc-200 dark:border-zinc-700"
       style={{
         background: backgroundHex,
-        aspectRatio: `${CROP_W * SLIDE_SIZE.w} / ${CROP_H * SLIDE_SIZE.h}`,
+        aspectRatio: "1 / 1",
       }}
     >
       <div

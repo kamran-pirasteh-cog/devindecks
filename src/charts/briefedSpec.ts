@@ -30,6 +30,7 @@ import {
   type WaterfallData,
   type XYData,
 } from '@/model';
+import { authorBriefFrom } from './authorBrief';
 import type { ChartBrief, LayoutSuggestion } from './intent';
 
 /** A small deterministic PRNG, seeded from the text of the brief. */
@@ -63,6 +64,17 @@ const nameLike = (subject: string): boolean =>
   !/[,;:]/.test(subject) && subject.trim().split(/\s+/).length <= 4;
 
 /**
+ * A deck title is a FILE NAME as often as it is a name — "BVA Pitch (2)" —
+ * so it never gets printed in front of a chart title, however name-like it
+ * looks. It still stands as the brief's subject for the questions and the
+ * research prompt, where naming the deck the chart came from is useful.
+ */
+const printableSubject = (brief: ChartBrief): string | undefined =>
+  brief.subjectFrom !== 'deck' && brief.subject && nameLike(brief.subject)
+    ? brief.subject
+    : undefined;
+
+/**
  * The chart's title: what it shows, for whom, over what. Assembled from what
  * the brief actually knows — an unknown subject leaves the subject out rather
  * than writing "for [client]".
@@ -83,14 +95,25 @@ export function briefTitle(brief: ChartBrief): string {
   const span = labels.length
     ? ` · ${labels.length > 1 ? `${labels[0]}–${labels[labels.length - 1]}` : labels[0]}`
     : '';
-  const who = brief.subject && nameLike(brief.subject) ? `${brief.subject} — ` : '';
+  const subject = printableSubject(brief);
+  const who = subject ? `${subject} — ` : '';
   return `${who}${measure}${by}${span}`;
 }
 
+/**
+ * `asOf` is the date an unstated span was counted back from. It is recorded
+ * rather than used: the chart is already laid out by the time we get here, and
+ * the point is to be able to say later WHY the axis reads Q1'25–Q4'26 when
+ * nobody asked for those quarters.
+ *
+ * Optional, and the picker doesn't pass it yet — without it a prompt can still
+ * say the range was never asked for, just not what it was counted back from.
+ */
 export function specFromBrief(
   brief: ChartBrief,
   suggestion: LayoutSuggestion,
   ds: DesignSystem,
+  opts: { asOf?: string } = {},
 ): ChartSpec {
   const { layout } = suggestion;
   const rand = seeded(brief.description || layout.id);
@@ -105,6 +128,9 @@ export function specFromBrief(
   let spec: ChartSpec = {
     ...base,
     title: briefTitle(brief),
+    // Attached by the producer rather than the caller, so a second insert path
+    // cannot be written that forgets to keep the author's own words.
+    authorBrief: authorBriefFrom(brief, opts),
     numberFormat: { ...brief.numberFormat },
     axes: {
       ...base.axes,

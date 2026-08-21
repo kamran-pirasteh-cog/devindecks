@@ -60,7 +60,7 @@ import { makeTitle } from './factories';
 import { inRect, titleBandPx, titleElement, titleSlotAction } from './titleSlot';
 import { MOVEABLE_Z, OVERLAY_Z } from './layers';
 import { measureEditableHeightPx, measureTextFitPx } from './fitToText';
-import { individualBox, resizeFactor } from './groupResize';
+import { groupBounds, groupMemberBox, individualBox, resizeFactor } from './groupResize';
 import { liveFitRect } from './liveFit';
 import { isStickyPart, STICKY_TEXT_ROLE, stickyTextTarget } from './sticky';
 import { layoutFrame, turnRect, snapQuarterTurn } from '@/chart/turn';
@@ -171,8 +171,11 @@ export function EditorCanvas() {
   // Each member's box as it was when the group resize began, in canvas px.
   // Every frame is computed from these rather than from the previous frame, so
   // scaling stays exact instead of accumulating rounding drift.
+  //
+  // `rotation` rides along because the group's bounds are the union of what the
+  // members OCCUPY, not of their own boxes — see `rotatedBounds`.
   const groupResizeStartRef = useRef<
-    { id: string; x: number; y: number; w: number; h: number }[]
+    { id: string; x: number; y: number; w: number; h: number; rotation: number }[]
   >([]);
   /**
    * Where the pointer grabbed the handle, in client px.
@@ -2370,6 +2373,7 @@ export function EditorCanvas() {
                         y: el.rect.y * scale,
                         w: el.rect.w * scale,
                         h: el.rect.h * scale,
+                        rotation: el.rotation ?? 0,
                       }
                     : null;
                 })
@@ -2392,16 +2396,13 @@ export function EditorCanvas() {
               // The group box as it stood when the gesture began — the frame
               // every member's offset is measured against.
               const starts = groupResizeStartRef.current;
-              const bounds = (get: (s: (typeof starts)[number]) => [number, number]) => {
-                const lo = Math.min(...starts.map((s) => get(s)[0]));
-                const hi = Math.max(...starts.map((s) => get(s)[0] + get(s)[1]));
-                return [lo, hi] as const;
-              };
               // Measured extents, not model extents: the box Moveable reports
-              // is the union of the FLOORED nodes, so the two have to agree or
-              // every frame starts from a factor that isn't 1.
-              const [gx0, gx1] = bounds((s) => [s.x, measurePx(s.w)]);
-              const [gy0, gy1] = bounds((s) => [s.y, measurePx(s.h)]);
+              // is the union of the FLOORED, ROTATED nodes, so the two have to
+              // agree or every frame starts from a factor that isn't 1 — which
+              // is exactly what a turned text box used to do to a group.
+              const g = groupBounds(starts, measurePx);
+              if (!g) return;
+              const { x0: gx0, x1: gx1, y0: gy0, y1: gy1 } = g;
 
               /**
                * How far the handle has travelled on an axis Moveable isn't
@@ -2441,17 +2442,10 @@ export function EditorCanvas() {
               const boxes: Record<string, { x: number; y: number; w: number; h: number }> = {};
               const rects: { id: string; rect: Rect }[] = [];
               groupResizeStartRef.current.forEach((start) => {
-                // The 4px floor keeps an object grabbable, but a line is 0 on
-                // its cross axis by definition — floor that and the line comes
-                // out of the resize as a thin rectangle, permanently.
-                const w = start.w === 0 ? 0 : Math.max(4, start.w * sx);
-                const h = start.h === 0 ? 0 : Math.max(4, start.h * sy);
-                const box = {
-                  x: px + (start.x - px) * sx,
-                  y: py + (start.y - py) * sy,
-                  w,
-                  h,
-                };
+                // Size and centre-offset both scale, and the rotation is left
+                // alone — PowerPoint scales a member's extents inside the
+                // group's frame without straightening it. See `groupMemberBox`.
+                const box = groupMemberBox(start, sx, sy, px, py);
                 boxes[start.id] = box;
                 rects.push({
                   id: start.id,
@@ -2465,12 +2459,11 @@ export function EditorCanvas() {
                 // Paint immediately as well as through `liveResize`, so the
                 // boxes track the handle without waiting on a React commit.
                 const node = nodeMap.current.get(start.id);
-                const el = findEl(start.id);
                 if (!node) return;
                 node.style.width = `${measurePx(box.w)}px`;
                 node.style.height = `${measurePx(box.h)}px`;
                 node.style.transform = `translate(${box.x}px, ${box.y}px)${
-                  el?.rotation ? ` rotate(${el.rotation}deg)` : ''
+                  start.rotation ? ` rotate(${start.rotation}deg)` : ''
                 }`;
               });
               groupResizeRef.current = rects;

@@ -483,6 +483,21 @@ export function buildDeckRefreshPrompt(
       if (c.meta.seriesNames.length > 1) {
         lines.push(`- Series: ${c.meta.seriesNames.join(', ')}`);
       }
+      // What the author asked for, per chart rather than per deck. A range this
+      // app invented, repeated as an instruction on twelve pages, is the same
+      // error twelve times over.
+      if (c.meta.askedAndSkipped) {
+        lines.push(
+          '- The author was asked what this chart shows and did not say, so its labels are placeholders. Establish what it is for before refreshing anything on it.',
+        );
+      } else if (c.meta.description) {
+        lines.push(`- Asked for: "${c.meta.description}"`);
+        if (c.meta.period && c.meta.periodConfidence !== 'stated') {
+          lines.push(
+            `- **${c.meta.period.from}–${c.meta.period.to} was not asked for** — the range was filled in when the chart was made. Confirm it before refreshing these rows.`,
+          );
+        }
+      }
       lines.push('');
       lines.push(numberTable(c.numbers));
       lines.push('');

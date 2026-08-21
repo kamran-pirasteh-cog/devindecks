@@ -36,6 +36,7 @@ import {
 } from '@/render/bullets';
 import { useEditor } from '@/store/editorStore';
 import { fontSizeDirection } from './fontSizeShortcut';
+import { backspaceList } from './listBackspace';
 import { formatPainterAction } from './formatShortcut';
 import { placeCaretAt, type CaretPoint } from './caretPoint';
 import { selectOffsets, selectionOffsets } from './textOffsets';
@@ -305,6 +306,43 @@ export function TextEditor({
     hit.forEach((b) => setList(b, off ? 'none' : kind, listOf(b).level));
     syncMarkers();
     syncModel();
+  };
+
+  /**
+   * The block the caret sits at the START of, if it does — everything before it
+   * inside the block is the marker span, which is drawn rather than typed.
+   */
+  const blockAtCaretStart = (): HTMLElement | null => {
+    const root = ref.current;
+    const sel = window.getSelection();
+    if (!root || !sel?.rangeCount || !sel.isCollapsed) return null;
+    const caret = sel.getRangeAt(0);
+    if (!root.contains(caret.startContainer)) return null;
+    const block = blocks().find((b) => b.contains(caret.startContainer));
+    if (!block) return null;
+    const before = document.createRange();
+    before.setStart(block, 0);
+    before.setEnd(caret.startContainer, caret.startOffset);
+    const head = before.cloneContents();
+    head.querySelectorAll('[data-marker]').forEach((n) => n.remove());
+    return head.textContent ? null : block;
+  };
+
+  /**
+   * Backspace at the head of a list paragraph. The browser would delete the
+   * marker span sitting to the left of the caret — which `syncMarkers` then
+   * redraws, so the line looked undeletable. Peel the list style instead, and
+   * let a plain paragraph fall through to the browser's own merge.
+   */
+  const backspaceOutdent = () => {
+    const block = blockAtCaretStart();
+    if (!block) return false;
+    const next = backspaceList(listOf(block));
+    if (!next) return false;
+    setList(block, next.bullet, next.level);
+    syncMarkers();
+    syncModel();
+    return true;
   };
 
   const applyIndent = (delta: number) => {
@@ -640,6 +678,8 @@ export function TextEditor({
         if (painter) {
           e.preventDefault();
           applyPainter(painter);
+        } else if (e.key === 'Backspace' && !mod && backspaceOutdent()) {
+          e.preventDefault();
         } else if (e.key === 'Tab') {
           // PowerPoint's demote/promote. The editable would otherwise lose
           // focus to the next control, ending the edit.

@@ -215,8 +215,8 @@ export function Toolbar() {
         onClick={fitToMargins}
         title={
           selCount > 0
-            ? 'Move the selection as one block onto the margin guides'
-            : 'Move this slide\u2019s content as one block onto the margin guides'
+            ? 'Drag the selection\u2019s overhanging sides onto the margin guides'
+            : 'Drag this slide\u2019s overhanging sides onto the margin guides'
         }
         disabled={slideIsEmpty}
       >

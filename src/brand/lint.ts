@@ -4,8 +4,8 @@
  * Every other file in this engine tries to produce a good slide. This one
  * assumes they failed and goes looking for the evidence — and it is the reason
  * "defect free" can be a property of the system rather than a hope. `convert.ts`
- * only reports a deck as clean when this returns no errors, `ConvertReview` sorts
- * the flagged slides to the front, and `scripts/validate-brand.ts` exits non-zero
+ * only reports a deck as clean when this returns no errors, `ConvertReview` flags
+ * those slides in the before/after review, and `scripts/validate-brand.ts` exits non-zero
  * on any error across a whole corpus of real decks.
  *
  * Two rules govern what belongs here:
@@ -33,6 +33,7 @@ import { bodyOf, type BrandRole } from './classify';
 import { MIN_LEGIBLE_PT } from './type';
 import { freeSpaceBelow, overlapPairs } from './refit';
 import { isBrandChrome } from './chrome';
+import { groundBehind } from './legibility';
 
 /** Every code this linter can emit. Exported so tests and CI can name them. */
 export const LINT_CODES = [
@@ -88,42 +89,17 @@ function intersectionArea(a: Rect, b: Rect): number {
   return w > 0 && h > 0 ? w * h : 0;
 }
 
-/**
- * The colour behind this element, for a contrast test.
+/*
+ * The colour behind an element comes from `legibility.ts`.
  *
- * Walks the elements UNDER it in z-order looking for one that covers it and has
- * a solid fill, falling back to the slide background and then to the brand's
- * base surface. Approximate by nature — a partially-covering panel is a genuine
- * ambiguity — so contrast is only reported when the answer is unambiguous.
+ * This file used to carry its own walk, and two walks that disagree is worse
+ * than either: `legibility` reversed a card's type to white because it composited
+ * the card's 14%-opaque white fill over a dark page, while the copy here read
+ * that same fill as opaque white and reported "#FFFFFF on #FFFFFF". One of them
+ * has to be the authority on what a reader actually sees, and it has to be the
+ * one that DECIDES the colour — otherwise the gate passes slides the engine
+ * broke, and fails slides it fixed.
  */
-export function groundBehind(
-  slide: Slide,
-  el: SlideElement,
-  ds: DesignSystem,
-): string | null {
-  const index = slide.elements.findIndex((e) => e.id === el.id);
-  for (let i = index - 1; i >= 0; i -= 1) {
-    const under = slide.elements[i];
-    if (under.type !== 'shape' || under.fill?.kind !== 'solid') continue;
-    const covers =
-      under.rect.x <= el.rect.x &&
-      under.rect.y <= el.rect.y &&
-      under.rect.x + under.rect.w >= el.rect.x + el.rect.w &&
-      under.rect.y + under.rect.h >= el.rect.y + el.rect.h;
-    if (covers) return resolveColor(under.fill.color, ds);
-    // A picture underneath makes the ground unknowable; decline rather than
-    // guess, or every caption over a photo would be flagged.
-    if (intersectionArea(under.rect, el.rect) > 0) return null;
-  }
-  for (let i = index - 1; i >= 0; i -= 1) {
-    if (slide.elements[i].type === 'picture' && intersectionArea(slide.elements[i].rect, el.rect) > 0) {
-      return null;
-    }
-  }
-  if (slide.background?.kind === 'solid') return resolveColor(slide.background.color, ds);
-  const base = ds.colors.find((c) => c.id === 'surface.base');
-  return base?.hex ?? '#FFFFFF';
-}
 
 /**
  * Lint one slide.

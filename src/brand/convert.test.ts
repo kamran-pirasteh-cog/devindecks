@@ -60,6 +60,114 @@ const allRuns = (slides: Slide[]): TextRun[] =>
 
 const allElements = (slides: Slide[]): SlideElement[] => slides.flatMap((s) => s.elements);
 
+describe('convertDeck — shape', () => {
+  const corners = () =>
+    slide(
+      [
+        text('A slide with cards on it', at(0.6, 0.5, 8, 0.6), { sizePt: 22 }),
+        shape(at(0.6, 1.5, 2.4, 1.6), { fill: '#6B2FA0', preset: 'roundRect', id: 'card' }),
+        shape(at(3.2, 1.5, 1.2, 0.32), { fill: '#6B2FA0', preset: 'pill', id: 'chip' }),
+        shape(at(5, 1.5, 1.2, 1.2), { fill: '#6B2FA0', preset: 'ellipse', id: 'dot' }),
+        shape(at(6.6, 1.5, 1.2, 0.8), { fill: '#6B2FA0', preset: 'chevron', id: 'arrow' }),
+      ],
+      '#FFFFFF',
+    );
+
+  const presetOf = (slides: Slide[], id: string) => {
+    const el = allElements(slides).find((e) => e.id === id);
+    return el?.type === 'shape' ? el.preset : undefined;
+  };
+
+  it('squares the corners of every rectangular shape', () => {
+    // Rounding is the source brand's decision, and one of the loudest: a deck
+    // whose cards and chips keep their pill corners still reads as the source
+    // deck's design however correct every colour on it is.
+    const { slides } = convert([corners()]);
+    expect(presetOf(slides, 'card')).toBe('rect');
+    expect(presetOf(slides, 'chip')).toBe('rect');
+  });
+
+  it('leaves shapes whose corners are not corners alone', () => {
+    // An ellipse has none to square, and a chevron's are structural — squaring
+    // one would make it a different shape, not the same shape unrounded.
+    const { slides } = convert([corners()]);
+    expect(presetOf(slides, 'dot')).toBe('ellipse');
+    expect(presetOf(slides, 'arrow')).toBe('chevron');
+  });
+});
+
+describe('convertDeck — the big number', () => {
+  /** A stats slide: three display figures in the source brand's own colour. */
+  const kpiWall = () =>
+    slide(
+      [
+        text('Uptake has been strong', at(0.6, 0.5, 8, 0.6), { sizePt: 22 }),
+        text('1,159', at(0.6, 2, 2.4, 1.2), { sizePt: 44, bold: true, color: '#8E5CB0' }),
+        text('112,128', at(3.4, 2, 2.4, 1.2), { sizePt: 44, bold: true, color: '#8E5CB0' }),
+        text('54%', at(6.2, 2, 2.4, 1.2), { sizePt: 44, bold: true, color: '#8E5CB0' }),
+        text('engineers onboarded in four weeks', at(0.6, 3.4, 8, 0.4), { sizePt: 11 }),
+      ],
+      '#FFFFFF',
+    );
+
+  const kpiRuns = (slides: Slide[]) =>
+    allElements(slides)
+      .filter((el) => el.role === 'kpiValue')
+      .flatMap((el) => (el.type === 'text' ? (el.body.paragraphs ?? []) : []))
+      .flatMap((p) => p.runs ?? []);
+
+  it('sets every display figure in the brand’s KPI colour, overriding the source', () => {
+    // The source set its stats in its own accent. Mapped by JOB — a saturated
+    // colour used for a handful of characters — that accent is OUR accent, but
+    // it only takes one deck where the stats were black or where the mapping
+    // lands on ink for every headline figure to come back reading as body copy.
+    // The brand states what colour its numbers are; the source does not get a
+    // vote.
+    const { slides } = convert([kpiWall()]);
+    const runs = kpiRuns(slides);
+    expect(runs.length).toBe(3);
+    for (const run of runs) {
+      expect(run.color).toEqual({ kind: 'token', token: 'brand.accent' });
+    }
+  });
+
+  it('holds even when the source figures were plain black', () => {
+    const black = slide(
+      [
+        text('Result', at(0.6, 0.5, 8, 0.6), { sizePt: 22 }),
+        text('112,128', at(0.6, 2, 3, 1.2), { sizePt: 44, bold: true, color: '#000000' }),
+        text('54%', at(4.2, 2, 3, 1.2), { sizePt: 44, bold: true, color: '#000000' }),
+      ],
+      '#FFFFFF',
+    );
+    const runs = kpiRuns(convert([black]).slides);
+    expect(runs.length).toBe(2);
+    for (const run of runs) {
+      expect(run.color).toEqual({ kind: 'token', token: 'brand.accent' });
+    }
+  });
+
+  it('but never at the cost of legibility on an ink panel', () => {
+    // Accent-on-ink is 1.4:1. The KPI rule states a colour; it does not get to
+    // overrule the pass that guarantees you can read it.
+    const onPanel = slide(
+      [
+        shape(at(0.6, 1.5, 3, 2), { fill: '#6B2FA0', label: '112,128' }),
+        text('body copy that gives the deck a size ladder '.repeat(6), at(4.2, 1.5, 4.5, 2), {
+          sizePt: 12,
+        }),
+      ],
+      '#FFFFFF',
+    );
+    // The panel's fill is a coloured box, so it converts to ink — and the figure
+    // sitting on it must be readable against ink, not against the rule.
+    const figure = allRuns(convert([onPanel]).slides).find((r) => r.text === '112,128')!;
+    expect(figure).toBeDefined();
+    const ink = resolveColor(figure.color!, ds);
+    expect(contrastRatio(ink, '#191919')).toBeGreaterThanOrEqual(LARGE_CONTRAST);
+  });
+});
+
 describe('convertDeck — typography invariants', () => {
   it('every run is set in a brand face', () => {
     const { slides } = convert(sourceDeck(8));
@@ -382,15 +490,39 @@ describe('convertDeck — regressions from a real slide', () => {
     expect(diagnostics.filter((d) => d.code === 'contrast-low')).toEqual([]);
   });
 
-  it('C: a saturated dark ground becomes the ACCENT, not black', () => {
-    // #2600FF has a luminance of 0.076. A luminance-only test mapped the source
-    // brand's signature colour to `ink.strong` wherever it backed a slide.
-    const accentGround = slide(
+  it('C: a COLOURED full-page ground becomes our ink ground, not our accent', () => {
+    // Two wrong answers shipped here in turn. `brand.accent` — #2600FF is
+    // saturated AND dark — put our accent behind every slide. Flattening it to
+    // `surface.base` fixed that and lost something real: a deck's colour pages
+    // are its punctuation, and a run of them turned into ordinary white slides.
+    // Our palette has no full-bleed colour, so the ground becomes ink.
+    const colouredGround = slide(
       [text('Reversed out', at(1, 3, 8, 0.6), { sizePt: 28, color: '#FFFFFF' })],
       '#2600FF',
     );
-    const map = buildColorMap(surveyDeck([accentGround], SIZE, ds), ds);
-    expect(map.refs.get('#2600FF')).toEqual({ kind: 'token', token: 'brand.accent' });
+    const map = buildColorMap(surveyDeck([colouredGround], SIZE, ds), ds);
+    expect(map.refs.get('#2600FF')).toEqual({ kind: 'token', token: 'ink.strong' });
+  });
+
+  it('C1: a NEUTRAL dark ground still comes onto the light surface', () => {
+    // Charcoal says nothing about the source brand — it is just a dark slide —
+    // and carrying it over turns the whole deck black. Only a colour earns the
+    // ink ground.
+    const greyGround = slide(
+      [text('Reversed out', at(1, 3, 8, 0.6), { sizePt: 28, color: '#FFFFFF' })],
+      '#2B2B2B',
+    );
+    const map = buildColorMap(surveyDeck([greyGround], SIZE, ds), ds);
+    expect(map.refs.get('#2B2B2B')).toEqual({ kind: 'token', token: 'surface.base' });
+  });
+
+  it('C2: and the text that was reversed out on it stays readable', () => {
+    const darkGround = slide(
+      [text('Reversed out', at(1, 3, 8, 0.6), { sizePt: 28, color: '#FFFFFF' })],
+      '#2600FF',
+    );
+    const { diagnostics } = convert([darkGround]);
+    expect(diagnostics.filter((d) => d.code === 'contrast-low')).toEqual([]);
   });
 
   it('D: ink that is also a hairline rule is still classified as INK', () => {

@@ -124,6 +124,59 @@ describe('specFromBrief', () => {
   });
 });
 
+describe('the brief kept on the chart', () => {
+  const briefFor = (description: string, ctx: Record<string, unknown> = {}) => {
+    const rec = recommendLayouts(description, { asOf: AS_OF, ...ctx });
+    return specFromBrief(rec.brief, rec.suggestions[0], DS, { asOf: AS_OF }).authorBrief;
+  };
+
+  it("keeps the author's sentence verbatim", () => {
+    const brief = briefFor('quarterly ARR by segment for the last 4 quarters in $M');
+    expect(brief?.description).toBe('quarterly ARR by segment for the last 4 quarters in $M');
+    expect(brief?.asOf).toBe(AS_OF);
+  });
+
+  it('records a span that was asked for as the author\'s', () => {
+    const brief = briefFor('revenue by region, last 6 quarters');
+    expect(brief?.periodFrom).toBe('derived');
+    expect(brief?.period).toMatchObject({ grain: 'quarter', count: 6 });
+  });
+
+  it('records a span nobody asked for as ours', () => {
+    // "quarterly" names a grain but no range, so a default count is invented
+    // and counted back from `asOf` — the exact case that must not read as fact.
+    const brief = briefFor('quarterly revenue by region');
+    expect(brief?.period?.count).toBeGreaterThan(1);
+    expect(brief?.periodFrom).toBe('inferred');
+  });
+
+  it('separates a stated currency from one assumed off the measure', () => {
+    expect(briefFor('revenue by region in $M')?.unitFrom).toBe('stated');
+    // "revenue" implies dollars by house convention; nobody said so.
+    expect(briefFor('revenue by region')?.unitFrom).toBe('inferred');
+  });
+
+  it('marks the subject as described when the author named it', () => {
+    const brief = briefFor("Globex's revenue by region in FY25");
+    expect(brief).toMatchObject({ subject: 'Globex', subjectFrom: 'described' });
+  });
+
+  it('marks a subject taken off the deck as such, however name-like', () => {
+    const brief = briefFor('revenue by region in FY25', { deckTitle: 'BVA Pitch (2)' });
+    expect(brief).toMatchObject({ subjectFrom: 'deck' });
+  });
+
+  it('keeps the measure and breakdown the author stated', () => {
+    const brief = briefFor('ARR by segment in FY25');
+    expect(brief).toMatchObject({
+      measure: 'ARR',
+      measureFrom: 'stated',
+      dimension: 'segment',
+      dimensionFrom: 'stated',
+    });
+  });
+});
+
 describe('briefTitle', () => {
   it('prints a single period once rather than as a range', () => {
     const rec = recommendLayouts('revenue mix by region for FY25', { asOf: AS_OF });
@@ -138,6 +191,24 @@ describe('briefTitle', () => {
     expect(briefTitle(rec.brief)).toBe(DEFAULT_CHART_TITLE);
   });
 
+  it('never prints the deck title, which is as often a file name as a name', () => {
+    const rec = recommendLayouts('ARR by segment over the last 8 quarters', {
+      asOf: AS_OF,
+      deckTitle: 'BVA Pitch (2)',
+    });
+    expect(rec.brief.subjectFrom).toBe('deck');
+    expect(briefTitle(rec.brief)).not.toContain('BVA');
+  });
+
+  it('still prints a client name from the deck tags', () => {
+    const rec = recommendLayouts('ARR by segment for FY25', {
+      asOf: AS_OF,
+      deckTags: ['Acme Corp'],
+      deckTitle: 'BVA Pitch (2)',
+    });
+    expect(briefTitle(rec.brief)).toBe('Acme Corp — ARR by segment · FY25');
+  });
+
   it('drops a subject that reads as a sentence rather than a name', () => {
     const rec = recommendLayouts('revenue by region for FY25', {
       asOf: AS_OF,
@@ -146,3 +217,4 @@ describe('briefTitle', () => {
     expect(briefTitle(rec.brief)).toBe('Revenue by region · FY25');
   });
 });
+

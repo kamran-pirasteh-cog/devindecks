@@ -468,6 +468,40 @@ function hidePointParts(spec: ChartSpec, refs: ChartRef[]): boolean {
     return wrote;
   }
 
+  // A Sankey's label hangs on the NODE, so Delete on one of them takes that one
+  // label away and leaves the rest of the diagram labelled. Routing it through
+  // the chart-wide switch instead — which for a Sankey only decides whether the
+  // throughput rides along with the name — is what made Delete on a node label
+  // rub the number out and leave the label sitting there.
+  if (isSankeySpec(spec)) {
+    const picked = new Set(points.filter((r) => r.part === 'label').map((r) => r.point));
+    if (!picked.size) return false; // a node bar IS the flow; nothing to hide
+
+    // Every label at once is a statement about the CHART, the same test
+    // `applyChartFormat` applies to a whole series: the switch goes off at the
+    // top and the per-node overrides that would shadow it go with it, so a node
+    // added later stays unlabelled too.
+    if (spec.data.nodes.every((n) => picked.has(n.key))) {
+      if (!spec.decorations.labels.show && !spec.data.nodes.some((n) => n.labels?.show)) {
+        return false;
+      }
+      spec.decorations.labels.show = false;
+      for (const n of spec.data.nodes) if (n.labels) delete n.labels.show;
+      return true;
+    }
+
+    let wrote = false;
+    for (const key of picked) {
+      const node = spec.data.nodes.find((n) => n.key === key);
+      if (!node) continue;
+      const base = node.labels ?? spec.decorations.labels;
+      if (!base.show) continue;
+      node.labels = { ...base, show: false };
+      wrote = true;
+    }
+    return wrote;
+  }
+
   const series = seriesOf(spec);
   if (!series.length) {
     // A waterfall or a sankey has no series to hang an override on; the only

@@ -62,6 +62,35 @@ describe('groundBehind', () => {
     expect(groundBehind(s, caption, ds)).toBeNull();
   });
 
+  it('composites a TRANSLUCENT panel over what is behind it', () => {
+    // The frosted card: white at 14% on a dark page is a dark card. Reading the
+    // panel's own token as the ground answered "white", so this pass reversed
+    // the card's type to dark ink — black on black.
+    const card = shape(at(0.5, 1.5, 6, 2), { fill: '#FFFFFF', fillAlpha: 0.14, id: 'p' });
+    const label = text('in the card', at(1, 2, 3, 0.4), { id: 't' });
+    const s = slide([card, label], '#191919');
+    const ground = groundBehind(s, label, ds)!;
+    expect(contrastRatio(ground, '#FFFFFF')).toBeGreaterThan(LARGE_CONTRAST);
+    expect(contrastRatio(ground, '#191919')).toBeLessThan(2);
+  });
+
+  it('keeps type light inside a frosted card on a dark page', () => {
+    const card = shape(at(0.5, 1.5, 6, 2), { fill: '#FFFFFF', fillAlpha: 0.14, id: 'p' });
+    const label = text('in the card', at(1, 2, 3, 0.4), { id: 't', color: '#FFFFFF' });
+    const s = slide([card, label], '#191919');
+    const out = enforceLegibility(s, ds);
+    expect(inkOf(out.slide, 't')).toBe('#FFFFFF');
+  });
+
+  it('DECLINES when a fill covers some of the element but not most of it', () => {
+    // A numeral centred on a disc a shade smaller than its own text box. The
+    // area says "40% off the disc"; the glyph is on the disc. Unknowable.
+    const disc = shape(at(1.1, 2.05, 0.3, 0.3), { fill: '#191919', id: 'd' });
+    const numeral = text('1', at(1, 2, 0.5, 0.4), { id: 't', color: '#FFFFFF' });
+    const s = slide([disc, numeral], '#FFFFFF');
+    expect(groundBehind(s, numeral, ds)).toBeNull();
+  });
+
   it('ignores a panel that does not actually cover the element', () => {
     const panel = shape(at(7, 1.5, 3, 2), { fill: '#1F3864', id: 'p' });
     const label = text('elsewhere', at(1, 2, 3, 0.4), { id: 't' });

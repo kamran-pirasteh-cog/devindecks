@@ -5,11 +5,21 @@
  */
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_DESIGN_SYSTEM } from '@/model/tokens';
-import { EMU_PER_POINT, inchesToEmu, type Rect, type Slide, type SlideElement } from '@/model';
+import {
+  DEFAULT_MARGINS,
+  EMU_PER_POINT,
+  inchesToEmu,
+  marginBox,
+  type Rect,
+  type Slide,
+  type SlideElement,
+  type TextBody,
+} from '@/model';
 import { metricMeasurer } from '@/render/measureText';
 import { measureTextBody } from '@/render/measureTextBody';
 import {
   ABSOLUTE_MIN_PT,
+  freeSpaceAbove,
   freeSpaceBelow,
   overlapPairs,
   policyFor,
@@ -35,6 +45,7 @@ function ctxFor(
   roles: Record<string, BrandRole>,
   traces: Record<string, { sourcePt: number; brandPt: number }> = {},
   frozen: string[] = [],
+  panelText: string[] = [],
 ): RefitContext {
   return {
     ds,
@@ -42,6 +53,7 @@ function ctxFor(
     measurer,
     slideSize: SIZE,
     frozen: new Set(frozen),
+    panelText: new Set(panelText),
     roles: new Map(Object.entries(roles) as [string, BrandRole][]),
     traces: new Map(
       Object.entries(traces).map(([id, t]) => [
@@ -277,6 +289,83 @@ describe('scaleBody', () => {
   });
 });
 
+describe('growth respects the vertical anchor', () => {
+  it('a bottom-anchored box gains its height UPWARD, so its text stays put', () => {
+    // The card-heading case: a heading sitting on top of its bullets, holding
+    // its text against the bottom of its box. Growing downward would slide the
+    // heading onto the bullets and close the gap its unwrapped siblings keep.
+    const heading = text('word '.repeat(14), at(1, 2, 3, 0.45), {
+      sizePt: 14,
+      id: 'h',
+      anchor: 'bottom',
+    });
+    const bullets = text('word '.repeat(10), at(1, 2.6, 3, 1.5), { sizePt: 10, id: 'b' });
+    const ctx = ctxFor([heading, bullets], { h: 'subtitle', b: 'body' }, {
+      h: { sourcePt: 14, brandPt: 14 },
+      b: { sourcePt: 10, brandPt: 10 },
+    });
+    const out = refitElement(heading, [heading, bullets], ctx);
+    expect(out.steps).toContain('grow');
+    expect(out.element.rect.h).toBeGreaterThan(heading.rect.h);
+    // The bottom edge — where a bottom-anchored box's text sits — is unmoved.
+    expect(out.element.rect.y + out.element.rect.h).toBe(heading.rect.y + heading.rect.h);
+    expect(out.element.rect.y).toBeLessThan(heading.rect.y);
+  });
+
+  it('a middle-anchored box gains half each way, so its centre stays put', () => {
+    const el = text('word '.repeat(14), at(1, 2.5, 3, 0.45), {
+      sizePt: 14,
+      id: 'e',
+      anchor: 'middle',
+    });
+    const ctx = ctxFor([el], { e: 'body' }, { e: { sourcePt: 14, brandPt: 14 } });
+    const out = refitElement(el, [el], ctx);
+    expect(out.steps).toContain('grow');
+    const centre = (r: { y: number; h: number }) => r.y + r.h / 2;
+    expect(centre(out.element.rect)).toBeCloseTo(centre(el.rect), -3);
+  });
+
+  it('a top-anchored box still grows downward only', () => {
+    const el = text('word '.repeat(22), at(1, 2, 4, 0.45), { sizePt: 14, id: 'e' });
+    const ctx = ctxFor([el], { e: 'body' }, { e: { sourcePt: 14, brandPt: 14 } });
+    const out = refitElement(el, [el], ctx);
+    expect(out.steps).toContain('grow');
+    expect(out.element.rect.y).toBe(el.rect.y);
+  });
+
+  it('a bottom-anchored box with nothing above it does not grow past the top margin', () => {
+    const el = text('word '.repeat(30), at(1, 0.4, 3, 0.4), {
+      sizePt: 14,
+      id: 'e',
+      anchor: 'bottom',
+    });
+    const ctx = ctxFor([el], { e: 'body' }, { e: { sourcePt: 14, brandPt: 14 } });
+    const out = refitElement(el, [el], ctx);
+    expect(out.element.rect.y).toBeGreaterThanOrEqual(
+      Math.min(el.rect.y, marginBox(SIZE, DEFAULT_MARGINS).y),
+    );
+  });
+});
+
+describe('freeSpaceAbove', () => {
+  it('measures up to the nearest neighbour above', () => {
+    const a = text('x', at(1, 2, 3, 1), { id: 'a' });
+    const b = text('y', at(1, 4, 3, 1), { id: 'b' });
+    expect(freeSpaceAbove(b, [a, b], SIZE)).toBe(inchesToEmu(1));
+  });
+
+  it('ignores neighbours in another column', () => {
+    const a = text('x', at(7, 2, 3, 1), { id: 'a' });
+    const b = text('y', at(1, 4, 3, 1), { id: 'b' });
+    expect(freeSpaceAbove(b, [a, b], SIZE)).toBeGreaterThan(inchesToEmu(1));
+  });
+
+  it('stops at the top margin when nothing is above', () => {
+    const a = text('x', at(1, 2, 3, 1), { id: 'a' });
+    expect(freeSpaceAbove(a, [a], SIZE)).toBeLessThan(inchesToEmu(2));
+  });
+});
+
 describe('freeSpaceBelow', () => {
   it('is bounded by the next element in the same column', () => {
     const a = text('a', at(1, 2, 4, 1), { id: 'a' });
@@ -392,6 +481,49 @@ describe('refitSlide — coupling and rollback', () => {
     expect(new Set(sizes).size).toBe(1);
   });
 
+  it('a row of RAGGED boxes is not governed by its shortest one', () => {
+    resetIds();
+    // Auto-sized boxes out of Google Slides: `01`, `02` and `03` arrive 0.46in,
+    // 0.43in and 0.33in tall. The shortest could not hold 26pt, shrank to 17,
+    // and coupling then dragged its identical neighbours down with it — three
+    // display numerals set smaller than the sentence beside them.
+    const els = [
+      text('01', at(0.9, 3.5, 0.83, 0.46), { sizePt: 26, id: 'n1' }),
+      text('02', at(5.0, 3.5, 0.83, 0.43), { sizePt: 26, id: 'n2' }),
+      text('03', at(9.1, 3.5, 0.83, 0.33), { sizePt: 26, id: 'n3' }),
+    ];
+    const ctx = ctxFor(
+      els,
+      { n1: 'kpiValue', n2: 'kpiValue', n3: 'kpiValue' },
+      Object.fromEntries(els.map((e) => [e.id, { sourcePt: 34, brandPt: 26 }])),
+    );
+    const out = refitSlide({ ...slide(els) }, ctx);
+    const sizes = out.slide.elements.map(sizeOf);
+    expect(new Set(sizes).size).toBe(1);
+    // The tallest box in the row could hold well over 20pt, so the row does.
+    expect(sizes[0]).toBeGreaterThan(20);
+    // And the short boxes were the ones that moved, not the type.
+    const heights = out.slide.elements.map((e) => e.rect.h);
+    expect(new Set(heights).size).toBe(1);
+  });
+
+  it('does not resize a numeral that sits ON a disc — the disc owns its size', () => {
+    resetIds();
+    const els = [
+      text('1', at(0.9, 3.5, 0.5, 0.4), { sizePt: 20, id: 'd1' }),
+      text('2', at(5.0, 3.5, 0.5, 0.3), { sizePt: 20, id: 'd2' }),
+    ];
+    const ctx = ctxFor(
+      els,
+      { d1: 'kpiValue', d2: 'kpiValue' },
+      Object.fromEntries(els.map((e) => [e.id, { sourcePt: 20, brandPt: 20 }])),
+      [],
+      ['d1', 'd2'],
+    );
+    const out = refitSlide({ ...slide(els) }, ctx);
+    expect(out.slide.elements.find((e) => e.id === 'd2')!.rect.h).toBe(els[1].rect.h);
+  });
+
   it('rolls back a grow that created an overlap, and shrinks instead', () => {
     // `b` sits just under `a`, close enough that growing `a` would collide.
     const a = text('word '.repeat(24), at(1, 2, 4, 0.45), { sizePt: 14, id: 'a' });
@@ -463,5 +595,89 @@ describe('refitSlide — coupling and rollback', () => {
     // building it inside `mk` would compare two different slides.
     const input = slide(els) as Slide;
     expect(refitSlide(input, ctx).slide).toEqual(refitSlide(input, ctx).slide);
+  });
+});
+
+describe('a chip label must not wrap', () => {
+  /**
+   * A pill 1.1in wide with a label set at 14pt: at that size "Devin Fusion"
+   * needs about 1.2in, so it breaks across two lines inside a shape drawn for
+   * one. Nothing overflows — the box is tall enough for both lines — which is
+   * exactly why the height-only levers never touched it.
+   */
+  const chip = () => {
+    const panel = { ...shape(at(1, 2, 1.1, 0.32), { fill: '#191919', id: 'p' }), groupIds: ['g'] };
+    const label = {
+      ...text('Devin Fusion', at(1.05, 2.05, 1.0, 0.22), { sizePt: 14, id: 'l' }),
+      groupIds: ['g'],
+    };
+    return { panel, label };
+  };
+
+  const linesOf = (el: SlideElement) =>
+    measureTextBody((el as { body: TextBody }).body, el.rect, ds, measurer).lines;
+
+  it('shrinks the label until it fits on one line', () => {
+    const { panel, label } = chip();
+    const ctx = ctxFor(
+      [panel, label],
+      { p: 'decoration', l: 'caption' },
+      { l: { sourcePt: 12, brandPt: 14 } },
+      ['p'],
+      ['l'],
+    );
+    const before = linesOf(label);
+    expect(before).toBeGreaterThan(1); // the fixture is only interesting if it wraps
+
+    const out = refitSlide(slide([panel, label]) as Slide, ctx);
+    const after = out.slide.elements.find((e) => e.id === 'l')!;
+    expect(linesOf(after)).toBe(1);
+    expect(out.outcomes.get('l')!.steps).toContain('unwrap-label');
+  });
+
+  it('leaves the panel behind it exactly where it was', () => {
+    const { panel, label } = chip();
+    const ctx = ctxFor(
+      [panel, label],
+      { p: 'decoration', l: 'caption' },
+      { l: { sourcePt: 12, brandPt: 14 } },
+      ['p'],
+      ['l'],
+    );
+    const out = refitSlide(slide([panel, label]) as Slide, ctx);
+    expect(out.slide.elements.find((e) => e.id === 'p')!.rect).toEqual(panel.rect);
+  });
+
+  it('does NOT touch a text box that was never in a panel', () => {
+    // The same geometry, minus the panel membership. Ordinary text wrapping is
+    // a layout, not a defect, and shrinking every short box that happens to run
+    // to two lines would be a far bigger change than the one being fixed.
+    const { label } = chip();
+    const ctx = ctxFor([label], { l: 'caption' }, { l: { sourcePt: 12, brandPt: 14 } });
+    const out = refitSlide(slide([label]) as Slide, ctx);
+    expect(out.outcomes.get('l')!.steps).not.toContain('unwrap-label');
+  });
+
+  it('does NOT touch a panel’s PROSE — only a label', () => {
+    // A card holding a sentence is meant to wrap. `LABEL_CHARS` is what keeps
+    // this step aimed at chips.
+    const panel = { ...shape(at(1, 2, 3, 1.4), { fill: '#191919', id: 'p' }), groupIds: ['g'] };
+    const prose = {
+      ...text(
+        'A sentence long enough that wrapping is plainly the point of it',
+        at(1.05, 2.05, 2.9, 1.3),
+        { sizePt: 12, id: 'l' },
+      ),
+      groupIds: ['g'],
+    };
+    const ctx = ctxFor(
+      [panel, prose],
+      { p: 'decoration', l: 'body' },
+      { l: { sourcePt: 12, brandPt: 12 } },
+      ['p'],
+      ['l'],
+    );
+    const out = refitSlide(slide([panel, prose]) as Slide, ctx);
+    expect(out.outcomes.get('l')!.steps).not.toContain('unwrap-label');
   });
 });

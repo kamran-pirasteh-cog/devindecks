@@ -13,7 +13,14 @@
  */
 import { WATERFALL_ROLE_OPTIONS, sheetSchemaFor, sheetSeriesFor, type ChartSpec } from '@/model';
 import { chartResultContract, type ChartResultContract } from './contract';
-import { inferChartMeta, periodPhrase, type ChartMeta, type DeckContext } from './meta';
+import {
+  inferChartMeta,
+  isSubjectStated,
+  periodPhrase,
+  type ChartMeta,
+  type DeckContext,
+} from './meta';
+import type { ChartResearchHints } from '@/charts/research';
 import {
   ASK_FIRST_RULES,
   chartClarifications,
@@ -27,6 +34,13 @@ export interface DevinPromptContext extends DeckContext {
   chartId?: string;
   templateName?: string;
   templateVersion?: number;
+  /**
+   * House rules for this chart's archetype, when it has one. Resolved by the
+   * CALLER: this module stays pure so a prompt is reproducible from a spec, and
+   * reaching into the template store from here would put `localStorage` behind
+   * a snapshot test.
+   */
+  research?: ChartResearchHints;
 }
 
 export interface DevinPrompt {
@@ -54,6 +68,68 @@ const KIND_NOUN: Record<string, string> = {
   gantt: 'Gantt chart (a project timeline)',
 };
 
+/**
+ * What the author asked for, and what we filled in for them.
+ *
+ * The single most useful thing this prompt can carry, and the thing it had no
+ * way to say before: a chart cannot distinguish a range somebody demanded from
+ * a range we counted back from today, and handing the second one over as an
+ * instruction is how a research brief ends up confidently answering the wrong
+ * question.
+ *
+ * Two lists, deliberately: what a person stated is printed as fact, and what we
+ * worked out is printed as a thing to confirm. Nothing appears in both.
+ */
+function authorSection(meta: ChartMeta): string[] {
+  if (meta.askedAndSkipped) {
+    return [
+      '## What the author asked for',
+      '',
+      'Nothing. The author was asked what this chart shows and chose not to say, so **every label on it is a placeholder we generated** — the title, the row names and the series names included. Do not read intent into any of them, and do not treat the numbers currently in the chart as a starting point. Establish what this chart is for before looking anything up.',
+      '',
+    ];
+  }
+  if (!meta.description) return [];
+
+  const said: string[] = [];
+  const ours: string[] = [];
+
+  if (meta.subjectSource === 'author' && meta.subject) said.push(`the subject (**${meta.subject}**)`);
+  if (meta.measure) (meta.measureConfidence === 'stated' ? said : ours).push(`the metric (**${meta.measure}**)`);
+  if (meta.dimension) {
+    (meta.dimensionConfidence === 'stated' ? said : ours).push(`the breakdown (**by ${meta.dimension}**)`);
+  }
+  if (meta.unit) (meta.unitConfidence === 'stated' ? said : ours).push(`the units (**${meta.unit}**)`);
+  if (meta.period) {
+    const span = `**${meta.period.from}–${meta.period.to}**`;
+    if (meta.periodConfidence === 'stated') said.push(`the period (${span})`);
+    else ours.push(`the period (${span})`);
+  }
+
+  const lines = ['## What the author asked for', ''];
+  // Verbatim, in a blockquote, never re-worded. The whole point is that these
+  // are their words and not our reading of them.
+  lines.push(`> ${meta.description}`);
+  lines.push('');
+  if (said.length) lines.push(`Stated by the author: ${said.join(', ')}.`);
+  if (ours.length) {
+    // The label is bold and the sentence is not: the values inside it are
+    // already bold, and emphasis nested inside emphasis renders as literal
+    // asterisks rather than as bold.
+    const one = ours.length === 1;
+    lines.push(
+      `**Filled in by us, not asked for:** ${ours.join(', ')}. Nobody has agreed to ${one ? 'it' : 'these'} — confirm ${one ? 'it' : 'each of them'} before use. A figure looked up against a period or a metric the author never chose is the wrong figure, however well sourced.`,
+    );
+  }
+  if (meta.gaps.length) {
+    lines.push('');
+    lines.push('The description left these open:');
+    lines.push(meta.gaps.map((gap) => `- ${gap}`).join('\n'));
+  }
+  lines.push('');
+  return lines;
+}
+
 export function buildDevinChartPrompt(
   spec: ChartSpec,
   ctx: DevinPromptContext = {},
@@ -80,13 +156,16 @@ export function buildDevinChartPrompt(
       `Find the data for a **${noun}**`,
       meta.measure ? ` showing **${meta.measure}**` : '',
       subject ? ` for **${subject}**` : '',
-      subject && meta.subjectSource !== 'tag' ? ' _(assumed — confirm below)_' : '',
+      subject && !isSubjectStated(meta) ? ' _(assumed — confirm below)_' : '',
       '.',
     ].join(''),
   );
   lines.push('');
 
-  /* 1a — the questions, before any research happens */
+  /* 1a — the author's own words, and which parts are ours */
+  lines.push(...authorSection(meta));
+
+  /* 1b — the questions, before any research happens */
   const clarifications = chartClarifications(meta);
   lines.push('## Ask these first');
   lines.push('');
@@ -183,6 +262,19 @@ export function buildDevinChartPrompt(
       '- If a source restates a prior period, use the restated figure and note it.',
     ].join('\n'),
   );
+  // House rules go AFTER the floor above, never mixed into it. A chart-specific
+  // instruction that appeared alongside the general ones could be read as
+  // qualifying them, and none of them are negotiable.
+  if (ctx.research?.guidance) {
+    lines.push('');
+    lines.push(`**For this kind of chart specifically:** ${ctx.research.guidance}`);
+  }
+  if (ctx.research?.preferredSources?.length) {
+    lines.push('');
+    lines.push(
+      `- Start with ${ctx.research.preferredSources.map((src) => `**${src}**`).join(', ')}. The rules above apply to each of them unchanged.`,
+    );
+  }
   lines.push('');
 
   /* 5 — the contract */

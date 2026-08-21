@@ -64,6 +64,12 @@ export interface ChartBrief {
   numberFormat: NumberFormat;
   unitDivisor?: number;
   unitNote?: string;
+  /**
+   * True when the text itself named the currency or the scale. A currency read
+   * off the MEASURE ("revenue" implies dollars) is a house convention, not a
+   * statement, and a research prompt has to be able to tell the two apart.
+   */
+  unitStated: boolean;
   /** What the sentence didn't say. Shown to the author, never filled in. */
   gaps: string[];
 }
@@ -331,6 +337,7 @@ export function readBrief(description: string, ctx: BriefContext = {}): ChartBri
     numberFormat: format.numberFormat,
     unitDivisor: format.unitDivisor,
     unitNote: format.unitNote,
+    unitStated: format.unitStated,
     gaps,
   };
 }
@@ -447,10 +454,15 @@ const PERCENT_MEASURES =
 const CURRENCY_MEASURES =
   /^(revenue|sales|bookings|billings|arr|mrr|gmv|ebitda|spend|cost|cogs|opex|capex|profit|cash|net income|free cash flow|pipeline|asp)$/i;
 
-function readFormat(
-  text: string,
-  measure?: string,
-): { numberFormat: NumberFormat; unitDivisor?: number; unitNote?: string } {
+/** The number side of a brief: how the figures read, and whether we were told. */
+interface BriefFormat {
+  numberFormat: NumberFormat;
+  unitDivisor?: number;
+  unitNote?: string;
+  unitStated: boolean;
+}
+
+function readFormat(text: string, measure?: string): BriefFormat {
   const currency = /£|\bgbp\b/i.test(text)
     ? 'GBP'
     : /€|\beur\b/i.test(text)
@@ -461,22 +473,36 @@ function readFormat(
           ? 'USD'
           : undefined;
 
+  // Whether the MONEY was named, as opposed to assumed from the measure. The
+  // same tokens as above, minus the CURRENCY_MEASURES fallback that is the
+  // assumption.
+  const currencyStated = /£|\bgbp\b|€|\beur\b|¥|\bjpy\b|\$|\busd\b|\bdollars?\b/i.test(text);
+
   const percent =
     (measure && PERCENT_MEASURES.test(measure)) ||
     /\bpercentage points?\b|\bas a (?:%|percent)\b/i.test(text);
 
   // A share-of-total chart is still currency data with percentage LABELS, so
   // "% of total" deliberately doesn't make the data a proportion.
-  const divisor = /\b(billions?|bn|\$b)\b/i.test(text)
+  // The currency forms can't sit inside a leading `\b`: there is no word
+  // boundary between a space and a "$", so `\b\$b\b` never matched "$B" at
+  // all — "revenue in $B" quietly came out unscaled, which is a 1000x error
+  // that looks entirely fine on the slide.
+  const divisor = /\bbillions?\b|\bbn\b|\$\s?b\b/i.test(text)
     ? 1e9
-    : /\b(millions?|mm?|\$m)\b/i.test(text)
+    : /\bmillions?\b|\bmm?\b|\$\s?m\b/i.test(text)
       ? 1e6
-      : /\b(thousands?|\$k)\b/i.test(text)
+      : /\bthousands?\b|\$\s?k\b/i.test(text)
         ? 1e3
         : undefined;
 
   if (percent) {
-    return { numberFormat: { style: 'percent', decimals: 1, negative: 'minus' } };
+    // A percentage needs no scale and no currency, so there is nothing left to
+    // have been assumed.
+    return {
+      numberFormat: { style: 'percent', decimals: 1, negative: 'minus' },
+      unitStated: true,
+    };
   }
 
   const numberFormat: NumberFormat = currency
@@ -489,6 +515,7 @@ function readFormat(
     numberFormat,
     unitDivisor: divisor,
     unitNote: divisor ? `in ${currency ? symbol : ''}${suffix}` : undefined,
+    unitStated: !!divisor || currencyStated,
   };
 }
 

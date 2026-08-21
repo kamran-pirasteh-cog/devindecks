@@ -17,6 +17,7 @@ import { useMemo, useState } from 'react';
 import { type ChartInstance } from '@/model';
 import { useEditor } from '@/store/editorStore';
 import { buildDevinChartPrompt } from '@/devin/prompt';
+import { researchHintsFor } from '@/charts/research';
 import { MODAL_Z } from '../layers';
 
 export function DevinChartMenu({ chart }: { chart: ChartInstance }) {
@@ -43,6 +44,7 @@ export function DevinChartMenu({ chart }: { chart: ChartInstance }) {
       deckTags: deck.tags,
       slideTitle: titleText,
       chartId: chart.id,
+      research: researchHintsFor(chart.spec),
     });
   }, [chart.spec, chart.id, deck, currentSlideId]);
 

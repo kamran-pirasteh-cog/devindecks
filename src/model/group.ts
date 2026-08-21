@@ -87,6 +87,55 @@ export function unionRect(elements: SlideElement[], ids: string[]) {
 }
 
 /**
+ * The axis-aligned box a rotated object actually occupies on the slide.
+ *
+ * A group's outline is the union of these, not of its members' own boxes: a
+ * text box turned 30° sticks out past its width and height, and PowerPoint's
+ * group box wraps what you can see. Moveable measures the rotated nodes, so
+ * this is also the only bounds a group resize can use as its "size at the start
+ * of the gesture" — measure the unrotated rects instead and the very first
+ * frame divides the live box by a smaller number, which lands a scale factor
+ * that isn't 1 and makes the selection jump the instant a handle moves.
+ *
+ * `rotation` is clockwise degrees in screen coordinates (y down), as everywhere
+ * else in the model. The box grows about its own centre, which rotation leaves
+ * where it is.
+ */
+export function rotatedBounds(
+  box: { x: number; y: number; w: number; h: number },
+  rotation = 0,
+): { x: number; y: number; w: number; h: number } {
+  if (!rotation) return { ...box };
+  const rad = (rotation * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  const w = box.w * cos + box.h * sin;
+  const h = box.w * sin + box.h * cos;
+  return { x: box.x + (box.w - w) / 2, y: box.y + (box.h - h) / 2, w, h };
+}
+
+/**
+ * What a set of elements OCCUPIES on the slide: the union of their rotated
+ * bounding boxes.
+ *
+ * This is the box the canvas rings a selection with (Moveable measures the
+ * rotated nodes) and therefore the box a group transform has to scale. See
+ * `unionRect` for the union of the model rects themselves, which is what
+ * alignment and spacing work in.
+ */
+export function occupiedRect(elements: SlideElement[], ids: string[]) {
+  const boxes = elements
+    .filter((e) => ids.includes(e.id))
+    .map((e) => rotatedBounds(e.rect, e.rotation ?? 0));
+  if (!boxes.length) return null;
+  const x = Math.min(...boxes.map((b) => b.x));
+  const y = Math.min(...boxes.map((b) => b.y));
+  const r = Math.max(...boxes.map((b) => b.x + b.w));
+  const b = Math.max(...boxes.map((b) => b.y + b.h));
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(r - x), h: Math.round(b - y) };
+}
+
+/**
  * True when `ids` is exactly one whole group — the case PowerPoint rings with a
  * single box.
  *

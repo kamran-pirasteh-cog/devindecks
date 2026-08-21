@@ -126,9 +126,13 @@ export function ChartTemplateEditor({ id }: { id: string }) {
 
   // Generated from the template's own spec, so an author can see exactly what
   // researchers will be asked before anyone inserts one.
+  // The template's `research.company` is deliberately NOT passed as a deck tag.
+  // A tag is read as a statement of who the deck is about and is printed as
+  // fact; a template's company is a house default, and laundering one into the
+  // other produced a prompt that asserted the entity and never asked about it.
   const promptPreview = buildDevinChartPrompt(spec, {
     deckTitle: template.name,
-    ...(template.research?.company ? { deckTags: [template.research.company] } : {}),
+    research: template.research,
   });
 
   return (

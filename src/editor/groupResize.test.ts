@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { groupMemberRect, groupScaleFactor, individualBox, resizeFactor } from './groupResize';
+import {
+  groupBounds,
+  groupMemberBox,
+  groupMemberRect,
+  groupScaleFactor,
+  individualBox,
+  resizeFactor,
+} from './groupResize';
+import { occupiedRect, rotatedBounds } from '@/model';
 
 describe('resizeFactor', () => {
   it('scales by the live size when Moveable measures the box correctly', () => {
@@ -86,5 +94,108 @@ describe('groupMemberRect', () => {
 
   it('never rounds a member away to nothing', () => {
     expect(groupMemberRect(origin, { x: 100, y: 100, w: 4, h: 4 }, 0.01, 0.01).w).toBe(1);
+  });
+});
+
+describe('rotatedBounds', () => {
+  it('leaves an upright box alone', () => {
+    expect(rotatedBounds({ x: 10, y: 20, w: 100, h: 40 }, 0)).toEqual({
+      x: 10,
+      y: 20,
+      w: 100,
+      h: 40,
+    });
+  });
+
+  it('swaps the axes of a quarter turn, about the same centre', () => {
+    const b = rotatedBounds({ x: 0, y: 0, w: 100, h: 40 }, 90);
+    expect(b.w).toBeCloseTo(40, 6);
+    expect(b.h).toBeCloseTo(100, 6);
+    expect(b.x + b.w / 2).toBeCloseTo(50, 6);
+    expect(b.y + b.h / 2).toBeCloseTo(20, 6);
+  });
+
+  it('is the same box whichever way the object leans', () => {
+    expect(rotatedBounds({ x: 0, y: 0, w: 100, h: 40 }, 30)).toEqual(
+      rotatedBounds({ x: 0, y: 0, w: 100, h: 40 }, -30),
+    );
+  });
+});
+
+describe('groupBounds', () => {
+  it('wraps what a rotated member occupies, not its own box', () => {
+    // A 90°-turned 100×40 text box occupies 40×100 — the group has to reach
+    // past the member's height or Moveable's box disagrees with ours and the
+    // first frame of a resize starts from a factor that isn't 1.
+    const g = groupBounds([{ x: 0, y: 0, w: 100, h: 40, rotation: 90 }])!;
+    expect(g.x0).toBeCloseTo(30, 6);
+    expect(g.x1).toBeCloseTo(70, 6);
+    expect(g.y0).toBeCloseTo(-30, 6);
+    expect(g.y1).toBeCloseTo(70, 6);
+  });
+
+  it('unions upright members exactly as the plain rects do', () => {
+    const g = groupBounds([
+      { x: 0, y: 0, w: 100, h: 50 },
+      { x: 200, y: 100, w: 100, h: 50 },
+    ])!;
+    expect(g).toEqual({ x0: 0, x1: 300, y0: 0, y1: 150 });
+  });
+
+  it('floors each member the way the DOM does', () => {
+    const g = groupBounds([{ x: 0, y: 0, w: 300, h: 0 }], (n) => Math.max(n, 1))!;
+    expect(g.y1).toBe(1);
+  });
+
+  it('has no bounds for an empty selection', () => {
+    expect(groupBounds([])).toBeNull();
+  });
+});
+
+describe('groupMemberBox', () => {
+  it('matches top-left scaling for an upright member', () => {
+    // The behaviour this replaced, unchanged where rotation isn't involved.
+    expect(groupMemberBox({ x: 200, y: 100, w: 50, h: 50 }, 2, 1, 100, 100)).toEqual({
+      x: 300,
+      y: 100,
+      w: 100,
+      h: 50,
+    });
+  });
+
+  it('scales a rotated member about its centre, keeping it on the grid', () => {
+    // Two boxes of the same size and centre, one turned: the resize has to put
+    // both centres in the same place, or the turned one drifts out of the group.
+    const upright = { x: 100, y: 100, w: 100, h: 40 };
+    const a = groupMemberBox(upright, 2, 2, 0, 0);
+    expect(a.x + a.w / 2).toBeCloseTo(300, 6);
+    expect(a.y + a.h / 2).toBeCloseTo(240, 6);
+  });
+
+  it('keeps a line a line and everything else grabbable', () => {
+    expect(groupMemberBox({ x: 0, y: 10, w: 300, h: 0 }, 0.5, 0.5, 0, 0).h).toBe(0);
+    expect(groupMemberBox({ x: 0, y: 0, w: 100, h: 50 }, 0.001, 0.001, 0, 0)).toMatchObject({
+      w: 4,
+      h: 4,
+    });
+  });
+});
+
+describe('occupiedRect', () => {
+  const el = (id: string, rect: { x: number; y: number; w: number; h: number }, rotation = 0) =>
+    ({ id, kind: 'shape', rect, rotation }) as never;
+
+  it('reaches past a rotated member, so a group step grows the drawn box', () => {
+    const els = [el('a', { x: 0, y: 0, w: 100, h: 40 }, 90), el('b', { x: 200, y: 0, w: 50, h: 50 })];
+    expect(occupiedRect(els, ['a', 'b'])).toEqual({ x: 30, y: -30, w: 220, h: 100 });
+  });
+
+  it('is the plain union when nothing is turned', () => {
+    const els = [el('a', { x: 0, y: 0, w: 100, h: 40 }), el('b', { x: 200, y: 0, w: 50, h: 50 })];
+    expect(occupiedRect(els, ['a', 'b'])).toEqual({ x: 0, y: 0, w: 250, h: 50 });
+  });
+
+  it('has no box without elements', () => {
+    expect(occupiedRect([], ['a'])).toBeNull();
   });
 });

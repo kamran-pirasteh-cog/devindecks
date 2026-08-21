@@ -26,8 +26,10 @@ import {
   isTitleRole,
   marginBox,
   marginGuides,
+  occupiedRect,
   outerGroupId,
   ROUNDABLE_PRESETS,
+  selectionUnit,
   selectionUnits,
   supportsTurn,
   unionRect,
@@ -506,6 +508,79 @@ function spansSlide(el: SlideElement | undefined, size: { w: EMU; h: EMU }): boo
   const slack = EMU_PER_POINT;
   const { x, y, w, h } = el.rect;
   return (x <= slack && x + w >= size.w - slack) || (y <= slack && y + h >= size.h - slack);
+}
+
+/**
+ * One axis of `fitToMargins`: where the block's low edge lands, and the factor
+ * that axis takes, when its overhanging SIDES are dragged onto their guides.
+ *
+ * An edge that is already inside its guide is never touched, so a block that
+ * overhangs on one side only is narrowed from that side rather than slid
+ * across — the far side stays exactly where the layout put it. The one case
+ * that has to move instead of scale is a block sitting entirely past a guide,
+ * where dragging the near edge in would turn the block inside out.
+ */
+function fitAxis(
+  lo: number,
+  span: number,
+  gLo: number,
+  gSpan: number,
+): { at: number; k: number } {
+  const hi = lo + span;
+  const gHi = gLo + gSpan;
+  const overLo = lo < gLo;
+  const overHi = hi > gHi;
+  if (!overLo && !overHi) return { at: lo, k: 1 };
+  if (overLo && overHi) return { at: gLo, k: gSpan / span }; // both sides: fills the guides
+  if (overLo) return hi <= gLo ? { at: gLo, k: 1 } : { at: gLo, k: (hi - gLo) / span };
+  return lo >= gHi ? { at: gHi - span, k: 1 } : { at: lo, k: (gHi - lo) / span };
+}
+
+/**
+ * Is the top of this block a title? Then the block's top edge belongs on the
+ * top guide whichever side of it the title currently sits.
+ *
+ * Guarded on the title being the TOPMOST member, because the rule is about the
+ * block's leading edge: a title sitting halfway down a slide is somebody's
+ * layout, and hauling the block up by it would push whatever is above the title
+ * off the top of the page.
+ */
+function leadsWithTitle(elements: SlideElement[], ids: string[], box: Rect): boolean {
+  const members = new Set(ids);
+  const slack = EMU_PER_POINT;
+  return elements.some(
+    (el) => members.has(el.id) && isTitleRole(el.role) && el.rect.y <= box.y + slack,
+  );
+}
+
+/**
+ * The move that parks a slide's title in the top-left corner of the safe area —
+ * its top edge on the top guide, its left edge on the left guide.
+ *
+ * The title's place on the page is a brand rule rather than a layout choice (see
+ * `titleBand`), so enforcing the margins puts it back on the corner whichever
+ * side of the guides it drifted to, instead of only dragging its overhang in.
+ *
+ * Moves the title's whole UNIT, as every other move in here does: a title
+ * grouped with an eyebrow or a rule keeps its companions. Null when the scope
+ * holds no title, when the title is already on the corner, or — same reason
+ * `fitToMargins` skips them — when its unit is full-bleed.
+ */
+function titleCornerShift(
+  elements: SlideElement[],
+  ids: string[],
+  frame: Rect,
+): { ids: string[]; dx: number; dy: number } | null {
+  const inScope = new Set(ids);
+  const title = elements.find((el) => inScope.has(el.id) && isTitleRole(el.role));
+  if (!title) return null;
+  const unit = selectionUnit(elements, title.id).filter((id) => inScope.has(id));
+  if (!unit.length) return null;
+  const box = occupiedRect(elements, unit);
+  if (!box) return null;
+  const dx = Math.round(frame.x - box.x);
+  const dy = Math.round(frame.y - box.y);
+  return dx || dy ? { ids: unit, dx, dy } : null;
 }
 
 /**
@@ -1377,7 +1452,9 @@ export const useEditor = create<EditorState>()(
           const grouped = new Set(groupUnits.flat());
 
           for (const unit of groupUnits) {
-            const box = unionRect(slide.elements, unit);
+            // What the group OCCUPIES, rotation included, so the step grows the
+            // box the canvas draws — see `occupiedRect`.
+            const box = occupiedRect(slide.elements, unit);
             if (!box) continue;
             const sx = groupScaleFactor(box.w, dw, MIN_SIZE);
             const sy = groupScaleFactor(box.h, dh, MIN_SIZE);
@@ -2086,24 +2163,34 @@ export const useEditor = create<EditorState>()(
 
     /**
      * PowerPoint has no equivalent: one press does to the slide's content what
-     * you would do by hand — select everything, drag a corner handle in until
-     * the block fits between the margin guides, then slide it onto them.
+     * you would do by hand — select everything, then drag the SIDES of that
+     * selection onto the margin guides.
      *
      * Everything in scope is one BLOCK: the union of its bounding boxes, scaled
-     * as a group (offsets from the pinned corner included, `groupMemberRect`,
-     * so gaps and alignments scale with it rather than the parts growing into
-     * each other) and then moved by the minimum that puts its overhanging edges
-     * on the guides.
+     * as a group (offsets from the pinned edge included, `groupMemberRect`, so
+     * gaps and alignments scale with it rather than the parts growing into each
+     * other).
      *
-     * The scale is UNIFORM and shrink-only — one factor on both axes, never
-     * above 1. Uniform because a one-axis squeeze distorts every picture and
-     * chart in the block; shrink-only because a short slide shouldn't be smeared
-     * down the page to reach a guide it was never meant to touch.
+     * The two axes are fitted INDEPENDENTLY, and on each axis only the edges
+     * that actually hang over a guide move — exactly what dragging that side's
+     * handle does, with the opposite side left where the layout put it. A
+     * single factor for both axes was the earlier rule, and it is what made one
+     * inch of overhang on the right crush the slide vertically too: text
+     * rewrapped, labels stacked, and a title that had fitted on two lines came
+     * back on four. A block hanging off one side only is narrowed from that
+     * side, not slid across, so the side that was already on its guide stays on
+     * it.
      *
-     * Anchored on the block's TOP-LEFT, which is why the two steps compose: the
-     * shrink pulls the right and bottom edges in, and the nudge afterwards is
-     * then the smallest move that fixes what's left. A block that already fits
-     * skips the shrink entirely and is purely moved, by the minimum.
+     * The TITLE is the exception to "only overhanging edges move": a slide's
+     * title belongs on the top guide, so when the block leads with one the
+     * block is SLID (never stretched) until that title's top sits on it, and
+     * only then is the bottom pulled in if it still overhangs.
+     *
+     * And once the block has landed, the title itself is parked on the CORNER of
+     * the safe area — top edge on the top guide, left edge on the left guide —
+     * see `titleCornerShift`. That is the one placement the brand fixes, so the
+     * press puts it back whether the title drifted in from the corner or out
+     * past it, even when the block around it needed no fitting at all.
      *
      * Charts scale through their FRAME and recompile, exactly as they do under a
      * group resize — inflating their parts and inferring the frame back would
@@ -2111,8 +2198,8 @@ export const useEditor = create<EditorState>()(
      *
      * FULL-BLEED objects sit this out entirely — see `spansSlide`. A band that
      * runs the height of the page, or a photo bled to both edges, is off the
-     * margins ON PURPOSE, and counting one in the block used to poison the
-     * shrink for everything else: the block was taller than the safe area by
+     * margins ON PURPOSE, and counting one in the block used to poison the fit
+     * for everything else: the block was taller than the safe area by
      * construction, so the whole slide got crushed to fit a shape that never
      * needed fitting. Dropped by GROUP, so a band's panel and the title inside
      * it stay together.
@@ -2142,23 +2229,28 @@ export const useEditor = create<EditorState>()(
 
       const frame = marginBox(s.deck.slideSize);
       if (frame.w <= 0 || frame.h <= 0) return;
-      const box = unionRect(slide.elements, ids);
+      // `occupiedRect`, not `unionRect`: the box being dragged is the one the
+      // canvas rings a selection with, so a rotated object counts by the space
+      // it actually covers — the same box a group resize scales.
+      const box = occupiedRect(slide.elements, ids);
       if (!box || box.w <= 0 || box.h <= 0) return;
 
-      const k = Math.min(1, frame.w / box.w, frame.h / box.h);
-      /** The shortest shift that lands `[at, at + span]` inside `[lo, hi]`. */
-      const nudge = (at: number, span: number, lo: number, hi: number): number => {
-        if (at < lo) return lo - at;
-        if (at + span > hi) return hi - (at + span);
-        return 0;
-      };
-      // Measured on the block AFTER the shrink, pinned at its top-left.
-      const dx = nudge(box.x, box.w * k, frame.x, frame.x + frame.w);
-      const dy = nudge(box.y, box.h * k, frame.y, frame.y + frame.h);
-      if (k === 1 && !dx && !dy) return; // already inside — no undo step for a no-op
+      const x = fitAxis(box.x, box.w, frame.x, frame.w);
+      const y = leadsWithTitle(slide.elements, ids, box)
+        ? // Slid onto the top guide whichever side of it the title started, then
+          // shrunk only if the block is genuinely taller than the safe area.
+          { at: frame.y, k: box.h > frame.h ? frame.h / box.h : 1 }
+        : fitAxis(box.y, box.h, frame.y, frame.h);
+
+      const dx = Math.round(x.at - box.x);
+      const dy = Math.round(y.at - box.y);
+      const fitted = x.k === 1 && y.k === 1 && !dx && !dy;
+      // A title already on its corner is the common case, so check it before
+      // committing: nothing to do means no undo step, as before.
+      if (fitted && !titleCornerShift(slide.elements, ids, frame)) return;
 
       get().commit();
-      if (k < 1) {
+      if (x.k !== 1 || y.k !== 1) {
         set((d) => {
           const sl = slideById(d.deck, d.currentSlideId);
           if (!sl) return;
@@ -2168,15 +2260,30 @@ export const useEditor = create<EditorState>()(
             if (!members.has(el.id)) continue;
             // A chart's parts are laid out by the compiler; its frame carries it.
             if (el.chartRef && chartIds.has(el.chartRef.chartId)) continue;
-            el.rect = groupMemberRect(box, el.rect, k, k);
+            // A picture takes ONE factor on both axes. The block's two factors
+            // are rarely equal — an overhang is usually on one axis only — and a
+            // picture's source is fitted to its rect, so the axis factors that
+            // merely reflow text would stretch the face in a photo. Same rule as
+            // the keyboard resize, which keeps a picture's ratio by default.
+            el.rect = groupMemberRect(box, el.rect, x.k, y.k, el.type === 'picture');
           }
-          scaleChartFrames(sl, ids, box, k, k, d.designSystem, MIN_SIZE);
+          scaleChartFrames(sl, ids, box, x.k, y.k, d.designSystem, MIN_SIZE);
         });
       }
+      // The scale is anchored on the block's own top-left, so the move that
+      // follows is the whole of the edge drag that the scale did not cover.
+      //
       // Through `shiftUnits`, as align and the arrow keys do: it carries a
       // chart's frame along with its elements, which a bare rect edit would
       // leave behind.
       if (dx || dy) set(shiftUnits([{ ids, dx, dy }]));
+      // Last, on the fitted geometry: the block's box is where it belongs, and
+      // the title inside it goes on the corner of the safe area. Recomputed
+      // rather than folded into `dy` above, because the fit may have scaled the
+      // block and moved the title within it.
+      const after = slideById(get().deck, get().currentSlideId);
+      const corner = after && titleCornerShift(after.elements, ids, frame);
+      if (corner) set(shiftUnits([corner]));
     },
 
     distribute(axis) {

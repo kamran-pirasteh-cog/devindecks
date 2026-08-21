@@ -101,6 +101,27 @@ export interface ColorStat {
   luminance: number;
   /** OKLCH chroma — how saturated. An accent is chromatic; ink is not. */
   chroma: number;
+  /**
+   * Distance between this colour's brightest and dimmest channel, 0..1.
+   *
+   * The tint detector, and the reason `chroma` alone could not be one.
+   * `approxChroma` is HSV saturation — a RATIO — so it collapses toward zero as
+   * a colour approaches white: a lavender card at #E4D3F5 scores 0.13 and the
+   * same hue at #F4EFFA scores 0.04, indistinguishable from a neutral grey by
+   * that measure even though the eye reads it as violet paper. The absolute
+   * spread does not collapse: 0 means every channel agrees and the colour is a
+   * true grey, and anything above a few points means there is a hue in it.
+   */
+  spread: number;
+  /**
+   * Area of the LARGEST single thing this colour fills, in EMU².
+   *
+   * Total fill area cannot tell a coloured panel from a coloured chip: forty
+   * chips across a deck sum to the same number as one full-bleed cover, and the
+   * two want opposite answers. The biggest single instance can, and it is the
+   * question `palette.ts` actually asks — "is this colour ever a box?"
+   */
+  maxFillArea: number;
 }
 
 /** Something that repeats across the deck in the same place: source furniture. */
@@ -226,11 +247,16 @@ export function surveyDeck(
         chars: 0,
         luminance: srgbLuminance(hex),
         chroma: approxChroma(hex),
+        spread: channelSpread(hex),
+        maxFillArea: 0,
         slideSet: new Set(),
       };
       colors.set(hex, stat);
     }
     stat.usage[usage] += weight;
+    if (usage === 'fill' || usage === 'background') {
+      stat.maxFillArea = Math.max(stat.maxFillArea, weight);
+    }
     stat.chars += chars;
     stat.slideSet.add(slideIndex);
   };
@@ -413,6 +439,22 @@ export function srgbLuminance(hex: string): number {
  * predictable — pure #FF0000 and pure #0000FF score identically here, where
  * their OKLCH chromas differ by more than 2×.
  */
+/**
+ * How far apart this colour's channels are, 0..1. See `ColorStat.spread`.
+ *
+ * Deliberately the same arithmetic as `approxChroma` without the division: the
+ * numerator was always the signal, and dividing by `max` is what threw it away
+ * at the light end.
+ */
+export function channelSpread(hex: string): number {
+  const h = hex.replace('#', '');
+  if (h.length !== 6) return 0;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
+}
+
 export function approxChroma(hex: string): number {
   const h = hex.replace('#', '');
   if (h.length !== 6) return 0;

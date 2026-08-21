@@ -248,6 +248,17 @@ export interface SankeyNode {
    */
   layer?: number;
   format?: SeriesFormat;
+  /**
+   * This node's own label settings, over the chart's. A Sankey has no series to
+   * hang a `PointOverride` on, so the node IS the narrowest node there is —
+   * without it, Delete on one node's label could only mean "no labels anywhere".
+   *
+   * Plural, like `WaterfallItem.labels`, because `label` on a node is already
+   * its NAME. Partial because it is only ever the DIFFERENCE from the chart's
+   * settings — `labelSpecFor` resolves it — so switching one node's label off
+   * can be undone by dropping the one field it wrote.
+   */
+  labels?: Partial<LabelSpec>;
 }
 
 export interface SankeyLink {
@@ -460,6 +471,92 @@ export interface ChartProvenance {
 }
 
 /* ------------------------------------------------------------------ */
+/* The author's brief                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Who is responsible for a remembered field.
+ *
+ * The distinction the whole record exists for. 'stated' is the author's own
+ * words; 'inferred' is us filling a hole — a span counted back from today, a
+ * client name lifted off a deck tag. A prompt may print a 'stated' value as
+ * fact; an 'inferred' one may only ever be printed as a question, because a
+ * confident wrong subject is the most expensive failure mode there is.
+ *
+ * 'derived' is the honest middle: no new information, only a restatement of
+ * what was typed — "arr" cased up to "ARR", the twenty quarters between the two
+ * the author named spelled out end to end. Printed as fact, kept separate so a
+ * bug in the restatement can be told from a bug in the reading.
+ */
+export type BriefFieldSource = 'stated' | 'derived' | 'inferred';
+
+/**
+ * What the author asked for, in their own words, kept on the chart.
+ *
+ * NOT a copy of the parsed brief. Categories, series names and the number
+ * format are already on the spec, and a second copy of them here would be a
+ * second source of truth that drifts the moment anyone touches the datasheet.
+ * What survives is only the part the spec CANNOT hold: the sentence, and which
+ * of the chart's facts were stated versus filled in for them.
+ *
+ * Every field carries its own origin, because the fields are not equally
+ * trustworthy and a research prompt has to treat them differently.
+ */
+export interface AuthorChartBrief {
+  /**
+   * The brief's own schema marker — deliberately not `SpecBase.version`, so
+   * this record can change shape without dragging every ChartSpec through a
+   * migration.
+   */
+  v: 1;
+  /** What the author typed, verbatim and untouched. Never re-parsed. */
+  description: string;
+  /** The date "the last 8 quarters" was counted back from, when it was. */
+  asOf?: string;
+
+  subject?: string;
+  /**
+   * 'described' is the author naming the entity in their own sentence — the
+   * strongest signal there is. Everything else is us looking around the deck,
+   * and a deck title is as often a file name as it is a company.
+   */
+  subjectFrom: 'described' | 'tag' | 'slide' | 'deck' | 'unknown';
+
+  measure?: string;
+  measureFrom: BriefFieldSource;
+  /** The rate riding over the top, when one was asked for as well. */
+  secondaryMeasure?: string;
+  /** Every measure named, in the order named — a scatter needs two. */
+  measures: string[];
+
+  dimension?: string;
+  dimensionFrom: BriefFieldSource;
+
+  /**
+   * The span as ASKED FOR — deliberately not the span the chart now shows. The
+   * categories are the truth of what is plotted; this is the record of what was
+   * requested, which is the only thing that makes an invented range detectable
+   * later. Endpoints rather than labels, so it can never pass for data.
+   */
+  period?: { grain: GanttGrain; from: string; to: string; count: number };
+  periodFrom: BriefFieldSource;
+
+  /** "in $M" — the scale note, when the sentence carried one. */
+  unitNote?: string;
+  unitFrom: BriefFieldSource;
+
+  /** What the sentence didn't say, verbatim from the brief that read it. */
+  gaps: string[];
+
+  /**
+   * The author was asked what the chart shows and declined. Has to stay
+   * distinguishable from carrying no brief at all: an older chart's labels may
+   * be hand-typed and worth reading, whereas these are ours and mean nothing.
+   */
+  askedAndSkipped?: boolean;
+}
+
+/* ------------------------------------------------------------------ */
 /* The spec union                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -476,6 +573,12 @@ export interface SpecBase {
   decorations: Decorations;
   plotPadding?: Insets;
   provenance?: ChartProvenance;
+  /**
+   * What the author asked for. Absent on charts picked straight off the grid
+   * and on every chart made before this existed — and absence is meaningful, so
+   * it is never backfilled: it means "read the chart, nobody told us".
+   */
+  authorBrief?: AuthorChartBrief;
 }
 
 export interface ColumnBarSpec extends SpecBase {

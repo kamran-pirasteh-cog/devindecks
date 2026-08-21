@@ -242,3 +242,13 @@ describe('recommendLayouts', () => {
     expect(r.suggestions.every((s) => s.why.length > 10)).toBe(true);
   });
 });
+
+describe('readBrief — units', () => {
+  it('reads a currency scale written as a symbol', () => {
+    // "$B" has no word boundary before the "$", which the old pattern required
+    // — so this came out unscaled, a 1000x error that looked fine on the slide.
+    expect(readBrief('revenue in $B', { asOf: AS_OF }).unitDivisor).toBe(1e9);
+    expect(readBrief('revenue in $K', { asOf: AS_OF }).unitDivisor).toBe(1e3);
+    expect(readBrief('revenue in $M', { asOf: AS_OF }).unitDivisor).toBe(1e6);
+  });
+});
