@@ -5,18 +5,20 @@
  * Everything here reads from tables built earlier (`palette`, `type`, `classify`)
  * rather than deciding anything itself — that separation is what makes the
  * output consistent across a whole deck and testable in isolation. This file is
- * the part that actually rewrites elements, and it makes exactly three kinds of
+ * the part that actually rewrites elements, and it makes exactly four kinds of
  * change:
  *
  *  1. TYPOGRAPHY — font, size, weight, colour, caps, per run.
  *  2. RHYTHM — paragraph spacing and line spacing onto the brand's own values.
  *     Reclaims height before `refit` has to choose between shrinking type and
  *     growing boxes, which is why it belongs here and not there.
- *  3. REMOVAL — source logos, footers and page numbers, which our chrome
+ *  3. SHAPE — rectangular presets lose their rounding. See `squareCorners`.
+ *  4. REMOVAL — source logos, footers and page numbers, which our chrome
  *     replaces.
  *
- * What it deliberately does NOT change is geometry. Every rect goes through
- * untouched; `refit` owns that, and only after this pass has told it what the
+ * What it deliberately does NOT change is LAYOUT. Every rect goes through
+ * untouched — corners are the brand's, positions and sizes are not this pass's
+ * business; `refit` owns those, and only after this pass has told it what the
  * type is now.
  */
 import type {
@@ -24,11 +26,13 @@ import type {
   Outline,
   Paragraph,
   ShapeElement,
+  ShapePreset,
   Slide,
   SlideElement,
   TextBody,
   TextRun,
 } from '@/model';
+import { ROUNDABLE_PRESETS } from '@/model';
 import { resolveTypeRole, token, type DesignSystem } from '@/model/tokens';
 import type { SlideClassification } from './classify';
 import { bodyOf, isChromeRole, typeRoleFor, type BrandRole } from './classify';
@@ -154,8 +158,9 @@ function restyleRhythm(
  *  1. Inside a panel, DERIVED from the panel's lightness. A mapped colour on a
  *     dark panel stays dark and becomes illegible the moment the brand palette
  *     changes; a derived one flips by itself.
- *  2. Mapped from the source colour, when the source stated one.
- *  3. The role's own token, when it didn't.
+ *  2. For a KPI, the role's token, whatever the source said. See below.
+ *  3. Mapped from the source colour, when the source stated one.
+ *  4. The role's own token, when it didn't.
  */
 function runColor(
   run: TextRun,
@@ -169,13 +174,29 @@ function runColor(
       ? token(resolveTypeRole(ds, typeRoleFor(role)).colorToken)
       : token('surface.base');
   }
+  /*
+   * The big number takes the brand's KPI colour, overriding the source.
+   *
+   * Every other run is mapped, because the source author's choice of colour
+   * usually carries their meaning. A display statistic is the exception: the
+   * brand states outright what colour its numbers are (`ds.type.kpiValue`), and
+   * a source deck that set its stats in its OWN accent maps that accent to our
+   * ink — which is the correct answer for the colour and the wrong answer for
+   * the number. The deck came back with every headline figure in black, so the
+   * one element on the slide meant to be seen first read as body copy.
+   *
+   * A run already pointing at a token is left alone: the deck may have been
+   * part-converted and its author may have chosen that token deliberately.
+   */
+  if (typeRoleFor(role) === 'kpiValue' && run.color?.kind !== 'token') {
+    return token(resolveTypeRole(ds, 'kpiValue').colorToken);
+  }
   if (run.color) {
-    const hex = run.color.kind === 'hex' ? normalizeHex(run.color.hex) : null;
     // A run already pointing at a token is left pointing at it — the deck may
     // have been part-converted, and remapping a token through the source
     // palette would be meaningless.
     if (run.color.kind === 'token') return run.color;
-    return mapColor(colors, hex);
+    return mapColor(colors, normalizeHex(run.color.hex));
   }
   return token(resolveTypeRole(ds, typeRoleFor(role)).colorToken);
 }
@@ -251,6 +272,24 @@ function restyleOutline(outline: Outline | undefined, colors: ColorMap): Outline
   return { ...outline, color: mapColor(colors, normalizeHex(outline.color.hex)) };
 }
 
+/**
+ * Square the corners of a rectangular shape.
+ *
+ * Rounding is a brand decision, not the author's content, and it is one of the
+ * loudest: a converted deck whose cards, chips and callouts all keep the source
+ * deck's pill corners still reads as the source deck's design however correct
+ * every colour and size on it is. Our decks are drawn with square corners, so
+ * conversion draws square corners.
+ *
+ * Only the rectangular family is touched, for the reason `ROUNDABLE_PRESETS`
+ * gives: an ellipse has no corners to square, and a chevron's are structural —
+ * squaring one would turn it into a different shape rather than the same shape
+ * unrounded.
+ */
+function squareCorners(preset: ShapePreset): ShapePreset {
+  return ROUNDABLE_PRESETS.includes(preset) ? 'rect' : preset;
+}
+
 /* ------------------------------------------------------------------ */
 /* The pass                                                           */
 /* ------------------------------------------------------------------ */
@@ -306,6 +345,7 @@ export function restyleSlide(slide: Slide, ctx: RestyleContext): RestyleResult {
 
     if ('fill' in next) next.fill = restyleFill(next.fill, colors);
     if ('outline' in next) next.outline = restyleOutline(next.outline, colors);
+    if (next.type === 'shape') next.preset = squareCorners(next.preset);
 
     if (body && (body.paragraphs ?? []).length > 0) {
       const sourcePt = maxRunPt(body, ds);

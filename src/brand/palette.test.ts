@@ -57,6 +57,91 @@ describe('buildColorMap — mapping by JOB, not by hue', () => {
     expect(tokenFor(slides, '#FFFFFF')).toBe('surface.base');
   });
 
+  it('maps a NEUTRAL dark slide background to surface.base too', () => {
+    // A charcoal ground says nothing about the source brand, and carrying it
+    // over turns the whole deck black.
+    const slides = [slide([text('x', at(1, 2, 2, 0.4), { color: '#FFFFFF' })], '#101010')];
+    expect(tokenFor(slides, '#101010')).toBe('surface.base');
+  });
+
+  it('maps a pale coloured GROUND to ink.strong too', () => {
+    // The full-page version of the same case: a lavender cover page came back
+    // as an ordinary light-grey slide, which is the complaint that produced
+    // `spread`.
+    const slides = [slide([text('x', at(1, 2, 2, 0.4), { color: '#FFFFFF' })], '#EFE3F7')];
+    expect(tokenFor(slides, '#EFE3F7')).toBe('ink.strong');
+  });
+
+  it('but a warm WHITE ground is still paper', () => {
+    const slides = [slide([text('x', at(1, 2, 2, 0.4), { color: '#222222' })], '#FFFEF9')];
+    expect(tokenFor(slides, '#FFFEF9')).toBe('surface.base');
+  });
+
+  it('maps a COLOURED full-page ground to ink.strong — a ground stays a ground', () => {
+    // A colour page is the deck's punctuation. Flattened to white it becomes an
+    // ordinary slide; mapped to the accent it puts our accent behind every page.
+    // Ink is the only full-bleed ground our palette has.
+    const slides = [slide([text('x', at(1, 2, 2, 0.4), { color: '#FFFFFF' })], '#6B2FA0')];
+    expect(tokenFor(slides, '#6B2FA0')).toBe('ink.strong');
+  });
+
+  it('keeps a ground a ground even when the same colour also draws hairlines', () => {
+    // The defect: deck-wide stroke weight is a hairline total and one slide's
+    // ground is ten orders of magnitude bigger, so normalizing each usage
+    // against its own total let a few card borders outvote a full-bleed page.
+    // A deep-purple section opener was classified as a stroke colour and came
+    // back as `line.default` — a pale grey slide.
+    const opener = slide([text('The approach', at(1, 2, 6, 0.6), { color: '#FFFFFF' })], '#7B189F');
+    const rest = [1, 2, 3, 4].map(() =>
+      slide(
+        [
+          text('body copy '.repeat(20), at(1, 2, 6, 2)),
+          shape(at(1, 4.5, 3, 1.5), { outlineColor: '#7B189F', outlineWidthPt: 1 }),
+        ],
+        '#FFFFFF',
+      ),
+    );
+    expect(tokenFor([opener, ...rest], '#7B189F')).toBe('ink.strong');
+  });
+
+  it('maps a VERY pale tint card to ink.strong — the case a ratio could not see', () => {
+    // #F1E8FA is violet paper: eighteen points of channel spread, and an HSV
+    // saturation of 0.07 that no ratio threshold can tell from a neutral grey
+    // without also blacking out actual paper. `spread` separates them, because
+    // a true grey is 0 however light it is.
+    const slides = [slide([shape(at(1, 2, 4, 2.5), { fill: '#F1E8FA' })], '#FFFFFF')];
+    expect(tokenFor(slides, '#F1E8FA')).toBe('ink.strong');
+  });
+
+  it('leaves a genuinely neutral pale panel alone', () => {
+    // The other side of the same line. A cool grey card is a grey card, and
+    // blacking it out would be the mirror of the defect above.
+    const slides = [slide([shape(at(1, 2, 4, 2.5), { fill: '#EEF2F7' })], '#FFFFFF')];
+    expect(tokenFor(slides, '#EEF2F7')).toBe('surface.subtle');
+  });
+
+  it('maps a pale TINT card to ink.strong, not to the same grey as everything else', () => {
+    // The defect this fixes: a lightness-first test read every lavender, mint
+    // and blush card as "pale panel" and returned one grey. A deck that used
+    // three colours to separate three kinds of content came back with three
+    // identical boxes.
+    const slides = [slide([shape(at(1, 2, 4, 2.5), { fill: '#E4D3F5' })], '#FFFFFF')];
+    expect(tokenFor(slides, '#E4D3F5')).toBe('ink.strong');
+  });
+
+  it('…but a saturated CHIP is still an accent mark, not an ink block', () => {
+    // The size of the biggest single instance is what separates them: a pill is
+    // a mark, a card is a box. Blacking out every chip on the deck would be the
+    // mirror of the defect above.
+    const slides = [
+      slide([
+        shape(at(1, 2, 0.9, 0.25), { fill: '#E4D3F5' }),
+        text('lots and lots of body copy '.repeat(40), at(1, 3, 6, 3), { color: '#222222' }),
+      ]),
+    ];
+    expect(tokenFor(slides, '#E4D3F5')).toBe('brand.accent');
+  });
+
   it('maps a pale panel fill to surface.subtle', () => {
     const slides = [slide([shape(at(1, 2, 5, 2), { fill: '#F2F2F2' })], '#FFFFFF')];
     expect(tokenFor(slides, '#F2F2F2')).toBe('surface.subtle');

@@ -16,8 +16,9 @@
  *   - text, mid-grey, supporting        → ink.muted
  *   - the page itself                   → surface.base
  *   - large pale panels                 → surface.subtle
+ *   - coloured boxes and grounds        → ink.strong
  *   - hairlines and rules               → line.default
- *   - saturated, used sparingly         → brand.accent
+ *   - saturated marks, used sparingly   → brand.accent
  *
  * Two properties make the result trustworthy. It is TOTAL — every source colour
  * gets a token, so a converted deck contains no raw hex at all (an assertion in
@@ -71,13 +72,60 @@ const DARK = 0.18;
 /** Chroma above which a colour is doing something other than being grey. */
 const CHROMATIC = 0.35;
 /**
+ * Channel spread above which a FILL or a GROUND is a colour rather than paper.
+ *
+ * A different question from `CHROMATIC`, measured with a different number, and
+ * both halves of that matter. The question for text and strokes is "is this ink
+ * or is this emphasis?", where only a strong colour is emphasis. The question
+ * for a filled box is "did the author reach for a colour here?", and a tint
+ * answers yes at a fraction of the saturation.
+ *
+ * `approxChroma` cannot express that answer, which is the part worth recording.
+ * It is HSV saturation — a ratio — so it collapses toward zero as a colour
+ * approaches white. A lavender card scores 0.13 at #E4D3F5 and 0.04 at #F4EFFA,
+ * and no single ratio threshold separates the second from a neutral grey. That
+ * is why lowering the bar from 0.35 to 0.12 fixed the mid tints and left the
+ * pale ones coming back grey: the measure, not the threshold, was wrong.
+ *
+ * `spread` (max channel − min channel) does not collapse. A true grey is 0 by
+ * construction, whatever its lightness, so the bar can sit low enough to catch
+ * violet paper without ever catching actual paper. 0.05 is thirteen points out
+ * of 255 — well above the one or two a warm white carries (#FFFEF9 is 0.024)
+ * and a cool grey's rounding (#EEF2F7 is 0.035), and well below any fill a
+ * designer would describe by its hue.
+ */
+const TINTED = 0.05;
+/**
  * Coverage below which a saturated fill reads as an accent device rather than a
  * ground. Rules, bars and chips cover a fraction of a percent of a slide; a
  * panel or a backdrop covers tens of percent. Nothing real sits between.
  */
 const ACCENT_COVERAGE = 0.08;
+/**
+ * Share of ONE slide that a colour's biggest fill must cover before it counts
+ * as a coloured box rather than a coloured mark.
+ *
+ * The deck-wide `coverage` above cannot answer this. A single full-bleed cover
+ * in a forty-slide deck is 2.5% of the deck and 100% of its own slide; a row of
+ * chips repeated on every slide is the reverse. Asking "is this colour ever a
+ * box?" needs the largest single instance, which is what `maxFillArea` records.
+ *
+ * 2.5% of a slide is about 2.5in² — a small card. Chips, rules and bars are an
+ * order of magnitude below it.
+ */
+const BOX_SHARE = 0.025;
 /** Share of the deck's words below which a saturated text colour is emphasis. */
 const ACCENT_TEXT_SHARE = 0.25;
+/**
+ * Share of ONE slide a colour's background usage must reach to be read as that
+ * deck's ground regardless of what else it does.
+ *
+ * Half a page: a full-bleed ground clears it on its own slide, and no chip,
+ * rule or card can reach it. Deliberately not 1.0 — a "background" arrives
+ * either as the slide's own `bg` or as a full-bleed rectangle, and the latter is
+ * often inset by a margin or split into two panels.
+ */
+const GROUND_SHARE = 0.5;
 
 /**
  * How prevalent a colour is — the second half of what defines an accent.
@@ -113,6 +161,8 @@ interface DeckTotals {
   fillArea: number;
   strokeWeight: number;
   slideArea: number;
+  /** One slide's area, for judging whether a single fill is a box. */
+  oneSlideArea: number;
 }
 
 function deckTotals(survey: DeckSurvey): DeckTotals {
@@ -129,6 +179,7 @@ function deckTotals(survey: DeckSurvey): DeckTotals {
     fillArea,
     strokeWeight,
     slideArea: survey.slideSize.w * survey.slideSize.h * Math.max(1, survey.slideCount),
+    oneSlideArea: Math.max(1, survey.slideSize.w * survey.slideSize.h),
   };
 }
 
@@ -160,6 +211,19 @@ function prevalenceOf(stat: ColorStat, usage: ColorUsage, totals: DeckTotals): P
  * panel it was written on.
  */
 function primaryUsage(stat: ColorStat, totals: DeckTotals): ColorUsage {
+  // A GROUND IS A GROUND. Being the whole page behind a slide is the most
+  // decisive thing a colour can do, and it is not a claim the normalized scores
+  // below can be trusted to reach: deck-wide stroke weight is a hairline total,
+  // ~10¹¹, while one slide's ground is ~10¹³, so a colour that paints a full
+  // page AND happens to outline a few cards scored as a stroke colour and came
+  // back as `line.default`. That is how a deep-purple section opener converted
+  // to a pale grey slide — the exact failure the per-usage normalization was
+  // introduced to fix, reappearing one usage over.
+  //
+  // The test is absolute rather than comparative, because the question is not
+  // "is this colour mostly a ground?" but "is this colour ever a ground?".
+  if (stat.usage.background >= totals.oneSlideArea * GROUND_SHARE) return 'background';
+
   const share = (n: number, d: number) => (d > 0 ? n / d : 0);
   const scores: Record<ColorUsage, number> = {
     text: share(stat.usage.text, totals.chars),
@@ -182,7 +246,7 @@ function primaryUsage(stat: ColorStat, totals: DeckTotals): ColorUsage {
 export function classifyColor(stat: ColorStat, totals: DeckTotals): ColorAssignment {
   const usage = primaryUsage(stat, totals);
   const { share, coverage } = prevalenceOf(stat, usage, totals);
-  const { hex, luminance, chroma } = stat;
+  const { hex, luminance, chroma, spread } = stat;
 
   const out = (role: ColorRoleId, confidence: number, reason: string): ColorAssignment => ({
     hex,
@@ -193,15 +257,33 @@ export function classifyColor(stat: ColorStat, totals: DeckTotals): ColorAssignm
   });
 
   // ---- The page itself ----
+  //
+  // The ground is the one colour that always becomes our light surface,
+  // whatever it was. Mapping it by resemblance is how a converted deck ends up
+  // looking recoloured rather than rebranded: a dark source ground read as
+  // `ink.strong` turns the whole deck black, and a saturated one read as
+  // `brand.accent` puts our accent behind every slide — which is exactly the
+  // "why is my deck blue?" result. Our decks are light-ground decks; a source
+  // deck's choice of ground is not information we want to preserve.
+  //
+  // Text that was reversed out on the old dark ground stays readable because
+  // `legibility.ts` runs after this and re-derives ink against the ground that
+  // actually ends up behind it.
+  //
+  // The one exception is a CHROMATIC ground. A neutral ground — white, cream,
+  // charcoal — carries no meaning worth keeping, but a saturated one is the
+  // source brand's colour used at full bleed: a divider, an opener, a statement
+  // page. Flattening those to white loses the deck's own rhythm and leaves a
+  // run of pages that were meant to punctuate reading like every other slide.
+  // Our palette has no full-bleed colour, so the honest equivalent is our ink
+  // ground — and `legibility.ts`, running after this, flips the type on it.
   if (usage === 'background') {
-    if (luminance > LIGHT) return out('surface.base', 0.95, 'slide background, light');
-    // Chroma has to be consulted here, not just lightness. A brand's own accent
-    // is often BOTH saturated and dark — #2600FF has a luminance of 0.076 — and
-    // a luminance-only test mapped it to `ink.strong`, turning the source
-    // brand's signature colour into black wherever it backed a slide.
-    return chroma > CHROMATIC
-      ? out('brand.accent', 0.75, 'saturated dark ground — the source brand\'s accent')
-      : out('ink.strong', 0.8, 'slide background, dark — becomes an ink ground');
+    if (spread > TINTED) {
+      return out('ink.strong', 0.8, 'saturated full-page ground — becomes the brand ink ground');
+    }
+    return luminance > LIGHT
+      ? out('surface.base', 0.95, 'slide background, light')
+      : out('surface.base', 0.7, 'slide background — brought onto the brand ground');
   }
 
   // ---- Hairlines ----
@@ -228,17 +310,32 @@ export function classifyColor(stat: ColorStat, totals: DeckTotals): ColorAssignm
   }
 
   // ---- Fills ----
+  //
+  // HUE IS ASKED FIRST, before lightness, and the order is the whole point.
+  // Source brands lean on tints — pale lavender cards, soft mint callouts — and
+  // a lightness-first test read every one of them as a pale panel and returned
+  // the same light grey. A deck whose author had used colour to separate three
+  // kinds of content came back with three identical grey boxes: technically
+  // on-brand, and visibly flatter than what they uploaded.
+  //
+  // We have no tints to map them to, so a coloured box becomes an INK box. That
+  // keeps the separation the author drew (a filled block still reads as a
+  // filled block) at full strength rather than at a whisper, and `legibility.ts`
+  // reverses the type out of it afterwards.
+  if (spread > TINTED) {
+    // Which kind of coloured thing it is depends on the biggest single instance,
+    // not on the deck-wide total: a chip repeated forty times and one full-bleed
+    // cover sum to the same coverage and want opposite answers.
+    const boxShare = totals.oneSlideArea > 0 ? stat.maxFillArea / totals.oneSlideArea : 0;
+    if (boxShare >= BOX_SHARE) {
+      return out('ink.strong', 0.75, 'coloured box or ground — becomes an ink panel');
+    }
+    return coverage < ACCENT_COVERAGE
+      ? out('brand.accent', 0.8, 'saturated fill used sparingly — accent mark')
+      : out('ink.strong', 0.55, 'saturated fill covering much of the deck');
+  }
   if (luminance > LIGHT) {
     return out('surface.subtle', 0.85, 'pale panel fill');
-  }
-  if (chroma > CHROMATIC) {
-    // A saturated fill is an accent block if it barely covers anything, and the
-    // brand's ink ground if the deck is built on it. `ACCENT_COVERAGE` is small
-    // on purpose: accent devices are rules, bars and chips, which cover a
-    // fraction of a percent of a slide.
-    return coverage < ACCENT_COVERAGE
-      ? out('brand.accent', 0.8, 'saturated fill used sparingly — accent block')
-      : out('ink.strong', 0.55, 'saturated fill covering much of the deck');
   }
   if (luminance < DARK) return out('ink.strong', 0.8, 'dark panel fill');
   return out('ink.muted', 0.4, 'mid-tone fill — no strong signal');

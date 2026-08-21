@@ -253,6 +253,8 @@ export function convertDeck(sourceSlides: Slide[], opts: ConvertOptions): Conver
   const allTraces = new Map<string, RestyleTrace>();
   const allRoles = new Map<string, BrandRole>();
   const frozen = new Set<string>();
+  /** Text lifted out of a filled shape — see `RefitContext.panelText`. */
+  const panelText = new Set<string>();
   const removedChrome: Record<string, number> = {};
   const legibilityFixes: LegibilityFix[] = [];
   let panelsSplit = 0;
@@ -264,6 +266,7 @@ export function convertDeck(sourceSlides: Slide[], opts: ConvertOptions): Conver
     const split = decoupleSlide(source, ds, newId);
     panelsSplit += split.splits;
     for (const id of split.frozen) frozen.add(id);
+    for (const id of split.textFromShape.keys()) panelText.add(id);
 
     /*
      * Elements created by the split need roles too.
@@ -338,6 +341,7 @@ export function convertDeck(sourceSlides: Slide[], opts: ConvertOptions): Conver
     traces: allTraces,
     roles: allRoles,
     frozen,
+    panelText,
   };
 
   let refits = restyled.map((slide) => refitSlide(slide, refitCtx));

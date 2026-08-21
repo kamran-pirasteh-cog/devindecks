@@ -86,6 +86,8 @@ export function text(body: string, rect: Rect, opts: TextOpts = {}): TextElement
 export interface ShapeOpts extends TextOpts {
   preset?: ShapeElement['preset'];
   fill?: string;
+  /** Opacity of `fill`, 0..1. Absent is opaque — a frosted panel is ~0.15. */
+  fillAlpha?: number;
   outlineColor?: string;
   outlineWidthPt?: number;
   /** Text inside the shape — what `decouple` splits out. */
@@ -99,7 +101,15 @@ export function shape(rect: Rect, opts: ShapeOpts = {}): ShapeElement {
     ...(opts.role ? { role: opts.role } : {}),
     rect,
     preset: opts.preset ?? 'rect',
-    ...(opts.fill ? { fill: { kind: 'solid' as const, color: hex(opts.fill) } } : {}),
+    ...(opts.fill
+      ? {
+          fill: {
+            kind: 'solid' as const,
+            color: hex(opts.fill),
+            ...(opts.fillAlpha !== undefined ? { alpha: opts.fillAlpha } : {}),
+          },
+        }
+      : {}),
     ...(opts.outlineColor
       ? {
           outline: {

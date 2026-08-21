@@ -8,30 +8,34 @@
  * front of an executive on faith. What makes it usable is not a promise that
  * everything worked, it's a short honest list of the places it didn't.
  *
- * So three things, in order of importance:
+ * So two things, in order of importance:
  *
- *  1. FLAGGED SLIDES FIRST. The whole value of the linter is that it turns "check
- *     all sixty slides" into "look at these three". Sorting them to the front is
- *     what delivers that.
- *  2. SOURCE BESIDE RESULT, both rendered through the real `<SlideView>` — the
- *     same trick `ImportSlidesDialog` uses. A preview drawn by anything other
- *     than the actual renderer is a preview of something that doesn't exist.
- *  3. WHAT CHANGED, in words. "Arial → Geist, 14 sizes → 6, 9 colours → 5
- *     tokens, 12 source logos removed" is checkable; "converted successfully" is
- *     not.
+ *  1. EVERY SLIDE, SOURCE BESIDE RESULT, both rendered through the real
+ *     `<SlideView>` — the same trick `ImportSlidesDialog` uses. A preview drawn
+ *     by anything other than the actual renderer is a preview of something that
+ *     doesn't exist. Deck order, start to finish — a reviewer about to present
+ *     this deck wants to page through the deck as it will be presented, not a
+ *     re-sorted or filtered subset of it. The flag counts and the
+ *     "only the flagged ones" filter are there when triage is what's wanted.
+ *  2. THE PROBLEMS, per slide, in words. A prose summary of the conversion's
+ *     bookkeeping — font counts, colour counts, size ladders — reads as
+ *     reassurance and costs the reader the whole top of the screen; the
+ *     previews are the evidence, and the only text worth keeping is the text
+ *     that points at something wrong.
  *
- * Per-slide, the reviewer can keep the ORIGINAL instead. That escape hatch
- * matters more than it looks: without it, one slide the engine mangles means
- * abandoning the conversion for the whole deck.
+ * Per-slide, the reviewer can keep the ORIGINAL instead, or drop the slide
+ * from the deck entirely. Those escape hatches matter more than they look:
+ * without them, one slide the engine mangles means abandoning the conversion
+ * for the whole deck, and a deck that carries three slides nobody wants means
+ * deleting them again in the editor.
  */
 import { useMemo, useState } from 'react';
-import { SlideView } from '@/render/SlideView';
+import { FitSlideView } from '@/render/FitSlideView';
+import type { SlideView } from '@/render/SlideView';
 import { getActiveDesignSystem } from '@/design/repository';
 import { SLIDE_16x9, type EMU, type Slide } from '@/model';
 import type { Diagnostic } from '@/model/ingest';
 import type { ConversionReport } from './convert';
-
-const THUMB_WIDTH = 300;
 
 export function ConvertReview({
   slides,
@@ -53,7 +57,12 @@ export function ConvertReview({
   const ds = getActiveDesignSystem();
   /** Slide numbers (1-based) the reviewer chose to keep unconverted. */
   const [keepOriginal, setKeepOriginal] = useState<Set<number>>(new Set());
-  const [onlyFlagged, setOnlyFlagged] = useState(report.flagged.length > 0);
+  // Excluded, not included: everything the upload contained comes along unless
+  // the reviewer says otherwise, so an untouched screen means "the whole deck".
+  const [excluded, setExcluded] = useState<Set<number>>(new Set());
+  // Off by default: the reviewer asked for a preview of the deck, and a screen
+  // that opens showing three of forty slides is not one.
+  const [onlyFlagged, setOnlyFlagged] = useState(false);
 
   const bySlide = useMemo(() => {
     const map = new Map<number, Diagnostic[]>();
@@ -63,23 +72,16 @@ export function ConvertReview({
     return map;
   }, [diagnostics]);
 
-  /** Flagged first, then source order. */
-  const order = useMemo(() => {
-    const flagged = new Set(report.flagged);
-    return slides
-      .map((_, i) => i + 1)
-      .sort((a, b) => {
-        const fa = flagged.has(a) ? 0 : 1;
-        const fb = flagged.has(b) ? 0 : 1;
-        return fa - fb || a - b;
-      });
-  }, [slides, report.flagged]);
+  /** Deck order, every slide. */
+  const order = useMemo(() => slides.map((_, i) => i + 1), [slides]);
 
   const shown = onlyFlagged ? order.filter((n) => report.flagged.includes(n)) : order;
 
+  const kept = order.filter((n) => !excluded.has(n));
+
   const accept = () => {
     onAccept(
-      slides.map((slide, i) => (keepOriginal.has(i + 1) ? (sourceSlides[i] ?? slide) : slide)),
+      kept.map((n) => (keepOriginal.has(n) ? (sourceSlides[n - 1] ?? slides[n - 1]) : slides[n - 1])),
     );
   };
 
@@ -101,9 +103,7 @@ export function ConvertReview({
         </div>
       ) : null}
 
-      <Summary report={report} />
-
-      <div className="mt-4 flex items-center gap-3 border-y border-zinc-200 py-2 text-xs dark:border-zinc-800">
+      <div className="flex items-center gap-3 border-y border-zinc-200 py-2 text-xs dark:border-zinc-800">
         <span className={report.clean ? 'text-emerald-700 dark:text-emerald-400' : ''}>
           <strong>{cleanCount}</strong> converted
           {report.flagged.length ? (
@@ -134,6 +134,11 @@ export function ConvertReview({
           </label>
         ) : null}
         <div className="flex-1" />
+        {excluded.size ? (
+          <span className="text-zinc-500">
+            {excluded.size} slide{excluded.size === 1 ? '' : 's'} left out
+          </span>
+        ) : null}
         {keepOriginal.size ? (
           <span className="text-zinc-500">
             {keepOriginal.size} slide{keepOriginal.size === 1 ? '' : 's'} kept as imported
@@ -141,7 +146,7 @@ export function ConvertReview({
         ) : null}
       </div>
 
-      <div className="mt-4 max-h-[46vh] space-y-5 overflow-y-auto pr-1">
+      <div className="mt-4 max-h-[56vh] space-y-5 overflow-y-auto pr-1">
         {shown.map((n) => (
           <SlideRow
             key={n}
@@ -153,6 +158,15 @@ export function ConvertReview({
             info={report.slides[n - 1]}
             diagnostics={bySlide.get(n) ?? []}
             untouched={untouched.has(n)}
+            included={!excluded.has(n)}
+            onToggleInclude={() =>
+              setExcluded((prev) => {
+                const next = new Set(prev);
+                if (next.has(n)) next.delete(n);
+                else next.add(n);
+                return next;
+              })
+            }
             keepOriginal={keepOriginal.has(n)}
             onToggleKeep={() =>
               setKeepOriginal((prev) => {
@@ -175,72 +189,29 @@ export function ConvertReview({
         </button>
         <button
           onClick={accept}
-          className="rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500"
+          disabled={kept.length === 0}
+          className="rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Use these {slides.length} slide{slides.length === 1 ? '' : 's'}
+          {kept.length === 0
+            ? 'No slides selected'
+            : `Use these ${kept.length} slide${kept.length === 1 ? '' : 's'}`}
         </button>
       </div>
     </div>
   );
 }
 
-/** What changed, deck-wide, in checkable numbers. */
-function Summary({ report }: { report: ConversionReport }) {
-  const chrome = Object.entries(report.removedChrome);
-  const items: string[] = [];
-  if (report.sourceFonts.length) {
-    items.push(`${report.sourceFonts.join(', ')} → ${report.brandFonts.join(', ')}`);
-  }
-  // Only worth stating when there was something to state. "0 text sizes → 0"
-  // reads as a report on work done rather than as the absence of any.
-  if (report.sizesBefore > 0) {
-    items.push(`${report.sizesBefore} text sizes → ${report.sizesAfter}`);
-  }
-  if (report.colorsBefore > 0) {
-    items.push(`${report.colorsBefore} colours → ${report.tokensAfter} brand tokens`);
-  }
-  if (report.panelsSplit) {
-    items.push(`${report.panelsSplit} filled shape${report.panelsSplit === 1 ? '' : 's'} split from their text`);
-  }
-  for (const [role, count] of chrome) {
-    const label = role.replace('chrome.', '').replace('pageNumber', 'page number');
-    items.push(`${count} source ${label}${count === 1 ? '' : 's'} removed`);
-  }
-  if (report.unconvertible.length < report.slideCount) {
-    items.push('page numbers now brand-driven');
-  }
-
-  // Nothing to report at all: the caller shows its own banner for this, and an
-  // empty "What changed" box under it would just be noise.
-  if (!items.length) return null;
-
-  return (
-    <div className="rounded-lg bg-zinc-50 px-3 py-2.5 dark:bg-zinc-800/50">
-      <h3 className="text-xs font-semibold">What changed</h3>
-      <ul className="mt-1.5 grid gap-x-4 gap-y-0.5 text-[11px] text-zinc-600 sm:grid-cols-2 dark:text-zinc-300">
-        {items.map((item) => (
-          <li key={item}>· {item}</li>
-        ))}
-      </ul>
-      {report.coherenceAdjustments.length ? (
-        <p className="mt-2 text-[11px] text-zinc-600 dark:text-zinc-300">
-          {report.coherenceAdjustments
-            .map(
-              (a) =>
-                `Most ${a.role} text needed to be smaller, so all of it was set to ${a.toPt}pt (from ${a.fromPt}pt).`,
-            )
-            .join(' ')}
-        </p>
-      ) : null}
-      {report.weakColors.length ? (
-        <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-400">
-          Unsure about {report.weakColors.length} colour
-          {report.weakColors.length === 1 ? '' : 's'}:{' '}
-          {report.weakColors.map((w) => `${w.hex} → ${w.tokenId}`).join(', ')}
-        </p>
-      ) : null}
-    </div>
-  );
+/**
+ * The same message, said once with a count.
+ *
+ * A slide with four text boxes that each dropped off the size ladder produces
+ * four identical lines, and four identical lines read as four problems. One
+ * line and a ×4 is the same information at a quarter of the height.
+ */
+function tally(ds: Diagnostic[]): [string, number][] {
+  const counts = new Map<string, number>();
+  for (const d of ds) counts.set(d.message, (counts.get(d.message) ?? 0) + 1);
+  return [...counts];
 }
 
 function SlideRow({
@@ -252,6 +223,8 @@ function SlideRow({
   info,
   diagnostics,
   untouched,
+  included,
+  onToggleInclude,
   keepOriginal,
   onToggleKeep,
 }: {
@@ -264,25 +237,37 @@ function SlideRow({
   diagnostics: Diagnostic[];
   /** Conversion had nothing to change here — a page image, not a slide. */
   untouched: boolean;
+  /** Unchecked slides never reach the deck. */
+  included: boolean;
+  onToggleInclude: () => void;
   keepOriginal: boolean;
   onToggleKeep: () => void;
 }) {
-  const errors = diagnostics.filter((d) => d.severity === 'error');
-  const warnings = diagnostics.filter((d) => d.severity === 'warning');
-  const notes = diagnostics.filter((d) => d.severity === 'info');
+  const errors = tally(diagnostics.filter((d) => d.severity === 'error'));
+  const warnings = tally(diagnostics.filter((d) => d.severity === 'warning'));
+  const notes = tally(diagnostics.filter((d) => d.severity === 'info'));
+  const errorCount = diagnostics.filter((d) => d.severity === 'error').length;
 
   return (
-    <div>
+    <div className={included ? '' : 'opacity-45'}>
       <div className="mb-1.5 flex items-baseline gap-2">
+        <input
+          type="checkbox"
+          checked={included}
+          onChange={onToggleInclude}
+          aria-label={`Include slide ${number}`}
+          title={included ? 'Leave this slide out of the deck' : 'Add this slide to the deck'}
+          className="self-center"
+        />
         <span className="text-xs font-semibold">Slide {number}</span>
         {info ? (
           <span className="text-[10px] uppercase tracking-wide text-zinc-400">
             {info.archetype}
           </span>
         ) : null}
-        {errors.length ? (
+        {errorCount ? (
           <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
-            {errors.length} to fix
+            {errorCount} to fix
           </span>
         ) : untouched ? (
           // Not "clean" — nothing was examined, because there was nothing to
@@ -297,7 +282,12 @@ function SlideRow({
         )}
         <div className="flex-1" />
         <label className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-          <input type="checkbox" checked={keepOriginal} onChange={onToggleKeep} />
+          <input
+            type="checkbox"
+            checked={keepOriginal}
+            onChange={onToggleKeep}
+            disabled={!included}
+          />
           Keep this one as imported
         </label>
       </div>
@@ -305,39 +295,32 @@ function SlideRow({
       <div className="grid gap-3 sm:grid-cols-2">
         <Pane label="Original" dim={!keepOriginal}>
           {source ? (
-            <SlideView
-              slide={source}
-              slideSize={sourceSlideSize}
-              designSystem={ds}
-              width={THUMB_WIDTH}
-            />
+            <FitSlideView slide={source} slideSize={sourceSlideSize} designSystem={ds} />
           ) : null}
         </Pane>
         <Pane label="Converted" dim={keepOriginal}>
-          <SlideView
-            slide={converted}
-            slideSize={SLIDE_16x9}
-            designSystem={ds}
-            width={THUMB_WIDTH}
-          />
+          <FitSlideView slide={converted} slideSize={SLIDE_16x9} designSystem={ds} />
         </Pane>
       </div>
 
       {errors.length || warnings.length || notes.length ? (
         <ul className="mt-1.5 space-y-0.5 text-[11px]">
-          {errors.map((d, i) => (
-            <li key={`e${i}`} className="text-red-700 dark:text-red-300">
-              ✕ {d.message}
+          {errors.map(([message, n]) => (
+            <li key={`e${message}`} className="text-red-700 dark:text-red-300">
+              ✕ {message}
+              {n > 1 ? ` (×${n})` : ''}
             </li>
           ))}
-          {warnings.map((d, i) => (
-            <li key={`w${i}`} className="text-amber-700 dark:text-amber-400">
-              ! {d.message}
+          {warnings.map(([message, n]) => (
+            <li key={`w${message}`} className="text-amber-700 dark:text-amber-400">
+              ! {message}
+              {n > 1 ? ` (×${n})` : ''}
             </li>
           ))}
-          {notes.map((d, i) => (
-            <li key={`i${i}`} className="text-zinc-500 dark:text-zinc-400">
-              · {d.message}
+          {notes.map(([message, n]) => (
+            <li key={`i${message}`} className="text-zinc-500 dark:text-zinc-400">
+              · {message}
+              {n > 1 ? ` (×${n})` : ''}
             </li>
           ))}
         </ul>
@@ -362,7 +345,7 @@ function Pane({
   return (
     <div className={dim ? 'opacity-40 transition-opacity' : 'transition-opacity'}>
       <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-400">{label}</div>
-      <div className="overflow-hidden rounded border border-zinc-200 dark:border-zinc-700 [&>div]:!w-full">
+      <div className="overflow-hidden rounded border border-zinc-200 dark:border-zinc-700">
         {children}
       </div>
     </div>

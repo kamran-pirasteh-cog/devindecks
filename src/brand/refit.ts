@@ -253,7 +253,9 @@ const maxRunPt = (body: TextBody, ds: DesignSystem): number => {
 /** What refit did, in order, so a bad result can be explained. */
 export type RefitStep =
   | 'margin-snap'
+  | 'sibling-box-match'
   | 'ladder-step-down'
+  | 'unwrap-label'
   | 'restore-source-size'
   | 'grow'
   | 'grow-rolled-back'
@@ -281,6 +283,13 @@ export interface RefitContext {
   roles: Map<string, BrandRole>;
   /** Panel ids from `decouple` — frozen geometry, never resized. */
   frozen: Set<string>;
+  /**
+   * Ids of text boxes that `decouple` lifted OUT of a filled shape — the label
+   * on a chip, the caption in a card. Their width is fixed by the panel behind
+   * them, so they are the one case where wrapping is a defect rather than a
+   * layout. See `LABEL_CHARS`.
+   */
+  panelText: Set<string>;
 }
 
 /**
@@ -288,6 +297,29 @@ export interface RefitContext {
  * deck's own choice. Below this it is not text any more.
  */
 export const ABSOLUTE_MIN_PT = 6;
+
+/**
+ * Characters below which a text box is a LABEL rather than a sentence.
+ *
+ * Only consulted for text lifted out of a panel, and only to decide whether a
+ * wrap is a defect. "Devin Lite" inside a chip is meant to be one line: the chip
+ * was drawn around it, so a second line makes the pill look broken however
+ * neatly the text fits vertically. Ordinary prose wrapping is not a defect and
+ * is never touched — which is why this is bounded by a character count and by
+ * panel membership rather than applied to every short box on the slide.
+ */
+export const LABEL_CHARS = 28;
+
+/** How much of its size a label may give up to stay on one line. */
+const UNWRAP_FLOOR_FRACTION = 0.75;
+
+/** A single short paragraph — a chip's label, a card's kicker. */
+export function isLabel(body: TextBody): boolean {
+  const paragraphs = body.paragraphs ?? [];
+  if (paragraphs.length !== 1) return false;
+  const text = (paragraphs[0].runs ?? []).map((r) => r.text ?? '').join('').trim();
+  return text.length > 0 && text.length <= LABEL_CHARS;
+}
 
 /** Tolerance for "it fits": one point of sub-pixel rounding. */
 const FIT_TOL: EMU = EMU_PER_POINT;
@@ -339,6 +371,39 @@ export function freeSpaceBelow(
 }
 
 /**
+ * The same, upward: room above this element before its nearest neighbour or the
+ * top margin.
+ *
+ * Needed because growth is not always downward. A box anchored `bottom` or
+ * `middle` holds its text against the bottom (or the centre) of the box, so
+ * adding height at the bottom MOVES THE TEXT DOWN — a card heading that grew a
+ * line slid down onto the bullets underneath it, closing a gap its unwrapped
+ * siblings kept. Such a box has to gain its height upward instead, which needs
+ * the room above measured too.
+ */
+export function freeSpaceAbove(
+  el: SlideElement,
+  siblings: SlideElement[],
+  slideSize: { w: EMU; h: EMU },
+): EMU {
+  const box = marginBox(slideSize, DEFAULT_MARGINS);
+  let limit = box.y;
+  for (const other of siblings) {
+    if (other.id === el.id) continue;
+    if (other.groupIds?.some((g) => el.groupIds?.includes(g))) continue;
+    if (!drawsSomething(other)) continue;
+    const sharesColumn =
+      other.rect.x < el.rect.x + el.rect.w && el.rect.x < other.rect.x + other.rect.w;
+    if (!sharesColumn) continue;
+    // Only things ABOVE this element's bottom edge can block its growth upward.
+    if (other.rect.y + other.rect.h <= el.rect.y) {
+      limit = Math.max(limit, other.rect.y + other.rect.h);
+    }
+  }
+  return Math.max(0, el.rect.y - limit);
+}
+
+/**
  * Refit one text element.
  *
  * Pure: it never inspects or mutates anything outside its arguments, so the
@@ -372,14 +437,56 @@ export function refitElement(
   let current = body;
   const brandPt = maxRunPt(body, ds);
   const measure = (b: TextBody, r: Rect) => measureTextBody(b, r, ds, measurer).overflowEmu;
+  /** Set by any step that leaves the brand ladder, and reported in the outcome. */
+  let offLadder = false;
+
+  /*
+   * ---- Step 1b: a chip's label must not wrap ----
+   *
+   * The only place this engine looks at WIDTH. Everything else here is a height
+   * question, because height is what overflows — but a label lifted out of a
+   * panel has a width it cannot exceed either, and the failure looks nothing
+   * like overflow. "SWE 1.7" broke across two lines inside a pill drawn for one,
+   * and every measurement said it fit: the box was tall enough for both lines.
+   *
+   * The panel cannot grow (it is frozen, and growing one chip in a row of three
+   * is the sibling problem `decouple.ts` exists to avoid), and the text box
+   * cannot grow sideways past it, so the only lever is the type. A pill's label
+   * half a point smaller is invisible; a pill's label on two lines is not.
+   */
+  if (ctx.panelText.has(el.id) && isLabel(current)) {
+    const wrapped = () => measureTextBody(current, rect, ds, measurer).lines > 1;
+    if (wrapped()) {
+      let pt = maxRunPt(current, ds);
+      // The role's own floor is not the right bound here. A caption's is 1.0 —
+      // it may not shrink at all, because a caption is already at the
+      // legibility floor — and that reasoning does not survive contact with a
+      // chip, whose alternative is not "slightly small text" but "a pill with
+      // its label broken in half". So the label may give up a quarter of its
+      // size, and never a point below what anyone can read.
+      const floor = Math.max(MIN_LEGIBLE_PT, brandPt * UNWRAP_FLOOR_FRACTION);
+      let shrank = false;
+      while (wrapped() && pt - 0.5 >= floor) {
+        current = scaleBody(current, (pt - 0.5) / pt, ds);
+        pt -= 0.5;
+        shrank = true;
+      }
+      // Below the ladder, so it says so — even when it did not fix the wrap, in
+      // which case `lint.ts` still has a box to complain about.
+      if (shrank) {
+        steps.push('unwrap-label');
+        offLadder = true;
+      }
+    }
+  }
 
   if (measure(current, rect) <= FIT_TOL) {
     return {
       element: { ...el, rect, body: current } as SlideElement,
       steps,
       overflowEmu: 0,
-      finalPt: brandPt,
-      offLadder: false,
+      finalPt: maxRunPt(current, ds),
+      offLadder,
     };
   }
 
@@ -406,7 +513,7 @@ export function refitElement(
           steps,
           overflowEmu: 0,
           finalPt: pt,
-          offLadder: false,
+          offLadder,
         };
       }
     }
@@ -464,7 +571,16 @@ export function refitElement(
   /** Grow into free space below. Bounded by what's free, needed, and the cap. */
   const tryGrow = (): boolean => {
     if (!policy.canGrow || ctx.frozen.has(el.id)) return false;
-    const free = freeSpaceBelow({ ...el, rect }, siblings, ctx.slideSize);
+    // Which way the box has to gain its height, so the text it already holds
+    // stays put: a top-anchored box grows downward, a bottom-anchored one
+    // upward, a middle-anchored one half each way.
+    const up = current.anchor === 'bottom' ? 1 : current.anchor === 'middle' ? 0.5 : 0;
+    const down = 1 - up;
+    const above = freeSpaceAbove({ ...el, rect }, siblings, ctx.slideSize);
+    const below = freeSpaceBelow({ ...el, rect }, siblings, ctx.slideSize);
+    // What's free, converted into total growth: a middle-anchored box with an
+    // inch below it can only take two inches if it also has one inch above.
+    const free = Math.min(up > 0 ? above / up : Infinity, down > 0 ? below / down : Infinity);
     const lineH =
       measureTextBody(current, rect, ds, measurer).paragraphs[0]?.lines[0]?.heightEmu ?? 0;
     // At least its own height, so a tall box is not held to four lines' worth.
@@ -472,7 +588,7 @@ export function refitElement(
     const needed = neededHeightEmu(current, rect, ds, measurer) - rect.h;
     const grow = Math.min(free, cap, Math.max(0, needed));
     if (grow <= FIT_TOL) return false;
-    const grown = { ...rect, h: rect.h + grow };
+    const grown = { ...rect, y: rect.y - grow * up, h: rect.h + grow };
     if (measure(current, grown) >= measure(current, rect)) return false;
     rect = grown;
     steps.push('grow');
@@ -487,7 +603,6 @@ export function refitElement(
    * legibility floor — declines immediately, which is correct: 9pt text made
    * smaller is not a fix.
    */
-  let offLadder = false;
   const tryShrink = (): boolean => {
     let pt = maxRunPt(current, ds);
     const floor = Math.max(MIN_LEGIBLE_PT, brandPt * policy.floorFraction);
@@ -551,6 +666,60 @@ export function siblingGroups(
   return [...buckets.values()].filter((g) => g.length >= 2);
 }
 
+/**
+ * Give a row of siblings the same box, not just the same size.
+ *
+ * `siblingGroups` says these boxes must end up at one size, and `refitSlide`
+ * gets there by taking the SMALLEST size any of them could fit — which hands
+ * the whole row's typography to whichever box happens to be the shortest.
+ *
+ * That is fine when the boxes were drawn alike and fatal when they weren't, and
+ * decks exported from Google Slides never draw them alike: an auto-sized text
+ * box is exactly as tall as the glyphs it held, so `01`, `02` and `03` arrive
+ * 0.46in, 0.43in and 0.33in tall. The 0.33in box could not hold 26pt, so it
+ * shrank to 17pt, and coupling then pushed its two identical neighbours down to
+ * 17pt as well — three display numerals set SMALLER than the sentence beside
+ * them, which is the hierarchy of the slide read backwards.
+ *
+ * The boxes were meant to be the same box. So before anything is measured, the
+ * short ones are grown to match the tallest in their group, and the row is fit
+ * as the row it was drawn as. Growth is only ever downward-from-anchor and only
+ * accepted when it collides with nothing, so this cannot introduce an overlap
+ * that wasn't there — and `refitSlide`'s rollback treats it as a geometry step
+ * like any other, so a collision it does cause is undone.
+ */
+function matchSiblingBoxes(slide: Slide, ctx: RefitContext): Map<string, Rect> {
+  const matched = new Map<string, Rect>();
+  for (const group of siblingGroups(slide.elements, ctx)) {
+    const tallest = Math.max(...group.map((el) => el.rect.h));
+    for (const el of group) {
+      if (ctx.frozen.has(el.id) || el.rect.h >= tallest) continue;
+      // A box sitting ON something does not own its own size — the shape behind
+      // it does. A numeral centred on a disc that grows a tenth of an inch is no
+      // longer mostly on the disc, and the ink `legibility.ts` derived for it
+      // against that disc stops being the ink for what's now behind it. Rows of
+      // chips and discs are already uniform anyway; it is the auto-sized text
+      // boxes with nothing behind them that arrive ragged.
+      if (ctx.panelText.has(el.id)) continue;
+      const body = bodyOf(el);
+      if (!body) continue;
+      // The same anchor arithmetic `tryGrow` uses, so the text this box already
+      // holds does not move when the box gains height.
+      const up = body.anchor === 'bottom' ? 1 : body.anchor === 'middle' ? 0.5 : 0;
+      const gain = tallest - el.rect.h;
+      const rect: Rect = { ...el.rect, y: el.rect.y - gain * up, h: tallest };
+      if (rect.y < 0 || rect.y + rect.h > ctx.slideSize.h) continue;
+      const grown = { ...el, rect } as SlideElement;
+      const others = slide.elements.filter((o) => o.id !== el.id);
+      const wasClear = !overlapPairs([el, ...others], FIT_TOL).size;
+      const stillClear = !overlapPairs([grown, ...others], FIT_TOL).size;
+      if (wasClear && !stillClear) continue;
+      matched.set(el.id, rect);
+    }
+  }
+  return matched;
+}
+
 /* ------------------------------------------------------------------ */
 /* One slide                                                          */
 /* ------------------------------------------------------------------ */
@@ -566,9 +735,21 @@ export function refitSlide(slide: Slide, ctx: RefitContext): SlideRefit {
   const before = overlapPairs(slide.elements, FIT_TOL);
   const outcomes = new Map<string, RefitOutcome>();
 
+  // ---- Row geometry first: a row of siblings is fit as one row ----
+  const matched = matchSiblingBoxes(slide, ctx);
+  const start = matched.size
+    ? slide.elements.map((el) => {
+        const rect = matched.get(el.id);
+        return rect ? ({ ...el, rect } as SlideElement) : el;
+      })
+    : slide.elements;
+
   // ---- First pass: every element independently ----
-  let elements = slide.elements.map((el) => {
-    const outcome = refitElement(el, slide.elements, ctx);
+  let elements = start.map((el) => {
+    const fit = refitElement(el, start, ctx);
+    const outcome = matched.has(el.id)
+      ? { ...fit, steps: ['sibling-box-match' as RefitStep, ...fit.steps] }
+      : fit;
     outcomes.set(el.id, outcome);
     return outcome.element;
   });
@@ -587,7 +768,11 @@ export function refitSlide(slide: Slide, ctx: RefitContext): SlideRefit {
     // put it on top of its neighbour.
     const movedIt = (id: string) => {
       const steps = outcomes.get(id)?.steps ?? [];
-      return steps.includes('grow') || steps.includes('margin-snap');
+      return (
+        steps.includes('grow') ||
+        steps.includes('margin-snap') ||
+        steps.includes('sibling-box-match')
+      );
     };
     const culprits = new Set(created.flatMap((p) => p.split('|')).filter(movedIt));
     if (culprits.size) {
