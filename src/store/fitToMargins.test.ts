@@ -1,5 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { inchesToEmu, marginBox, type Deck, type ShapeElement } from '@/model';
+import { describe, expect, it } from 'vitest';
+import {
+  inchesToEmu,
+  marginBox,
+  type Deck,
+  type PictureElement,
+  type ShapeElement,
+  type SlideElement,
+} from '@/model';
 import { loadDeck, useEditor } from './editorStore';
 
 const SIZE = { w: 12_192_000, h: 6_858_000 };
@@ -9,7 +16,11 @@ function shape(id: string, rect: ShapeElement['rect']): ShapeElement {
   return { id, type: 'shape', preset: 'rect', rect };
 }
 
-function deck(elements: ShapeElement[]): Deck {
+function picture(id: string, rect: PictureElement['rect']): PictureElement {
+  return { id, type: 'picture', src: 'asset:1', rect };
+}
+
+function deck(elements: SlideElement[]): Deck {
   return {
     id: 'd1',
     title: 'T',
@@ -35,7 +46,7 @@ const rectOf = (id: string) =>
     .find((e) => e.id === id)!.rect;
 
 describe('fitToMargins', () => {
-  it('moves the whole slide as one block, keeping the gaps between objects', () => {
+  it('drags the overhanging sides in and leaves the far sides where they were', () => {
     // Two shapes an inch apart, the pair hanging off the top-left corner.
     loadDeck(
       deck([
@@ -51,11 +62,133 @@ describe('fitToMargins', () => {
     s().fitToMargins();
     const a = rectOf('a');
     const b = rectOf('b');
-    expect(a.x).toBe(FRAME.x); // outermost left edge on the left guide
-    expect(a.y).toBe(FRAME.y); // outermost top edge on the top guide
-    expect(b.x - (a.x + a.w)).toBe(inchesToEmu(1)); // gap survives
-    expect(a.w).toBe(inchesToEmu(2)); // nothing resized: it already fit
-    expect(b.h).toBe(inchesToEmu(2));
+    expect(a.x).toBe(FRAME.x); // overhanging left edge on the left guide
+    expect(a.y).toBe(FRAME.y); // overhanging top edge on the top guide
+    // The block's far edges never overhung anything, so they did not move.
+    expect(b.x + b.w).toBe(inchesToEmu(4));
+    expect(Math.max(a.y + a.h, b.y + b.h)).toBe(inchesToEmu(1));
+    // Which makes each axis its own factor, and the gap follows the x one.
+    const kx = (inchesToEmu(4) - FRAME.x) / inchesToEmu(5);
+    expect(Math.abs(b.x - (a.x + a.w) - inchesToEmu(1) * kx)).toBeLessThanOrEqual(1);
+  });
+
+  it('slides the block so a leading title sits on the top guide', () => {
+    // Title well below the guide with nothing overhanging: the block still
+    // travels, because the title's place on the page is the brand's call.
+    const drop = inchesToEmu(1.5);
+    loadDeck(
+      deck([
+        { ...shape('title', { x: FRAME.x, y: drop, w: inchesToEmu(6), h: inchesToEmu(1) }), role: 'title' },
+        shape('body', { x: FRAME.x, y: drop + inchesToEmu(2), w: inchesToEmu(6), h: inchesToEmu(2) }),
+      ]),
+    );
+    s().fitToMargins();
+    const title = rectOf('title');
+    const body = rectOf('body');
+    expect(title.y).toBe(FRAME.y); // top-aligned to the top margin guide
+    expect(title.h).toBe(inchesToEmu(1)); // slid, never stretched
+    expect(body.y - (title.y + title.h)).toBe(inchesToEmu(1)); // gap intact
+  });
+
+  it('does not haul the block up by a title that is not its top edge', () => {
+    loadDeck(
+      deck([
+        shape('above', { x: FRAME.x, y: inchesToEmu(1), w: inchesToEmu(2), h: inchesToEmu(1) }),
+        {
+          ...shape('title', { x: FRAME.x, y: inchesToEmu(3), w: inchesToEmu(6), h: inchesToEmu(1) }),
+          role: 'title',
+        },
+      ]),
+    );
+    s().fitToMargins();
+    // `above` stays: sliding the whole block by this title would push it off
+    // the top of the page. The title alone travels to its corner.
+    expect(rectOf('above').y).toBe(inchesToEmu(1));
+    expect(rectOf('title')).toEqual({
+      x: FRAME.x,
+      y: FRAME.y,
+      w: inchesToEmu(6),
+      h: inchesToEmu(1),
+    });
+  });
+
+  it('parks the title on the corner of the safe area', () => {
+    // Title indented and dropped from the corner, with everything comfortably
+    // inside the guides: the block needs no fitting, the title still moves.
+    loadDeck(
+      deck([
+        {
+          ...shape('title', {
+            x: FRAME.x + inchesToEmu(2),
+            y: FRAME.y + inchesToEmu(1),
+            w: inchesToEmu(6),
+            h: inchesToEmu(1),
+          }),
+          role: 'title',
+        },
+        shape('body', {
+          x: FRAME.x + inchesToEmu(2),
+          y: FRAME.y + inchesToEmu(3),
+          w: inchesToEmu(6),
+          h: inchesToEmu(2),
+        }),
+      ]),
+    );
+    s().fitToMargins();
+    const title = rectOf('title');
+    expect(title.x).toBe(FRAME.x); // left edge on the left guide
+    expect(title.y).toBe(FRAME.y); // top edge on the top guide
+    expect(title.w).toBe(inchesToEmu(6)); // moved, never stretched
+    expect(title.h).toBe(inchesToEmu(1));
+    // The block rode up with its leading title, but the corner's LEFT pull is
+    // the title's own: the body keeps the indent its layout gave it.
+    expect(rectOf('body').x).toBe(FRAME.x + inchesToEmu(2));
+    expect(rectOf('body').y).toBe(FRAME.y + inchesToEmu(2));
+  });
+
+  it('carries a grouped title\u2019s companions onto the corner with it', () => {
+    const eyebrow = {
+      x: FRAME.x + inchesToEmu(2),
+      y: FRAME.y + inchesToEmu(1),
+      w: inchesToEmu(2),
+      h: inchesToEmu(0.3),
+    };
+    loadDeck(
+      deck([
+        { ...shape('eyebrow', eyebrow), groupIds: ['g1'] },
+        {
+          ...shape('title', {
+            x: eyebrow.x,
+            y: eyebrow.y + eyebrow.h,
+            w: inchesToEmu(6),
+            h: inchesToEmu(1),
+          }),
+          role: 'title',
+          groupIds: ['g1'],
+        },
+      ]),
+    );
+    s().fitToMargins();
+    // The unit's box lands on the corner, so the eyebrow above the title is
+    // what sits on the guides — the group did not come apart.
+    expect(rectOf('eyebrow').x).toBe(FRAME.x);
+    expect(rectOf('eyebrow').y).toBe(FRAME.y);
+    expect(rectOf('title').x).toBe(FRAME.x);
+    expect(rectOf('title').y).toBe(FRAME.y + eyebrow.h);
+  });
+
+  it('leaves a title already on the corner alone', () => {
+    loadDeck(
+      deck([
+        {
+          ...shape('title', { x: FRAME.x, y: FRAME.y, w: inchesToEmu(6), h: inchesToEmu(1) }),
+          role: 'title',
+        },
+      ]),
+    );
+    const before = s().deck;
+    s().fitToMargins();
+    expect(s().deck).toBe(before); // no state change, so no undo step
   });
 
   it('pulls an overhanging right/bottom block back onto those guides', () => {
@@ -75,17 +208,16 @@ describe('fitToMargins', () => {
     expect(a.y + a.h).toBe(FRAME.y + FRAME.h);
   });
 
-  it('shrinks the block uniformly when it is too big, anchored on its top-left', () => {
-    // Wider than the safe area and starting inside it, so the shrink alone
-    // fixes the overhang and no move is needed.
+  it('fits the axes independently, so a wide block is not also flattened', () => {
+    // Wider than the safe area and starting inside it, but well short of the
+    // bottom guide: the height has no business changing.
     const w = FRAME.w + inchesToEmu(2);
     loadDeck(deck([shape('a', { x: FRAME.x, y: FRAME.y, w, h: inchesToEmu(3) })]));
     s().fitToMargins();
     const a = rectOf('a');
-    const k = FRAME.w / w;
-    expect(a.w).toBe(Math.round(w * k));
-    expect(a.h).toBe(Math.round(inchesToEmu(3) * k)); // one factor, both axes
-    expect(a.x).toBe(FRAME.x); // top-left pinned
+    expect(a.w).toBe(FRAME.w); // right edge dragged onto the right guide
+    expect(a.h).toBe(inchesToEmu(3)); // and the other axis untouched
+    expect(a.x).toBe(FRAME.x); // the side that already fit is pinned
     expect(a.y).toBe(FRAME.y);
   });
 
@@ -145,9 +277,9 @@ describe('fitToMargins', () => {
     s().fitToMargins();
     expect(rectOf('band')).toEqual(band); // untouched: off the margins on purpose
     const body = rectOf('body');
-    expect(body.w).toBe(inchesToEmu(2)); // not crushed to fit the band's height
-    expect(body.h).toBe(inchesToEmu(2));
-    expect(body.x + body.w).toBe(FRAME.x + FRAME.w);
+    expect(body.h).toBe(inchesToEmu(2)); // not crushed to fit the band's height
+    expect(body.x).toBe(SIZE.w - inchesToEmu(1)); // left edge never overhung
+    expect(body.x + body.w).toBe(FRAME.x + FRAME.w); // only the right side moved
   });
 
   it('leaves a whole band group alone when its panel is full-bleed', () => {
@@ -211,6 +343,23 @@ describe('fitToMargins', () => {
     s().fitToMargins();
     expect(rectOf('a').x).toBe(FRAME.x);
     expect(rectOf('b').x).toBe(-inchesToEmu(1)); // untouched
+  });
+
+  it('keeps a picture\u2019s aspect ratio when the axes take different factors', () => {
+    // The block overhangs on the right only, so x shrinks and y does not — the
+    // combination that used to stretch every photo in the block sideways.
+    const w = inchesToEmu(4);
+    const h = inchesToEmu(3);
+    loadDeck(
+      deck([
+        picture('pic', { x: FRAME.x, y: FRAME.y, w, h }),
+        shape('b', { x: FRAME.x + w, y: FRAME.y, w: inchesToEmu(20), h }),
+      ]),
+    );
+    s().fitToMargins();
+    const pic = rectOf('pic');
+    expect(pic.w).toBeLessThan(w); // it did take the fit
+    expect(Math.abs(pic.w / pic.h - w / h)).toBeLessThan(0.01);
   });
 
   it('does not group the objects it moved', () => {
