@@ -20,24 +20,14 @@
  * promise something the chart doesn't deliver. They're memoised per design
  * system — compiling fourteen charts is cheap, but not on every render.
  *
- * Two manual sources, in this order: the house's own chart TEMPLATES from Admin
- * first, then the plain layouts. A template is the whole point of having Admin —
- * a revenue waterfall the house has already argued about beats a blank one — so
- * it goes above the fold, and picking one stamps provenance so the chart can
- * later be told its template moved.
+ * Manual picks are the brand's styled variants first, then the plain layouts.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SlideView } from '@/render/SlideView';
-import {
-  listChartTemplates,
-  seedChartTemplatesIfFirstRun,
-  type StoredChartTemplate,
-} from '@/charts/repository';
 import { stampProvenance } from '@/charts/provenance';
 import {
   chartStyleForVariant,
   defaultVariantIdFor,
-  dsForChartTemplate,
   dsForChartVariant,
 } from '@/charts/style';
 import { CHART_KIND_LABELS } from '@/charts/kinds';
@@ -57,7 +47,6 @@ import {
   sampleWaterfallData,
   setChartOrientation,
   supportsOrientation,
-  withChartStyleDefaults,
   type ChartOrientation,
   token,
   type ChartSpec,
@@ -151,15 +140,6 @@ export function ChartPopover({
     }
   }, [orientation]);
 
-  // Read once, on open: localStorage is the seam every repository here sits
-  // behind, and a picker that re-read it per render would recompile the tiles.
-  const [templates, setTemplates] = useState<StoredChartTemplate[]>([]);
-  useEffect(() => {
-    seedChartTemplatesIfFirstRun(withChartStyleDefaults(ds.chart));
-    setTemplates(listChartTemplates());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     const onDown = (e: MouseEvent) => {
@@ -210,39 +190,12 @@ export function ChartPopover({
     [ds, orientation],
   );
 
-  // Templates obey the orientation toggle too. The control sits above every
-  // tile in the picker, so a template drawn the other way round reads as the
-  // toggle being broken rather than as the author's choice — and a template is
-  // a starting point, not a fixed picture. Kinds with no side to lie on (pie,
-  // scatter, bubble) are left exactly as the author built them.
-  const templatePreviews = useMemo(
-    () =>
-      templates.map((t) => {
-        const spec = supportsOrientation(t.spec.kind)
-          ? setChartOrientation(t.spec, orientation)
-          : t.spec;
-        return {
-          template: t,
-          spec,
-          slide: {
-            id: `tpl-${t.id}-${orientation}`,
-            // Layered with the template's own style overrides, the same as
-            // Admin's grid — a tile that ignores them advertises a chart the
-            // insert doesn't produce.
-            elements: compilePreview(spec, dsForChartTemplate(ds, t.styleOverrides)),
-          },
-        };
-      }),
-    [templates, ds, orientation],
-  );
-
   /**
    * The brand's own styled types — "our gridless column", "our thin line".
    *
    * Formatting only, no data and no archetype: dropping one is dropping a
    * blank chart of that kind drawn the house way. They keep tracking the
-   * variant afterwards (the instance stores an id, not a copy), which is the
-   * one behaviour that separates them from the templates above.
+   * variant afterwards (the instance stores an id, not a copy).
    */
   const variantPreviews = useMemo(
     () =>
@@ -330,6 +283,7 @@ export function ChartPopover({
     setPhase('loading');
   };
 
+
   const reset = () => {
     setRec(null);
     setChosenId(null);
@@ -356,11 +310,7 @@ export function ChartPopover({
           <AskBox
             value={description}
             busy={phase === 'thinking'}
-            hint={
-              phase === 'review'
-                ? 'edit this and it will re-read it'
-                : 'or pick one yourself below'
-            }
+            hint={phase === 'review' ? 'edit this and it will re-read it' : undefined}
             onChange={(v) => {
               setDescription(v);
               // Editing the sentence invalidates the answer to the old one.
@@ -387,10 +337,9 @@ export function ChartPopover({
               orientation={orientation}
               onOrientation={setOrientation}
               previews={previews}
-              templatePreviews={templatePreviews}
               variantPreviews={variantPreviews}
-              onPick={(spec, template, variantId) => {
-                onPick(stampProvenance(structuredClone(spec), ds, template), variantId);
+              onPick={(spec, variantId) => {
+                onPick(stampProvenance(structuredClone(spec), ds), variantId);
                 onClose();
               }}
             />
@@ -422,7 +371,7 @@ function AskBox({
   value: string;
   busy: boolean;
   /** What sits below the box right now — the copy has to match. */
-  hint: string;
+  hint?: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
 }) {
@@ -459,7 +408,7 @@ function AskBox({
         >
           {busy ? 'Reading…' : 'Recommend a layout'}
         </button>
-        <span className="text-[10px] text-zinc-400">{hint}</span>
+        {hint ? <span className="text-[10px] text-zinc-400">{hint}</span> : null}
         <span className="flex-1" />
         <button
           onClick={() => {
@@ -757,18 +706,11 @@ interface VariantPreview {
   slide: { id: string; elements: SlideElement[] };
 }
 
-interface TemplatePreview {
-  template: StoredChartTemplate;
-  spec: ChartSpec;
-  slide: { id: string; elements: SlideElement[] };
-}
-
 function ManualGrid({
   ds,
   orientation,
   onOrientation,
   previews,
-  templatePreviews,
   variantPreviews,
   onPick,
 }: {
@@ -776,9 +718,8 @@ function ManualGrid({
   orientation: ChartOrientation;
   onOrientation: (o: ChartOrientation) => void;
   previews: LayoutPreview[];
-  templatePreviews: TemplatePreview[];
   variantPreviews: VariantPreview[];
-  onPick: (spec: ChartSpec, template?: StoredChartTemplate, variantId?: string) => void;
+  onPick: (spec: ChartSpec, variantId?: string) => void;
 }) {
   return (
     <>
@@ -787,7 +728,6 @@ function ManualGrid({
           Orientation
         </span>
         <OrientationToggle value={orientation} onChange={onOrientation} />
-        <span className="text-[10px] text-zinc-400">Pies and scatters ignore this</span>
       </div>
 
       {variantPreviews.length ? (
@@ -810,36 +750,7 @@ function ManualGrid({
                 title={`Insert a ${variant.name} ${CHART_KIND_LABELS[
                   variant.kind
                 ].toLowerCase()} chart`}
-                onClick={() => onPick(spec, undefined, variant.id)}
-              />
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      {templatePreviews.length ? (
-        <div className="mb-3">
-          <div className="mb-1.5 flex items-baseline gap-2">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-              House templates
-            </span>
-            <span className="text-[10px] text-zinc-400">
-              Set up in Admin — shown the orientation you picked
-            </span>
-          </div>
-          <div className="grid grid-cols-4 gap-2">
-            {templatePreviews.map(({ template, spec, slide }) => (
-              <Tile
-                key={template.id}
-                ds={ds}
-                slide={slide}
-                name={template.name}
-                title={template.description || `Insert ${template.name}`}
-                // Stamped, so this chart can be told later that the template
-                // or the brand moved under it.
-                // The tile's spec, not the stored one — what you saw is what
-                // lands on the slide, orientation included.
-                onClick={() => onPick(spec, template)}
+                onClick={() => onPick(spec, variant.id)}
               />
             ))}
           </div>
@@ -863,7 +774,7 @@ function ManualGrid({
                   title={`Insert ${option.name.toLowerCase()} — ${option.purpose}`}
                   // No template, but the brand version still gets stamped —
                   // that's what "Brand updated" later keys off.
-                  onClick={() => onPick(spec, undefined, variantId)}
+                  onClick={() => onPick(spec, variantId)}
                 />
               ))}
           </div>

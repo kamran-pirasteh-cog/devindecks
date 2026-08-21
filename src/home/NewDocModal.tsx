@@ -194,9 +194,9 @@ export function NewDocModal({
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'templates', label: 'Templates' },
-    { id: 'upload', label: 'Upload a presentation' },
-    { id: 'docs', label: 'Duplicate existing presentation' },
-    { id: 'blank', label: 'Blank slate' },
+    { id: 'upload', label: 'Upload' },
+    { id: 'docs', label: 'Duplicate' },
+    { id: 'blank', label: 'Blank Slate' },
   ];
 
   const fieldClass =
