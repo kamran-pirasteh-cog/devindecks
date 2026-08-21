@@ -79,7 +79,7 @@ describe('readBrief — measures and units', () => {
     expect(b.numberFormat.style).toBe('currency');
     expect(b.numberFormat.currency).toBe('USD');
     expect(b.unitDivisor).toBe(1e6);
-    expect(b.unitNote).toBe('in $M');
+    expect(b.unitNote).toBeUndefined();
   });
 
   it('honours a currency the author actually named', () => {

@@ -45,6 +45,7 @@ import { defaultMeasurer } from '@/render/measureText';
 import { dsForChartVariant } from '@/charts/style';
 import { formatSet } from './format/number';
 import { deriveGrid, type GridDerived } from './derive/grid';
+import { DEFAULT_AXIS_TITLE, formatTickLabels } from './format/dateAxis';
 import { deriveWaterfall } from './derive/waterfall';
 import { insideLegendSlot, maxTicksFor, solveFrame, type FrameLayout } from './layout/frame';
 import { makeScale, niceDomain, type LinearScale } from './scale/linear';
@@ -61,6 +62,7 @@ import {
   comboUnstackedKeys,
   endLabelTexts,
   lineCategoryCenters,
+  lineStrokes,
   placeLineArea,
   type LineLikeSpec,
 } from './place/lineArea';
@@ -575,6 +577,22 @@ function compileCartesian(
 
   const valueAxis = spec.axes.y;
   const categoryAxis = spec.axes.x;
+
+  /**
+   * The category axis's text, and the title that goes under it.
+   *
+   * A dated axis is RE-WRITTEN here into the house form for its grain — the
+   * sheet holds "Q3 2024" because that is what the author typed, and the axis
+   * says "3Q24" because that is what an axis says. One place, before the frame
+   * is solved: the gutter is cut for the text that will actually be drawn in
+   * it, and measuring the sheet's wording would cut it for a label nobody sees.
+   */
+  const dated = formatTickLabels(derived.categoryLabels, categoryAxis.dateFormat);
+  const categoryLabels = dated.labels;
+  // "Week ending" is the grain's own caption, not a default the author has to
+  // accept: writing a title of their own replaces it. See `DEFAULT_AXIS_TITLE`.
+  const categoryTitle =
+    categoryAxis.title ?? (dated.grain ? DEFAULT_AXIS_TITLE[dated.grain] : undefined);
   const pct = 'stack' in spec && spec.stack === 'stacked100';
   const numberFormat = pct
     ? { ...spec.numberFormat, style: 'percent' as const }
@@ -719,6 +737,16 @@ function compileCartesian(
       ? dotRungs(spec as DotPlotSpec, derived.series.map((s) => s.key), theme)
       : null;
 
+  /**
+   * A key for a series drawn as a line reads as a line — see `LegendItem.line`.
+   * Solved from the same ladder the placer strokes with, so a receded dash in
+   * the plot is the same dash in the legend.
+   */
+  const strokes =
+    spec.kind === 'line' || spec.kind === 'area' || spec.kind === 'combo'
+      ? lineStrokes(spec as LineLikeSpec, derived, theme)
+      : null;
+
   const legendItems: LegendItem[] = isPie
     ? derived.data
         .filter((d) => d.seriesIndex === 0 && !derived.series[0]?.pointOverrides?.[d.pointKey]?.hidden)
@@ -742,10 +770,16 @@ function compileCartesian(
             : {
                 name: s.name,
                 seriesKey: s.key,
+                // A line's key takes the line's OWN colour, which the emphasis
+                // ladder can move off the palette slot entirely.
                 color:
-                  s.format?.fill?.kind === 'solid'
+                  strokes?.[i]?.color ??
+                  (s.format?.fill?.kind === 'solid'
                     ? s.format.fill.color
-                    : (dotLadder?.[i]?.color ?? theme.seriesColor(i)),
+                    : (dotLadder?.[i]?.color ?? theme.seriesColor(i))),
+                ...(strokes?.[i]
+                  ? { line: { widthEmu: strokes[i]!.widthEmu, dash: strokes[i]!.dash } }
+                  : {}),
               },
         )
         .filter((item): item is LegendItem => item !== null);
@@ -818,12 +852,12 @@ function compileCartesian(
     outsideValueLabels,
     endLabels:
       spec.kind === 'line' && spec.endLabels ? endLabelTexts(spec, derived) : undefined,
-    categoryLabels: derived.categoryLabels,
+    categoryLabels,
     showValueAxisLabels: showAxes && valueAxis.show,
     showCategoryAxisLabels: showAxes && categoryAxis.show,
     continuousCategoryAxis: edgeCategories,
     valueAxisTitle: showAxes ? valueAxis.title : undefined,
-    categoryAxisTitle: showAxes ? categoryAxis.title : undefined,
+    categoryAxisTitle: showAxes ? categoryTitle : undefined,
     padding: spec.plotPadding,
   };
 
@@ -944,7 +978,7 @@ function compileCartesian(
     bounds: innerFrame,
     uprightText,
     tickLabels: ticks,
-    categoryLabels: derived.categoryLabels,
+    categoryLabels,
     categoryCenters: centers,
     showValueAxisLabels: valueAxis.show,
     showCategoryAxisLabels: categoryAxis.show,
@@ -957,7 +991,7 @@ function compileCartesian(
     categoryTickMarks: categoryAxis.tickMarks,
     gridlines: spec.decorations.gridlines.major?.show ?? theme.gridlines.major,
     valueAxisTitle: valueAxis.title,
-    categoryAxisTitle: categoryAxis.title,
+    categoryAxisTitle: categoryTitle,
     secondary: secondary
       ? {
           scale: secondary.scale,

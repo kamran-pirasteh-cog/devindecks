@@ -50,6 +50,15 @@ export interface ChartMeta {
   measure?: string;
   /** "$", "%", "customers" — from the number format and the unit note. */
   unit?: string;
+  /**
+   * The ISO currency the figures are in, when they are money at all.
+   *
+   * Separate from `unit`, which is whatever reads best under an axis — "per
+   * merged PR", "hours, in K". Only money raises an FX question, and asking
+   * "reporting currency?" about a ratio is how a brief loses the reader's
+   * trust in the questions that matter.
+   */
+  currency?: string;
   /** The literal instruction: "USD millions, 1 decimal place". */
   unitSentence: string;
   /** "by segment", "by region" — what the series break the measure down by. */
@@ -74,6 +83,20 @@ export interface ChartMeta {
   measureConfidence: MetaConfidence;
   dimensionConfidence: MetaConfidence;
   periodConfidence: MetaConfidence;
+  /**
+   * Fiscal or calendar, when the author settled it. Unset means nobody did, and
+   * the brief asks — a quarter label on an axis carries no calendar of its own.
+   */
+  calendar?: 'fiscal' | 'calendar';
+  /**
+   * Whether the period in progress is on the axis, when the author settled it.
+   *
+   * 'excluded' is a DECISION, and it is worth carrying because a researcher
+   * looking at an axis that stops at last week cannot tell it from an axis that
+   * is simply out of date. Told nothing, the helpful thing to do is to add the
+   * current week back — which is the partial period the author removed.
+   */
+  currentPeriod?: 'included' | 'excluded';
   unitConfidence: MetaConfidence;
   /** The author's sentence, verbatim, when the chart still carries one. */
   description?: string;
@@ -82,6 +105,12 @@ export interface ChartMeta {
    * from carrying no brief at all — here we KNOW the labels are placeholders.
    */
   askedAndSkipped?: boolean;
+  /**
+   * The author's own instructions for the research, verbatim. Not a fact about
+   * the chart, so nothing here reconciles it against the spec — there is
+   * nothing on a chart it could be checked against.
+   */
+  notes?: string;
   /** What the description didn't say, when one was read. */
   gaps: string[];
   categories: string[];
@@ -97,7 +126,7 @@ export interface DeckContext {
 const GRAIN_NOUN: Record<DateGrain, string> = {
   year: 'year',
   half: 'half-year',
-  quarter: 'fiscal quarter',
+  quarter: 'quarter',
   month: 'month',
   week: 'week',
   day: 'day',
@@ -114,20 +143,32 @@ export function inferChartMeta(spec: ChartSpec, ctx: DeckContext = {}): ChartMet
   const measure = reconcileMeasure(spec, seriesNames, said);
   const dimension = reconcileDimension(spec, seriesNames, said);
   const period = inferPeriod(categories);
+  const periodFrom = periodConfidence(period, said);
+  // The axis labels of a weekly chart are dates, and a date parses as a day —
+  // so "one row per calendar day" is what a weekly brief used to say. The
+  // author picked the grain in the setup step; trust it while the span it was
+  // recorded against still matches.
+  if (period && periodFrom === 'stated' && said?.period?.grain) period.grain = said.period.grain;
 
   return {
     measure: measure.value,
     measureConfidence: measure.confidence,
     unit: inferUnit(spec),
+    currency: spec.numberFormat.style === 'currency' ? (spec.numberFormat.currency ?? 'USD') : undefined,
     unitSentence: unitSentence(spec),
     unitConfidence: stated(said?.unitFrom),
     dimension: dimension.value,
     dimensionConfidence: dimension.confidence,
     period,
-    periodConfidence: periodConfidence(period, said),
+    periodConfidence: periodFrom,
+    // Only trusted while the axis still shows the span it was recorded against
+    // — the same rule every other brief field follows here.
+    calendar: periodFrom === 'stated' ? said?.calendar : undefined,
+    currentPeriod: periodFrom === 'stated' ? said?.currentPeriod : undefined,
     ...reconcileSubject(said, ctx),
     description: said?.description || undefined,
     askedAndSkipped: brief?.askedAndSkipped,
+    notes: said?.notes || undefined,
     gaps: said?.gaps ?? [],
     categories,
     seriesNames,
@@ -382,7 +423,12 @@ function inferSubject(ctx: DeckContext): Pick<ChartMeta, 'subject' | 'subjectSou
 }
 
 /** A human phrase for the period, e.g. "each fiscal quarter from Q1'23 to Q4'25". */
-export function periodPhrase(period: ChartPeriod | undefined): string | null {
+export function periodPhrase(
+  period: ChartPeriod | undefined,
+  /** Prefixed to the grain when it's known: "one row per fiscal quarter". */
+  calendar?: 'fiscal' | 'calendar',
+): string | null {
   if (!period) return null;
-  return `one row per ${GRAIN_NOUN[period.grain]}, from ${period.from} to ${period.to} (${period.count} periods)`;
+  const grain = calendar ? `${calendar} ${GRAIN_NOUN[period.grain]}` : GRAIN_NOUN[period.grain];
+  return `one row per ${grain}, from ${period.from} to ${period.to} (${period.count} periods)`;
 }

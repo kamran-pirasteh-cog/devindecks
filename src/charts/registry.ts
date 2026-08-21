@@ -74,7 +74,6 @@ export const CHART_TEMPLATES: ChartTemplateDef[] = [
       spec.axes.y.title = 'Revenue';
       spec.numberFormat = { style: 'currency', currency: 'USD', thousands: true, decimals: 0 };
       spec.axes.y.unitDivisor = 1_000_000;
-      spec.axes.y.unitNote = 'in millions';
       return spec;
     },
   },

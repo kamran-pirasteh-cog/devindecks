@@ -804,6 +804,16 @@ const ganttItem = (spec: ChartSpec, key: string) =>
 export type LabelHome =
   | { scope: 'chart' }
   | { scope: 'series'; seriesKey: string }
+  /**
+   * Several series, each of them whole.
+   *
+   * The shape a click on a data label now produces: one click takes every label
+   * in the chart, and a shift-click across series takes those series entire
+   * (see `clickSelectParts`). Writing that as a list of series nodes rather than
+   * as per-point overrides is what makes "these two rows, 14pt" survive a point
+   * being added to either of them.
+   */
+  | { scope: 'seriesSet'; seriesKeys: string[] }
   | { scope: 'point'; seriesKey: string; points: string[] }
   | { scope: 'item'; items: string[] };
 
@@ -827,7 +837,26 @@ export function labelHomeFor(spec: ChartSpec, refs: ChartRef[]): LabelHome | nul
   }
 
   const seriesKeys = [...new Set(points.map((r) => r.series))];
-  if (seriesKeys.length !== 1) return null;
+  // Several series: an answer only when each of them is selected WHOLE, which
+  // is what the click ladder and a cross-series shift both produce. A hand-built
+  // selection of two labels in two series still has no single home — the panel
+  // would have to write per-point overrides to two unrelated nodes and read back
+  // one number for both.
+  if (seriesKeys.length > 1) {
+    const known = seriesKeys.filter((k) => seriesOf(spec).some((s) => s.key === k));
+    if (known.length !== seriesKeys.length) return null;
+    const chosen = new Set(points.map((r) => `${r.series}\u0000${r.point}`));
+    const whole = known.every((k) => {
+      const all = pointKeysOf(spec, k);
+      return all.length > 0 && all.every((pt) => chosen.has(`${k}\u0000${pt}`));
+    });
+    if (!whole) return null;
+    // Every series, whole, IS the chart — and writing it there is what makes a
+    // series added later match the labels the user just styled.
+    return known.length === seriesOf(spec).length
+      ? { scope: 'chart' }
+      : { scope: 'seriesSet', seriesKeys: known };
+  }
   const seriesKey = seriesKeys[0]!;
   if (!seriesOf(spec).some((s) => s.key === seriesKey)) return { scope: 'chart' };
 
@@ -861,6 +890,14 @@ export function labelSpecAt(spec: ChartSpec, home: LabelHome): LabelSpec {
       return spec.decorations.labels;
     case 'series':
       return labelBase(spec, home.seriesKey);
+    case 'seriesSet': {
+      // Same rule as a multi-point selection: read the whole set, and fall back
+      // to the node above when its members disagree.
+      const each = home.seriesKeys.map((k) => seriesOf(spec).find((s) => s.key === k)?.labels);
+      const first = each[0];
+      if (!first || !each.every((l) => l?.show === first.show)) return spec.decorations.labels;
+      return first;
+    }
     case 'point': {
       const series = seriesOf(spec).find((s) => s.key === home.seriesKey);
       // A Gantt's row IS its series, and the node under a row is the ITEM — it
@@ -920,6 +957,13 @@ export function patchLabelAt(
         }
       }
       return true;
+    }
+    case 'seriesSet': {
+      let wrote = false;
+      for (const key of home.seriesKeys) {
+        if (patchLabelAt(spec, { scope: 'series', seriesKey: key }, patch)) wrote = true;
+      }
+      return wrote;
     }
     case 'point': {
       const series = seriesOf(spec).find((s) => s.key === home.seriesKey);
@@ -1290,18 +1334,31 @@ function writeLabelFonts(spec: ChartSpec, fonts: Map<ChartRef, LabelFont>): bool
   );
   if (!labels.length) return false;
 
-  // `labelHomeFor` answers for one series at a time — it returns null for a
-  // selection spanning several, which is exactly a group boundary here.
+  /** Merge onto whatever font is in force AT the home, so a step compounds. */
+  const writeFont = (home: LabelHome, font: LabelFont): boolean =>
+    patchLabelAt(spec, home, { font: mergeFont(labelSpecAt(spec, home).font, font) });
+
+  // Whole series at a time — every label in the chart, or the two series a
+  // shift-click took — go to the one node that covers them, so a series or a
+  // point added later is drawn in the type the user just chose. Only the wide
+  // homes: anything narrower is grouped below, where each label can be stepping
+  // from a size of its own.
+  const wide = labelHomeFor(
+    spec,
+    labels.map(([ref]) => ref),
+  );
+  if (wide && (wide.scope === 'chart' || wide.scope === 'seriesSet')) {
+    return writeFont(wide, labels[0]![1]);
+  }
+
+  // `labelHomeFor` answers for one series at a time below — a selection
+  // spanning several has no narrow home, which is exactly a group boundary here.
   const bySeries = new Map<string, [Extract<ChartRef, { part: 'label' }>, LabelFont][]>();
   for (const entry of labels) {
     const group = bySeries.get(entry[0].series) ?? [];
     group.push(entry);
     bySeries.set(entry[0].series, group);
   }
-
-  /** Merge onto whatever font is in force AT the home, so a step compounds. */
-  const writeFont = (home: LabelHome, font: LabelFont): boolean =>
-    patchLabelAt(spec, home, { font: mergeFont(labelSpecAt(spec, home).font, font) });
 
   let wrote = false;
   for (const group of bySeries.values()) {

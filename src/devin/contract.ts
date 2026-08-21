@@ -6,12 +6,35 @@
  * rather than a convention someone has to remember to maintain. Change the
  * grid's columns and the contract changes with them, in the same commit.
  */
-import type { SheetSchema } from '@/model';
+import { columnsFor, type SheetSchema, type SheetSeries } from '@/model';
+
+/** One contract column, said in the author's words rather than in keys. */
+export interface ColumnLegend {
+  /** The name in the JSON and in the CSV header — `s1_value`. */
+  name: string;
+  /** What it holds, as it reads on the chart — "ACUs · Engineering". */
+  means: string;
+  /** `number`, `text`, or a date. Printed so a string in a figure column is
+   *  recognisably wrong before it is pasted rather than after. */
+  type: string;
+  required: boolean;
+}
 
 export interface ChartResultContract {
   /** Echoed back by Devin and checked on paste. */
   contractId: string;
   columns: string[];
+  /**
+   * What each column is, in order.
+   *
+   * The columns are named `s0_value`, `s1_value`, … because that is what pastes
+   * back into the grid, and those names say nothing at all about which series is
+   * which. Order alone used to carry it, which is a silent failure: an answer
+   * that puts Engineering in `s1_value` parses cleanly, pastes cleanly, and is
+   * wrong on the slide. So the prompt prints this legend, and the mapping is
+   * stated rather than implied.
+   */
+  legend: ColumnLegend[];
   /** JSON Schema draft-07, ready to embed in the prompt. */
   jsonSchema: Record<string, unknown>;
   /** Fallback for when JSON is awkward — same columns, same order. */
@@ -25,7 +48,20 @@ const SOURCE_COLUMNS = ['source_url', 'source_note', 'confidence'] as const;
 
 export const CONFIDENCE_VALUES = ['reported', 'derived', 'estimated'] as const;
 
-export function chartResultContract(schema: SheetSchema, seriesKeys: string[]): ChartResultContract {
+/**
+ * `series` is the series themselves rather than their keys: the keys make the
+ * column NAMES and the names make the legend, and a caller holding only keys
+ * can't produce a contract that says which series is which.
+ */
+export function chartResultContract(
+  schema: SheetSchema,
+  series: SheetSeries[],
+): ChartResultContract {
+  const seriesKeys = series.map((s) => s.key);
+  // The grid's own headers, which is where the human-readable names live —
+  // built by the same function the datasheet renders from, so a column can't
+  // be described here as something the grid calls something else.
+  const display = columnsFor(schema, series);
   const dataColumns: {
     name: string;
     type: 'string' | 'number';
@@ -89,6 +125,14 @@ export function chartResultContract(schema: SheetSchema, seriesKeys: string[]): 
   return {
     contractId: `${schema.id}@1`,
     columns,
+    // Positional, like `parseResult` — the contract columns are generated from
+    // the schema in the same order the display columns are.
+    legend: dataColumns.map((c, i) => ({
+      name: c.name,
+      means: display[i]?.header ?? c.name,
+      type: c.day ? 'date (YYYY-MM-DD)' : c.type,
+      required: c.required,
+    })),
     csvHeader: [...columns, ...SOURCE_COLUMNS],
     jsonSchema: {
       $schema: 'http://json-schema.org/draft-07/schema#',

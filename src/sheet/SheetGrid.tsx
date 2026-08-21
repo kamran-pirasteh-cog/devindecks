@@ -51,6 +51,8 @@ import {
   moveSeries,
   pasteTable,
   renameSeries,
+  rowHasData,
+  seriesHasData,
   setCell,
 } from './sheetOps';
 import {
@@ -67,6 +69,7 @@ import {
   move,
   reconcileSelection,
   selectColumn,
+  selectionSpan,
   selectRow,
   singleCell,
   type SheetSelection,
@@ -96,6 +99,13 @@ export interface SheetGridProps {
    * `SheetModel.rowIndent`). The owner clamps it; this only reports the gesture.
    */
   onIndentRow?: (r: number, delta: 1 | -1) => void;
+  /**
+   * Take the keyboard as soon as the grid appears, so that opening the
+   * datasheet and pressing ⌘V pastes a block from Excel. The `paste` event only
+   * reaches a focused element, and a grid nobody has clicked in yet has none to
+   * fire it at.
+   */
+  autoFocus?: boolean;
 }
 
 const HISTORY_LIMIT = 50;
@@ -193,6 +203,7 @@ export function SheetGrid({
   diagnostics = [],
   onPickSeriesColor,
   onIndentRow,
+  autoFocus = false,
 }: SheetGridProps) {
   const [sel, setSel] = useState<SheetSelection>(() => singleCell({ r: 0, c: 0 }));
   const [editing, setEditing] = useState<{ addr: CellAddress; text: string } | null>(null);
@@ -211,6 +222,10 @@ export function SheetGrid({
   const resizing = useRef<{ key: string; from: number; width: number } | null>(null);
 
   const { rows, columns } = sheet;
+
+  useEffect(() => {
+    if (autoFocus) containerRef.current?.focus({ preventScroll: true });
+  }, [autoFocus]);
 
   /**
    * The grid pads its blank area out to whatever the panel is showing, so
@@ -363,6 +378,9 @@ export function SheetGrid({
    * commits and moves focus back to the grid — which fires the input's blur and
    * calls this a second time, with a `setEditing(null)` that React hasn't
    * applied yet. Writing twice was harmless; moving the cursor twice is not.
+   *
+   * Returns false when the commit was REFUSED and the editor is still open, so
+   * callers know not to move the cursor out from under it.
    */
   const commitEdit = useCallback(
     (then?: (s: SheetSelection) => SheetSelection) => {
@@ -372,6 +390,30 @@ export function SheetGrid({
         const col = columnAt(sheet, extent, editing.addr.c);
         const { value, warning } = coerceCell(editing.text, col ?? 'text');
         if (warning) setNotice(warning.message);
+
+        /**
+         * A row with numbers in it keeps a name.
+         *
+         * Refusing the commit — rather than writing the empty label — is what
+         * makes Delete on a name mean "rename this": the editor stays open
+         * until a name is typed, and Escape puts the old one back. Blanking it
+         * instead would leave a nameless row in the sheet and an unlabelled
+         * series in the legend, which reads as a rendering bug.
+         */
+        if (
+          value.kind === 'empty' &&
+          editing.addr.c === 0 &&
+          sheet.schema.keyColumns.length > 0 &&
+          editing.addr.r < sheet.rows.length &&
+          rowHasData(sheet, editing.addr.r)
+        ) {
+          setNotice('This row has data — type a name for it, or press Escape to keep the old one.');
+          editorOpen.current = true;
+          // Deferred: the blur that brought us here is still in flight, and
+          // focusing during it puts the caret back where it came from.
+          setTimeout(() => inputRef.current?.focus(), 0);
+          return false;
+        }
 
         // Tabbing through blank cells must not litter the sheet with rows and
         // series nobody asked for: only content makes a phantom cell real.
@@ -389,6 +431,7 @@ export function SheetGrid({
       }
       setEditing(null);
       if (then) setSel((s) => then(s));
+      return true;
     },
     [apply, editing, extent, sheet],
   );
@@ -424,13 +467,60 @@ export function SheetGrid({
   const structure = useMemo(
     () => ({
       insertRowAt: (at: number) => apply(insertRow(sheet, Math.min(at, rows.length))),
-      deleteRowRange: () => {
+      /**
+       * Insert as many rows as are highlighted, above the block — Excel's ⌘⇧+.
+       * Selecting three rows and pressing it makes room for three.
+       */
+      insertRowsAt: (at: number, count: number) => {
+        let next = sheet;
+        for (let i = 0; i < count; i++) {
+          const grown = insertRow(next, Math.min(at, next.rows.length));
+          if (grown === next) break; // capped
+          next = grown;
+        }
+        apply(next);
+      },
+      /** True when rows were actually removed, so Delete knows not to also clear. */
+      deleteRowRange: (): boolean => {
         const { r0, r1 } = rangeBounds(sel.range);
-        if (r0 >= rows.length) return;
-        apply(deleteRows(sheet, r0, Math.min(r1, rows.length - 1)));
+        if (r0 >= rows.length) return false;
+        const next = deleteRows(sheet, r0, Math.min(r1, rows.length - 1));
+        if (next === sheet) return false;
+        apply(next);
+        return true;
       },
       insertColumnAt: (seriesIndex: number) => apply(insertSeries(sheet, seriesIndex)),
+      insertColumnsAt: (seriesIndex: number, count: number) => {
+        let next = sheet;
+        for (let i = 0; i < count; i++) {
+          const grown = insertSeries(next, seriesIndex);
+          if (grown === next) break; // at the chart's series cap
+          next = grown;
+        }
+        apply(next);
+      },
       deleteColumn: (seriesKey: string) => apply(deleteSeries(sheet, seriesKey)),
+      /**
+       * Every series the selection touches, off the chart.
+       *
+       * Selecting a column selects a SERIES, so removing it has to remove the
+       * series — clearing the numbers and leaving a nameless empty column
+       * behind means the author deletes the same thing twice. The key column is
+       * not a series and has no key, so a selection covering only that reports
+       * false and the caller clears cells instead.
+       */
+      deleteSeriesInRange: (): boolean => {
+        const { c0, c1 } = rangeBounds(sel.range);
+        const keys = new Set<string>();
+        for (let c = c0; c <= c1; c++) {
+          const key = sheet.columns[c]?.seriesKey;
+          if (key) keys.add(key);
+        }
+        const next = [...keys].reduce((acc, key) => deleteSeries(acc, key), sheet);
+        if (next === sheet) return false;
+        apply(next);
+        return true;
+      },
       clearColumn: (c: number) =>
         apply(
           clearRange(sheet, {
@@ -449,6 +539,27 @@ export function SheetGrid({
     [apply, columns.length, rows.length, sel.range, sheet],
   );
 
+  /**
+   * Select, and take the keyboard with it.
+   *
+   * A click in the gutter or a column header used to leave focus wherever it
+   * was, so the Delete that followed went to the deck's own shortcuts and
+   * deleted the CHART instead of the row or series that looked selected.
+   */
+  const selectAndFocus = (next: SheetSelection) => {
+    setSel(next);
+    containerRef.current?.focus({ preventScroll: true });
+  };
+
+  /**
+   * The column that NAMES the row — the first key column, whatever the chart
+   * calls it: Category, Task, Series. It is the row's identity, so it is the
+   * one cell that must not be left blank while the row still holds numbers.
+   * Later key columns (a Gantt's dates, a Sankey's second endpoint) are data
+   * and clear like anything else.
+   */
+  const isNameColumn = (c: number) => c === 0 && sheet.schema.keyColumns.length > 0;
+
   /* ---- keyboard ---- */
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -463,13 +574,13 @@ export function SheetGrid({
       }
       if (e.key === 'Enter') {
         e.preventDefault();
-        commitEdit((s) => advance(sheet, s, 'vertical', e.shiftKey, extent));
+        if (!commitEdit((s) => advance(sheet, s, 'vertical', e.shiftKey, extent))) return;
         containerRef.current?.focus();
         return;
       }
       if (e.key === 'Tab') {
         e.preventDefault();
-        commitEdit((s) => advance(sheet, s, 'horizontal', e.shiftKey, extent));
+        if (!commitEdit((s) => advance(sheet, s, 'horizontal', e.shiftKey, extent))) return;
         containerRef.current?.focus();
         return;
       }
@@ -526,10 +637,40 @@ export function SheetGrid({
         beginEdit(sel.active);
         return;
       case 'Backspace':
-      case 'Delete':
+      case 'Delete': {
         e.preventDefault();
+        // A whole column selected is a series, and a whole row is a category —
+        // Delete removes the thing that was selected. Falls through to clearing
+        // when there is nothing structural to remove: the last series, the key
+        // column, a sheet already at its minimum rows.
+        const span = selectionSpan(sheet, sel, extent);
+        if (span === 'columns' && structure.deleteSeriesInRange()) return;
+        if (span === 'rows' && structure.deleteRowRange()) return;
+
+        // One cell, and the thing it names is empty: Delete removes the row or
+        // the series itself. Clearing a name that names nothing leaves a
+        // nameless empty line in the sheet and a gap in the legend, so the
+        // author deletes the same nothing twice.
+        if (isSingleCell(sel) && !isPhantom(extent, sel.active)) {
+          const col = sheet.columns[sel.active.c];
+          if (isNameColumn(sel.active.c)) {
+            if (!rowHasData(sheet, sel.active.r)) {
+              if (structure.deleteRowRange()) return;
+            } else {
+              // It has data, so it keeps a name — but Delete is a plain enough
+              // request to rename it. Open the editor empty; it cannot be
+              // committed blank, and Escape puts the old name back.
+              beginEdit(sel.active, '');
+              return;
+            }
+          } else if (col?.seriesKey && !seriesHasData(sheet, col.seriesKey)) {
+            if (structure.deleteSeriesInRange()) return;
+          }
+        }
+
         apply(clearRange(sheet, sel.range));
         return;
+      }
       case 'Home':
         e.preventDefault();
         setSel(singleCell({ r: meta ? 0 : sel.active.r, c: 0 }));
@@ -559,11 +700,55 @@ export function SheetGrid({
       return;
     }
 
-    // Excel's row and column insert. Shift is part of both on a US layout
-    // (⌘+ is ⌘⇧=), so the key is compared rather than the modifier.
-    if (meta && (e.key === '+' || e.key === '=')) {
+    // Excel's insert and delete chords, ⌘⇧+ and ⌘-, acting on whichever axis
+    // is highlighted: whole columns insert to the LEFT of the block, whole rows
+    // ABOVE it, and a plain cell selection means rows (Excel asks; the answer
+    // is almost always rows, and undo is a keystroke away).
+    //
+    // The KEY is compared rather than the modifier because ⌘+ is ⌘⇧= on a US
+    // layout and ⌘_ is shifted ⌘- elsewhere. Both are prevented: unhandled they
+    // are the browser's zoom in and out.
+    if (meta && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_')) {
       e.preventDefault();
-      structure.insertRowAt(sel.active.r);
+      e.stopPropagation();
+      const span = selectionSpan(sheet, sel, extent);
+      const { r0, r1, c0, c1 } = rangeBounds(sel.range);
+      const removing = e.key === '-' || e.key === '_';
+
+      if (span === 'columns') {
+        if (removing) {
+          structure.deleteSeriesInRange();
+        } else {
+          // Series indices, not column indices: one series is several columns
+          // on a scatter, and the insert addresses the series.
+          const indices = new Set<number>();
+          for (let c = c0; c <= c1; c++) {
+            const i = seriesIndexAt(sheet, extent, c);
+            if (i >= 0) indices.add(i);
+          }
+          if (indices.size) structure.insertColumnsAt(Math.min(...indices), indices.size);
+        }
+        return;
+      }
+
+      if (removing) structure.deleteRowRange();
+      else structure.insertRowsAt(Math.min(r0, rows.length), r1 - r0 + 1);
+      return;
+    }
+
+    // Excel's select-row and select-column chords, which is how the insert,
+    // delete and Delete behaviours above are reached without leaving the
+    // keyboard. ⌃Space is the real Excel binding for the column; ⌘Space is
+    // bound too because it is what people reach for, on the days macOS hasn't
+    // already taken it for Spotlight.
+    if (e.key === ' ' && (e.shiftKey || meta || e.ctrlKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      setSel(
+        e.shiftKey && !meta && !e.ctrlKey
+          ? selectRow(sheet, sel.active.r, extent)
+          : selectColumn(sheet, sel.active.c, extent),
+      );
       return;
     }
 
@@ -621,7 +806,7 @@ export function SheetGrid({
 
   const onCellDown = (r: number, c: number, e: React.MouseEvent) => {
     if (e.button === 2) return; // right-click opens a menu; it must not clear the block
-    if (editing) commitEdit();
+    if (editing && !commitEdit()) return; // still needs a name
     mouseDown.current = true;
     setSel((s) =>
       e.shiftKey ? { active: s.active, range: { anchor: s.range.anchor, focus: { r, c } } } : singleCell({ r, c }),
@@ -721,6 +906,10 @@ export function SheetGrid({
       <div
         ref={containerRef}
         role="grid"
+        /* While focus is in here the grid owns the keyboard — see the guard in
+           `Editor.tsx`, which otherwise reads ⌘V as "paste a slide object" and
+           preventDefaults it before the browser can fire `paste` at us. */
+        data-sheet-grid=""
         tabIndex={0}
         onKeyDown={onKeyDown}
         onCopy={onCopy}
@@ -755,7 +944,7 @@ export function SheetGrid({
                     dragging={drag?.kind === 'series' ? drag : null}
                     renaming={renaming === columns[c]!.key}
                     onRenamed={() => setRenaming(null)}
-                    onSelect={() => setSel(selectColumn(sheet, c, extent))}
+                    onSelect={() => selectAndFocus(selectColumn(sheet, c, extent))}
                     onContextMenu={openMenu('column', 0, c)}
                     onRename={(name) => apply(renameSeries(sheet, columns[c]!.seriesKey!, name))}
                     onDelete={() => apply(deleteSeries(sheet, columns[c]!.seriesKey!))}
@@ -774,7 +963,7 @@ export function SheetGrid({
                         : ''
                     }
                     first={c === extent.realCols}
-                    onSelect={() => setSel(selectColumn(sheet, c, extent))}
+                    onSelect={() => selectAndFocus(selectColumn(sheet, c, extent))}
                     onContextMenu={openMenu('column', 0, c)}
                     onAdd={() => apply(addSeries(sheet))}
                     onResize={startResize(c)}
@@ -833,7 +1022,7 @@ export function SheetGrid({
                   <th
                     onMouseDown={(e) => {
                       if (e.button === 2) return;
-                      setSel(selectRow(sheet, r, extent));
+                      selectAndFocus(selectRow(sheet, r, extent));
                       if (real) setDrag({ kind: 'row', from: r, to: r });
                     }}
                     onMouseEnter={() => setDrag((d) => (d?.kind === 'row' && real ? { ...d, to: r } : d))}

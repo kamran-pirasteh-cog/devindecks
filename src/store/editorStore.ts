@@ -88,6 +88,7 @@ import {
   makeEyebrow,
   titleYUnderEyebrow,
 } from '@/editor/eyebrow';
+import { applyQuickLayoutTo, quickLayout, type QuickLayoutId } from '@/editor/quickLayout';
 import {
   makeSticky,
   stickyGrowth,
@@ -424,6 +425,13 @@ export interface EditorState {
   moveSlides: (ids: string[], beforeId: string | null) => void;
   /** Add or drop one slide from the filmstrip selection (⌘-click). */
   toggleSlideSelection: (id: string) => void;
+
+  /**
+   * Re-cast slides into one of the five quick layouts — the ground, the title's
+   * place on it, and the ink to match. Defaults to the filmstrip selection,
+   * falling back to the current slide, like every other slide-level action.
+   */
+  applyQuickLayout: (layoutId: QuickLayoutId, ids?: string[]) => void;
 
   // slide clipboard
   /**
@@ -1150,6 +1158,28 @@ export const useEditor = create<EditorState>()(
         s.selectedSlideIds = order.filter((sid) => next.includes(sid));
         s.currentSlideId = next.includes(id) ? id : s.selectedSlideIds[0];
         s.slideSelectionAnchor = id;
+        s.selectedIds = [];
+        s.editingId = null;
+        s.croppingId = null;
+      });
+    },
+
+    applyQuickLayout(layoutId, ids) {
+      const def = quickLayout(layoutId);
+      if (!def) return;
+      const { deck, selectedSlideIds, currentSlideId } = get();
+      const wanted = new Set(
+        ids ?? (selectedSlideIds.length ? selectedSlideIds : [currentSlideId]),
+      );
+      if (!deck.slides.some((sl) => wanted.has(sl.id))) return;
+      get().commit();
+      set((s) => {
+        for (const slide of s.deck.slides) {
+          if (!wanted.has(slide.id)) continue;
+          applyQuickLayoutTo(slide, def, s.designSystem, s.deck.slideSize);
+        }
+        // A re-cast moves boxes and can add them; whatever was selected on the
+        // canvas is no longer where the user left it.
         s.selectedIds = [];
         s.editingId = null;
         s.croppingId = null;

@@ -34,8 +34,12 @@ import { CHART_KIND_LABELS } from '@/charts/kinds';
 import {
   CHART_LAYOUTS,
   LAYOUT_GROUPS,
+  layoutForKind,
   type ChartLayout,
 } from '@/charts/layouts';
+import { carrySetup, defaultSetup, formFor, type ChartSetup } from '@/charts/setupForm';
+import { specFromSetup } from '@/charts/setupSpec';
+import { ChartSetupStep } from './chart/ChartSetupStep';
 import {
   recommendLayouts,
   type ChartRecommendation,
@@ -57,10 +61,20 @@ import {
 import { compileChart } from '@/chart/compile';
 import { OVERLAY_Z } from './layers';
 
-/** Tile size. Big enough to tell a stacked column from a 100% stacked one. */
-const TILE_W = 132;
+/**
+ * Tile size, in pixels, and the tile BOX is exactly this wide.
+ *
+ * `SlideView` takes a pixel width and derives its height from the slide's own
+ * dimensions, so a thumbnail is always the deck's aspect ratio — 16:9 — and the
+ * job here is to stop the box around it being some other shape. The tiles used
+ * to sit in a four-column grid that stretched them, which drew a 16:9 chart in
+ * a 2.5:1 frame with the difference in white. So they lay out as a wrapping row
+ * of fixed-width tiles instead: the frame is the thumbnail, and a narrow dialog
+ * reflows rather than distorting.
+ */
+const TILE_W = 200;
 /** The recommendation gets a bigger picture — it's a decision, not a thumbnail. */
-const HERO_W = 300;
+const HERO_W = 420;
 const ORIENTATION_KEY = 'devindesign.chart.orientation';
 const PREVIEW_SLIDE = { w: 12_192_000, h: 6_858_000 };
 
@@ -94,7 +108,20 @@ const STEPS = ['Reading the brief', 'Laying out the chart', 'Compiling'] as cons
  */
 const STEP_MS = 550;
 
-type Phase = 'browse' | 'thinking' | 'review' | 'loading';
+type Phase = 'browse' | 'thinking' | 'review' | 'setup' | 'loading';
+
+/**
+ * A tile that has been picked but not yet inserted, and the answers gathered
+ * for it so far. The variant rides along so a brand-styled pick keeps its style
+ * through the setup step — the tile and the inserted chart have to agree.
+ */
+interface Chosen {
+  layout: ChartLayout;
+  variantId?: string;
+  setup: ChartSetup;
+  /** The sample spec, for "insert blank instead" — the old behaviour. */
+  blank: ChartSpec;
+}
 
 export function ChartPopover({
   ds,
@@ -122,7 +149,15 @@ export function ChartPopover({
   const [phase, setPhase] = useState<Phase>('browse');
   const [rec, setRec] = useState<ChartRecommendation | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<Chosen | null>(null);
   const [step, setStep] = useState(0);
+
+  /**
+   * The day relative periods are counted back from. Read once per open rather
+   * than per render: the same picker session must not lay out one range in the
+   * preview and a different one on insert if it happens to straddle midnight.
+   */
+  const [asOf] = useState(() => new Date().toISOString().slice(0, 10));
 
   // Held in a ref, not in the staged-insert effect's deps: the toolbar passes
   // fresh closures on every render, and a dependency on them would restart the
@@ -221,7 +256,7 @@ export function ChartPopover({
     [ds, orientation],
   );
 
-  const chosen: LayoutSuggestion | null = useMemo(() => {
+  const recommended: LayoutSuggestion | null = useMemo(() => {
     if (!rec) return null;
     return (
       rec.suggestions.find((s) => s.layout.id === chosenId) ?? rec.suggestions[0] ?? null
@@ -234,10 +269,41 @@ export function ChartPopover({
    * preview can't promise a chart the slide won't get.
    */
   const briefed = useMemo(() => {
-    if (!rec || !chosen) return null;
-    const spec = specFromBrief(rec.brief, { ...chosen, orientation }, ds);
+    if (!rec || !recommended) return null;
+    const spec = specFromBrief(rec.brief, { ...recommended, orientation }, ds);
     return { spec, elements: compilePreview(spec, ds) };
-  }, [rec, chosen, orientation, ds]);
+  }, [rec, recommended, orientation, ds]);
+
+  /**
+   * The chart the setup answers make right now, drawn by the real compiler in
+   * the variant's own style. Same object the Insert button hands over, so the
+   * preview can't promise a chart the slide won't get.
+   */
+  // The context's FIELDS, not the object: the toolbar builds a fresh one every
+  // render, and depending on it would recompile the chart on each keystroke
+  // elsewhere in the editor.
+  const { deckTitle, deckTags, slideTitle } = context ?? {};
+  const configured = useMemo(() => {
+    // Gated on the phase as well as the choice: the choice OUTLIVES a trip back
+    // to the grid, so that changing your mind about the picture keeps the
+    // answers — and compiling a chart nobody is looking at is wasted work.
+    if (!chosen || phase !== 'setup') return null;
+    const styled = chosen.variantId ? dsForChartVariant(ds, chosen.variantId) : ds;
+    const spec = specFromSetup(chosen.layout, chosen.setup, styled, {
+      orientation,
+      asOf,
+      deckTitle,
+      deckTags,
+      slideTitle,
+    });
+    return { spec, elements: compilePreview(spec, styled) };
+  }, [chosen, phase, ds, orientation, asOf, deckTitle, deckTags, slideTitle]);
+
+  /** Hand a finished spec to the slide. One path, so provenance can't be missed. */
+  const insert = (spec: ChartSpec, variantId?: string) => {
+    onPick(stampProvenance(structuredClone(spec), ds), variantId);
+    onClose();
+  };
 
   const recommend = () => {
     if (!description.trim()) return;
@@ -287,22 +353,30 @@ export function ChartPopover({
   const reset = () => {
     setRec(null);
     setChosenId(null);
+    setChosen(null);
     setPhase('browse');
   };
 
   return (
+    // A centred dialog rather than a dropdown hanging off the toolbar button.
+    // Inserting a chart is a decision with a form and a preview in it, and 36rem
+    // of popover pinned to the top-right corner is what forced the preview to
+    // compete with the fields for the same three hundred pixels.
     <div
-      ref={ref}
       style={{ zIndex: OVERLAY_Z }}
-      className="dd-format-bar absolute right-0 top-9 max-h-[70vh] w-[36rem] overflow-y-auto rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+      className="fixed inset-0 flex items-center justify-center bg-black/40 p-4"
       onContextMenu={(e) => e.stopPropagation()}
     >
+      <div
+        ref={ref}
+        className="dd-format-bar flex max-h-[85vh] w-full max-w-4xl flex-col overflow-y-auto rounded-xl border border-zinc-200 bg-white p-4 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900"
+      >
       {phase === 'loading' && briefed ? (
         <LoadingPanel
           ds={ds}
           step={step}
           subject={rec?.brief.subject}
-          layoutName={chosen?.layout.name ?? 'chart'}
+          layoutName={recommended?.layout.name ?? 'chart'}
           elements={step >= STEPS.length - 1 ? briefed.elements : null}
         />
       ) : (
@@ -319,11 +393,25 @@ export function ChartPopover({
             onSubmit={recommend}
           />
 
-          {phase === 'review' && rec && chosen && briefed ? (
+          {phase === 'setup' && chosen && configured ? (
+            <ChartSetupStep
+              ds={ds}
+              layout={chosen.layout}
+              setup={chosen.setup}
+              elements={configured.elements}
+              asOf={asOf}
+              onChange={(setup) => setChosen({ ...chosen, setup })}
+              onInsert={() => insert(configured.spec, chosen.variantId)}
+              onBlank={() => insert(chosen.blank, chosen.variantId)}
+              // Back to the grid, and the answers stay put — `onChoose` carries
+              // them onto whatever gets picked next.
+              onBack={() => setPhase('browse')}
+            />
+          ) : phase === 'review' && rec && recommended && briefed ? (
             <ReviewPanel
               ds={ds}
               rec={rec}
-              chosen={chosen}
+              chosen={recommended}
               elements={briefed.elements}
               orientation={orientation}
               onOrientation={setOrientation}
@@ -338,14 +426,25 @@ export function ChartPopover({
               onOrientation={setOrientation}
               previews={previews}
               variantPreviews={variantPreviews}
-              onPick={(spec, variantId) => {
-                onPick(stampProvenance(structuredClone(spec), ds), variantId);
-                onClose();
+              onChoose={(layout, blank, variantId) => {
+                setChosen((prev) => ({
+                  layout,
+                  variantId,
+                  blank,
+                  // Everything the new chart still has a home for is kept — the
+                  // timeframe above all, which is the answer nobody wants to
+                  // give twice.
+                  setup: prev
+                    ? carrySetup(prev.setup, layout, asOf)
+                    : defaultSetup(formFor(layout), asOf),
+                }));
+                setPhase('setup');
               }}
             />
           )}
         </>
       )}
+      </div>
     </div>
   );
 }
@@ -712,14 +811,19 @@ function ManualGrid({
   onOrientation,
   previews,
   variantPreviews,
-  onPick,
+  onChoose,
 }: {
   ds: DesignSystem;
   orientation: ChartOrientation;
   onOrientation: (o: ChartOrientation) => void;
   previews: LayoutPreview[];
   variantPreviews: VariantPreview[];
-  onPick: (spec: ChartSpec, variantId?: string) => void;
+  /**
+   * A tile picks a chart to SET UP, not one to insert. The sample spec comes
+   * along so the setup step's "insert blank instead" can drop exactly what this
+   * tile used to drop, unchanged.
+   */
+  onChoose: (layout: ChartLayout, blank: ChartSpec, variantId?: string) => void;
 }) {
   return (
     <>
@@ -740,7 +844,7 @@ function ManualGrid({
               Blank charts drawn the house way — they follow Admin as it changes
             </span>
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="flex flex-wrap gap-2">
             {variantPreviews.map(({ variant, spec, slide }) => (
               <Tile
                 key={variant.id}
@@ -750,7 +854,12 @@ function ManualGrid({
                 title={`Insert a ${variant.name} ${CHART_KIND_LABELS[
                   variant.kind
                 ].toLowerCase()} chart`}
-                onClick={() => onPick(spec, variant.id)}
+                // A variant names a kind, not an archetype — the plain layout
+                // of that kind is what its questions are asked about.
+                onClick={() => {
+                  const layout = layoutForKind(variant.kind);
+                  if (layout) onChoose(layout, spec, variant.id);
+                }}
               />
             ))}
           </div>
@@ -762,7 +871,7 @@ function ManualGrid({
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
             {group}
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="flex flex-wrap gap-2">
             {previews
               .filter((p) => p.option.group === group)
               .map(({ option, spec, slide, variantId }) => (
@@ -774,7 +883,7 @@ function ManualGrid({
                   title={`Insert ${option.name.toLowerCase()} — ${option.purpose}`}
                   // No template, but the brand version still gets stamped —
                   // that's what "Brand updated" later keys off.
-                  onClick={() => onPick(spec, variantId)}
+                  onClick={() => onChoose(option, spec, variantId)}
                 />
               ))}
           </div>
@@ -807,6 +916,9 @@ function Tile({
     <button
       onClick={onClick}
       title={title}
+      // Exactly the thumbnail's width, so the frame can't be a different shape
+      // from the slide inside it.
+      style={{ width: TILE_W }}
       className="overflow-hidden rounded-md border border-zinc-200 bg-white text-left transition hover:border-indigo-400 hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900"
     >
       <div className="border-b border-zinc-100 dark:border-zinc-800">

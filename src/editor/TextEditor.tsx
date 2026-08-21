@@ -39,6 +39,8 @@ import { fontSizeDirection } from './fontSizeShortcut';
 import { backspaceList } from './listBackspace';
 import { formatPainterAction } from './formatShortcut';
 import { placeCaretAt, type CaretPoint } from './caretPoint';
+import { plainPasteLines } from './plainPaste';
+import { paragraphSource, parseRunKey, runAt, runKey } from './runSource';
 import { selectOffsets, selectionOffsets } from './textOffsets';
 import { nextAnchor, nextParaAlign, textAlignEdge } from './textAlignShortcut';
 
@@ -84,41 +86,52 @@ const fmtFrom = (node: HTMLElement, inherit: Fmt): Fmt => {
  * is what the old innerText split gave us — so a soft line break and an Enter
  * (which the browser makes a new block) read back the same way.
  */
-/** A run still carrying the `data-run` index it was parsed from. */
-type DraftRun = TextRun & { __src: number | null };
+/**
+ * A run still carrying its bookkeeping: the `data-run` key it was parsed from,
+ * and the spans that produced it — which `commit` re-keys once the write lands,
+ * so the DOM keeps naming the runs the model actually has.
+ */
+type DraftRun = TextRun & { __src: string | null; __els: HTMLElement[] };
 
 const runsFromNodes = (
   nodes: Node[],
-  /** The source run for a `data-run` index — anything CSS can't round-trip. */
-  sourceRun: (index: number | null) => TextRun,
+  /** The source run for a `data-run` key — anything CSS can't round-trip. */
+  sourceRun: (key: string | null) => TextRun,
   inherit: Fmt,
-): TextRun[][] => {
+): DraftRun[][] => {
   const paras: DraftRun[][] = [[]];
-  const push = (text: string, f: Fmt, src: number | null) => {
+  const push = (text: string, f: Fmt, src: string | null, el: HTMLElement | null) => {
     if (!text) return;
     const cur = paras[paras.length - 1];
     const last = cur[cur.length - 1];
+    // Text the browser produced without a span of its own — typed, or pasted —
+    // continues the run it follows, which is how PowerPoint carries formatting
+    // forward from the character behind the caret. Falling straight back to the
+    // paragraph's first run instead reformatted the tail of a mixed line.
+    const from = src ?? last?.__src ?? null;
     if (
       last &&
-      last.__src === src &&
+      last.__src === from &&
       !!last.bold === f.bold &&
       !!last.italic === f.italic &&
       !!last.underline === f.underline
     ) {
       last.text += text;
+      if (el && !last.__els.includes(el)) last.__els.push(el);
     } else {
       cur.push({
-        ...sourceRun(src),
+        ...sourceRun(from),
         text,
         bold: f.bold,
         italic: f.italic,
         underline: f.underline,
-        __src: src,
+        __src: from,
+        __els: el ? [el] : [],
       });
     }
   };
-  const walk = (node: Node, f: Fmt, src: number | null) => {
-    if (node.nodeType === Node.TEXT_NODE) return push(node.nodeValue ?? '', f, src);
+  const walk = (node: Node, f: Fmt, src: string | null, el: HTMLElement | null) => {
+    if (node.nodeType === Node.TEXT_NODE) return push(node.nodeValue ?? '', f, src, el);
     if (!(node instanceof HTMLElement)) return;
     // Bullet glyphs and number labels are drawn, not typed — they must never
     // come back as run text.
@@ -133,19 +146,20 @@ const runsFromNodes = (
       return;
     }
     const own = node.dataset.run;
-    const nextSrc = own === undefined ? src : Number(own);
+    const keyed = own !== undefined;
     const next = fmtFrom(node, f);
-    node.childNodes.forEach((c) => walk(c, next, nextSrc));
+    node.childNodes.forEach((c) => walk(c, next, keyed ? own : src, keyed ? node : el));
   };
-  nodes.forEach((n) => walk(n, inherit, null));
-  // Drop the bookkeeping key before the runs reach the model.
-  return paras.map((runs) =>
-    runs.map((run) => {
-      const out: TextRun & { __src?: number | null } = { ...run };
-      delete out.__src;
-      return out as TextRun;
-    }),
-  );
+  nodes.forEach((n) => walk(n, inherit, null, null));
+  return paras;
+};
+
+/** The run as the model wants it, without the parser's bookkeeping. */
+const plainRun = (run: DraftRun): TextRun => {
+  const out: TextRun & { __src?: string | null; __els?: HTMLElement[] } = { ...run };
+  delete out.__src;
+  delete out.__els;
+  return out as TextRun;
 };
 
 export function TextEditor({
@@ -360,9 +374,10 @@ export function TextEditor({
    * invisible while editing — and `commit` then wrote that flattened text back,
    * quietly destroying (say) an italic job title inside a caption.
    *
-   * `data-run` records which run each span came from, so `commit` can recover
-   * the props that CSS can't round-trip: color is a design-system token, not a
-   * hex, and size/font live in model units.
+   * `data-run` records which paragraph AND run each span came from, so `commit`
+   * can recover the props that CSS can't round-trip: color is a design-system
+   * token, not a hex, and size/font live in model units. Both halves matter —
+   * see `runSource.ts`.
    */
   const applyRunStyle = (span: HTMLElement, r: TextRun) => {
     span.style.fontFamily = FONTS[r.font ?? ds.fonts.body].cssStack;
@@ -376,9 +391,9 @@ export function TextEditor({
     span.style.color = resolveColor(r.color, ds);
   };
 
-  const runSpan = (r: TextRun, index: number) => {
+  const runSpan = (r: TextRun, para: number, index: number) => {
     const span = document.createElement('span');
-    span.dataset.run = String(index);
+    span.dataset.run = runKey(para, index);
     applyRunStyle(span, r);
     span.textContent = r.text;
     return span;
@@ -392,9 +407,12 @@ export function TextEditor({
    * and the renderer took over. Style attributes only, never text: the caret
    * and any half-typed word have to survive.
    */
-  const applyRunStyles = (block: HTMLElement, p: Paragraph) => {
+  const applyRunStyles = (block: HTMLElement) => {
     block.querySelectorAll<HTMLElement>('[data-run]').forEach((span) => {
-      const r = p.runs[Number(span.dataset.run)];
+      // Against the whole body, not one paragraph: a span carries its own
+      // paragraph index, and after an Enter the block it sits in is no longer
+      // the paragraph it was painted from.
+      const r = runAt(body.paragraphs, span.dataset.run);
       if (r) applyRunStyle(span, r);
     });
   };
@@ -409,14 +427,17 @@ export function TextEditor({
     const node = ref.current;
     if (!node) return;
     node.replaceChildren(
-      ...paragraphs.map((p) => {
+      ...paragraphs.map((p, pi) => {
         const line = document.createElement('div');
+        // Which paragraph this block IS, so `commit` doesn't have to infer it
+        // from a position the browser is free to change.
+        line.dataset.para = String(pi);
         applyParagraphStyle(line, p);
         // Index by position in p.runs, not in the filtered list — `data-run` is
         // how commit finds the source run again.
         const runs = p.runs.map((r, i) => [r, i] as const).filter(([r]) => r.text);
         // An empty block collapses to zero height without a <br> placeholder.
-        if (runs.length) line.append(...runs.map(([r, i]) => runSpan(r, i)));
+        if (runs.length) line.append(...runs.map(([r, i]) => runSpan(r, pi, i)));
         else line.appendChild(document.createElement('br'));
         return line;
       }),
@@ -467,10 +488,11 @@ export function TextEditor({
     const node = ref.current;
     if (!node) return;
     Array.from(node.children).forEach((child, i) => {
-      const p = body.paragraphs[i];
-      if (!p || !(child instanceof HTMLElement)) return;
-      applyParagraphStyle(child, p);
-      applyRunStyles(child, p);
+      if (!(child instanceof HTMLElement)) return;
+      const claimed = child.dataset.para;
+      const p = body.paragraphs[claimed === undefined ? i : Number(claimed)];
+      if (p) applyParagraphStyle(child, p);
+      applyRunStyles(child);
     });
     // applyParagraphStyle reseeds each block's list attributes from the model,
     // so the markers and indents have to be redrawn to match.
@@ -481,8 +503,17 @@ export function TextEditor({
   /**
    * Read the editable back out as model paragraphs. Takes the root explicitly
    * because the unmount commit runs after React has detached `ref`.
+   *
+   * `stamp` re-keys the DOM to the paragraphs just read: run for run, block for
+   * block. The caller runs it once the write has landed, because until then the
+   * blocks and spans still name the paragraphs the editor OPENED with — and a
+   * second read (another sync, or the commit) would resolve those stale claims
+   * against a model that has since gained or lost paragraphs, pulling one
+   * paragraph's font and colour onto another's text.
    */
-  const readParagraphs = (root: HTMLElement | null): Paragraph[] | null => {
+  const readParagraphs = (
+    root: HTMLElement | null,
+  ): { paragraphs: Paragraph[]; stamp: () => void } | null => {
     if (!root) return null;
 
     // Group the editable's top-level nodes into paragraphs. Our own render puts
@@ -507,10 +538,28 @@ export function TextEditor({
     }
 
     const paragraphs: Paragraph[] = [];
-    for (const { nodes, owner } of groups.length ? groups : [{ nodes: [], owner: null }]) {
-      // Keep each paragraph's own spacing/bullet/alignment; paragraphs the user
-      // added inherit from the one they split off the end of.
-      const src = body.paragraphs[paragraphs.length] ?? body.paragraphs[body.paragraphs.length - 1];
+    // Collected as we go, applied by `stamp` — reading must not disturb the DOM
+    // it is reading, and a read whose element has gone never stamps at all.
+    const stamps: (() => void)[] = [];
+    let previous: number | null = null;
+    for (const [position, { nodes, owner }] of (
+      groups.length ? groups : [{ nodes: [], owner: null }]
+    ).entries()) {
+      // Keep each paragraph's own spacing/bullet/alignment. A block painted
+      // from the model says which paragraph it is; one the browser made — the
+      // far half of an Enter, bare text at the top level — inherits from the
+      // paragraph before it. Reading the style off the block's POSITION instead
+      // meant one Enter shifted every paragraph below it onto the next
+      // paragraph's styling.
+      const claimed = owner?.dataset.para;
+      const index = paragraphSource(
+        body.paragraphs.length,
+        claimed === undefined ? null : Number(claimed),
+        previous,
+        position,
+      );
+      previous = index;
+      const src = body.paragraphs[index];
       const base = src?.runs[0] ?? firstRun;
       const inherit: Fmt = {
         bold: !!base.bold,
@@ -518,22 +567,31 @@ export function TextEditor({
         underline: !!base.underline,
       };
       // Font, size and color come from the run the text was typed into, which
-      // `data-run` identifies; text the browser produced without a span (a
-      // pasted or freshly typed stretch) falls back to the paragraph's first.
-      const sourceRun = (i: number | null) => (i === null ? base : (src?.runs[i] ?? base));
+      // `data-run` names outright — paragraph and run both, so a span still
+      // resolves to its own run after the browser has moved it into another
+      // block. Text with no span of its own continues the run it follows (see
+      // `runsFromNodes`), and only a paragraph that starts with such text falls
+      // back to its first run.
+      const sourceRun = (key: string | null) => runAt(body.paragraphs, key) ?? base;
       // The block, not `src`, owns the list style — a bullet toggled or
       // indented since the editor opened lives only in the DOM until now. A
       // <br>-split block hands the same style to both halves.
       const list = owner ? listOf(owner) : { bullet: src?.bullet, level: src?.level };
+      const first = paragraphs.length;
+      if (owner) stamps.push(() => (owner.dataset.para = String(first)));
       for (const runs of runsFromNodes(nodes, sourceRun, inherit)) {
+        const at = paragraphs.length;
+        runs.forEach((run, i) =>
+          run.__els.forEach((el) => stamps.push(() => (el.dataset.run = runKey(at, i)))),
+        );
         paragraphs.push({
           ...src,
           ...list,
-          runs: runs.length ? runs : [{ ...base, text: '' }],
+          runs: runs.length ? runs.map(plainRun) : [{ ...base, text: '' }],
         });
       }
     }
-    return paragraphs;
+    return { paragraphs, stamp: () => stamps.forEach((f) => f()) };
   };
 
   /**
@@ -541,8 +599,9 @@ export function TextEditor({
    * unchanged write would still push an undo step.
    */
   const writeBack = (root: HTMLElement | null) => {
-    const paragraphs = readParagraphs(root);
-    if (!paragraphs) return;
+    const read = readParagraphs(root);
+    if (!read) return;
+    const { paragraphs } = read;
     // Against the LIVE body, not this render's: `commit` writes and closes in
     // one batch, so the unmount pass never sees a render carrying its own
     // result and would otherwise re-write it as a second undo step. A missing
@@ -553,6 +612,10 @@ export function TextEditor({
       ?.elements.find((x) => x.id === el.id);
     const live = el2 && 'body' in el2 ? el2.body : undefined;
     if (!live) return;
+    // Re-key either way: an unchanged read still tells us which block and span
+    // is which paragraph and run, and the claims are worth correcting before
+    // the next read leans on them.
+    read.stamp();
     if (JSON.stringify(paragraphs) === JSON.stringify(live.paragraphs)) return;
     store().updateElement(el.id, { body: { ...live, paragraphs } });
   };
@@ -657,6 +720,22 @@ export function TextEditor({
       // Typing can add, remove or reorder blocks (Enter, a paste, deleting a
       // line), and every one of those changes the numbering below it.
       onInput={(e) => {
+        syncMarkers();
+        onInput?.(e.currentTarget);
+      }}
+      // Pasting brings the words, never the source's formatting — see
+      // `plainPaste.ts`. `insertText` is used rather than writing to the DOM
+      // directly so the browser keeps its own undo stack and caret handling,
+      // and each newline becomes a <br>, which `commit` already reads back as
+      // a new paragraph.
+      onPaste={(e) => {
+        e.preventDefault();
+        const lines = plainPasteLines(e.clipboardData);
+        if (!lines.length) return;
+        lines.forEach((line, i) => {
+          if (i) document.execCommand('insertLineBreak');
+          if (line) document.execCommand('insertText', false, line);
+        });
         syncMarkers();
         onInput?.(e.currentTarget);
       }}

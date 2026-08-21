@@ -63,10 +63,18 @@ import {
 } from '@/model';
 import { SUPPORTED_KINDS } from '@/chart/compile';
 import { CHART_KIND_LABELS } from '@/charts/kinds';
+import {
+  DEFAULT_TICK_FORMAT,
+  TICK_FORMAT_CHOICES,
+  sampleTick,
+} from '@/chart/format/dateAxis';
 import { legendEntryColor, recolorLegendEntry } from '@/store/chartActions';
 import { emphasisSeriesKey } from '@/chart/place/lineArea';
 import { CustomColorSwatch, customHexOf } from '../color';
 import { markCapabilities, markRender } from './markCaps';
+import { axisDateGrain } from '../chartDateMenu';
+import { DatePatternInput } from './DateFormatRow';
+import { NumberPatternInput } from './NumberFormatRows';
 import { describePart } from './previewHitTest';
 
 /** Mutate the spec in place. The owner turns that into whatever a write means. */
@@ -388,6 +396,9 @@ export function ChartPartOptions({
         // category axis has a list of names instead of a domain.
         const value =
           axis !== 'x' || spec.kind === 'scatter' || spec.kind === 'bubble';
+        // The grain the labels are at, which decides whether a date format is a
+        // question worth asking. See `axisDateGrain`.
+        const dateGrain = axis === 'x' ? axisDateGrain(spec) : null;
         return (
           <>
             <Group label="Show">
@@ -476,6 +487,41 @@ export function ChartPartOptions({
                   </select>
                 </Group>
               </>
+            ) : null}
+
+            {/* A dated category axis has a FORM as well as a font — "2Q25"
+                or "Q2 2025" — and it is the same list the tick's right-click
+                menu offers. Absent for an axis whose labels aren't periods. */}
+            {!value && dateGrain ? (
+              <Group label="Dates">
+                <select
+                  value={ax?.dateFormat ?? ''}
+                  onChange={(e) =>
+                    setAxis(axis, (a) => (a.dateFormat = e.target.value || undefined))
+                  }
+                  aria-label="Date format"
+                  title="How each period is written. Auto follows the axis's own grain."
+                  className={`${FIELD} w-24`}
+                >
+                  <option value="">{`Auto (${sampleTick(dateGrain, DEFAULT_TICK_FORMAT[dateGrain])})`}</option>
+                  {TICK_FORMAT_CHOICES[dateGrain].map((p) => (
+                    <option key={p} value={p}>
+                      {sampleTick(dateGrain, p)}
+                    </option>
+                  ))}
+                  {/* A pattern typed into the box joins the list for as long as
+                      it is the answer — a select with no matching option would
+                      otherwise show blank. */}
+                  {ax?.dateFormat && !TICK_FORMAT_CHOICES[dateGrain].includes(ax.dateFormat) ? (
+                    <option value={ax.dateFormat}>{sampleTick(dateGrain, ax.dateFormat)}</option>
+                  ) : null}
+                </select>
+                <DatePatternInput
+                  value={ax?.dateFormat}
+                  onChange={(dateFormat) => setAxis(axis, (a) => (a.dateFormat = dateFormat))}
+                  className={`${FIELD} w-20`}
+                />
+              </Group>
             ) : null}
 
             <Group label="Tick marks">
@@ -773,6 +819,7 @@ export function ChartPartOptions({
               <select
                 value={spec.numberFormat.scale ?? 'none'}
                 onChange={(e) => setFormat((f) => (f.scale = e.target.value as NumberFormat['scale']))}
+                aria-label="Number place"
                 className={`${FIELD} w-20`}
               >
                 <option value="none">—</option>
@@ -780,7 +827,34 @@ export function ChartPartOptions({
                 <option value="K">K</option>
                 <option value="M">M</option>
                 <option value="B">B</option>
+                <option value="T">T</option>
               </select>
+              {/* Blank is auto, which resolves across the whole set at once —
+                  the thing that keeps a column of labels lined up. */}
+              <select
+                value={spec.numberFormat.decimals === undefined ? '' : String(spec.numberFormat.decimals)}
+                onChange={(e) =>
+                  setFormat((f) => {
+                    f.decimals = e.target.value === '' ? undefined : Number(e.target.value);
+                  })
+                }
+                aria-label="Decimal places"
+                title="Decimal places. Auto gives the whole set the fewest that keep it exact."
+                className={`${FIELD} w-16`}
+              >
+                <option value="">0.#</option>
+                <option value="0">0</option>
+                <option value="1">0.0</option>
+                <option value="2">0.00</option>
+                <option value="3">0.000</option>
+              </select>
+              {/* The pattern the three dropdowns can't spell. It writes the
+                  same curated fields they do — see `parseNumberPattern`. */}
+              <NumberPatternInput
+                value={spec.numberFormat}
+                onChange={(next) => patch((sp) => (sp.numberFormat = next))}
+                className={`${FIELD} w-24`}
+              />
             </Group>
           </>
         );

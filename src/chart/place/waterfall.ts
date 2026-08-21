@@ -141,8 +141,12 @@ export function placeWaterfall(input: WaterfallInput): Mark[] {
     // A delta reads as a movement, so it carries its sign explicitly; a
     // milestone is a level and doesn't.
     const signed = d.role === 'delta' && d.value > 0;
+    // Per ITEM, like the label settings above it: a waterfall's one restated
+    // bar — the total in millions among deltas in thousands — is the whole
+    // reason a label carries its own format.
     const text =
-      (signed ? '+' : '') + formatNumber(d.value, spec.numberFormat, { peers }).text;
+      (signed ? '+' : '') +
+      formatNumber(d.value, labels.numberFormat ?? spec.numberFormat, { peers }).text;
     const w = measurer.measure(text, style).wEmu + pointsToEmu(2);
     const centre = proj.category(band.center(d.index));
     const tip = proj.value(d.top);

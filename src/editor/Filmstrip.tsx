@@ -12,6 +12,8 @@ import { useResizableWidth } from './useResizableWidth';
 import { useContentWidth } from './useContentWidth';
 import { ResizeHandle } from './ResizeHandle';
 import { makeSlideDragImage } from './slideDragImage';
+import { ContextMenu, type MenuItem } from './ContextMenu';
+import { slideMenuItems } from './slideMenuItems';
 
 /** First non-dragged slide after `afterIndex`, or null to mean "end of list". */
 function nextDropTargetId(afterIndex: number, draggingIds: string[], slides: { id: string }[]) {
@@ -49,6 +51,7 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
     activeRef.current?.scrollIntoView({ block: 'nearest' });
   }, [currentSlideId]);
 
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [draggingIds, setDraggingIds] = useState<string[] | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragPosition, setDragPosition] = useState<'before' | 'after'>('before');
@@ -136,6 +139,16 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
                   }
                 }}
                 onDragEnd={endDrag}
+                // The same rule the drag follows: a right-click inside a
+                // multi-selection acts on all of it, one outside it takes the
+                // slide under the pointer and drops the rest.
+                onContextMenu={(e) => {
+                  if (singleSlide) return;
+                  e.preventDefault();
+                  const group = isMultiSelected ? selectedSlideIds : [slide.id];
+                  if (!isMultiSelected) setCurrentSlide(slide.id);
+                  setMenu({ x: e.clientX, y: e.clientY, items: slideMenuItems(group) });
+                }}
                 onDragOver={(e) => {
                   if (!draggingIds || draggingIds.includes(slide.id)) return;
                   e.preventDefault();
@@ -236,6 +249,9 @@ export function Filmstrip({ singleSlide = false }: { singleSlide?: boolean } = {
         </div>
       </div>
       <ResizeHandle onPointerDown={startDrag} />
+      {menu ? (
+        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+      ) : null}
     </div>
   );
 }

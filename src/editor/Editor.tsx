@@ -211,7 +211,13 @@ export function Editor({
         (e.target instanceof HTMLElement &&
           (e.target.tagName === 'INPUT' ||
             e.target.tagName === 'TEXTAREA' ||
-            e.target.isContentEditable));
+            e.target.isContentEditable ||
+            // A datasheet cell is a focused div rather than an input, so the
+            // tag checks above miss it. The grid answers every one of these
+            // chords itself — ⌘V pastes a block from Excel, Delete clears the
+            // cells, the arrows move the cursor — and claiming them here
+            // pasted a copy of the chart onto the slide instead.
+            !!e.target.closest('[data-sheet-grid]')));
       if (typing) return;
 
       const mod = e.metaKey || e.ctrlKey;

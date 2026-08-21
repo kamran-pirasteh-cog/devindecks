@@ -75,10 +75,14 @@ import {
   recolorLegendEntry,
 } from '@/store/chartActions';
 import { useEditor } from '@/store/editorStore';
+import { axisDateGrain } from '../chartDateMenu';
 import { CustomColorSwatch, customHexOf } from '../color';
 import { MOVEABLE_Z } from '../layers';
 import { ganttItemFormLabel } from '@/model/chart/roles';
 import { markCapabilities, markRender } from './markCaps';
+import { DateFormatRow } from './DateFormatRow';
+import { NumberFormatRows } from './NumberFormatRows';
+import { FIELD, Row } from './panelChrome';
 import {
   CHART_FACES,
   CHART_TYPE_SIZES,
@@ -101,9 +105,6 @@ const GAP = 10;
 /** Never squeeze the panel below this, even on a very short slide: at that
  *  point it scrolls, and a scrolling panel beats a clipped one. */
 const MIN_PANEL_H = 120;
-
-const FIELD =
-  'h-6 w-full min-w-0 rounded border border-zinc-200 bg-white px-1 text-[11px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200';
 
 /** Type sizes offered anywhere in the panel. Blank means "the brand's". */
 const SIZES = CHART_TYPE_SIZES;
@@ -207,17 +208,6 @@ function AxisNumber({
       onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
       className={`${FIELD} text-right`}
     />
-  );
-}
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-14 shrink-0 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
-        {label}
-      </span>
-      <div className="flex min-w-0 flex-1 items-center gap-1">{children}</div>
-    </div>
   );
 }
 
@@ -804,6 +794,14 @@ export function ChartPartPopover({
     !!axisRef &&
     (axisRef.axis !== 'x' || spec.kind === 'scatter' || spec.kind === 'bubble');
 
+  /**
+   * The grain of a dated category axis, or null — the axis that carries DATES
+   * rather than numbers, and the one with a date format to pick. Read off the
+   * labels themselves, so it appears exactly when it means something.
+   */
+  const tickGrain =
+    axisRef && axisRef.axis === 'x' && !numericAxis ? axisDateGrain(spec) : null;
+
   /** Edit the axis the popover is open on. */
   const patchAxis = (mutate: (a: NonNullable<ChartSpec['axes']['y']>) => void) => {
     if (!axisRef) return;
@@ -1171,6 +1169,17 @@ export function ChartPartPopover({
                 ))}
               </select>
             </Row>
+          ) : null}
+          {/* How the number is written, where the label IS a number: a category
+              name or a series name has no format to choose. Reads through to
+              the chart's format so the dropdowns show what is on screen, and
+              writes to the label's own node, which is what makes a single
+              restated figure — "1.2M" among a column of thousands — possible. */}
+          {label.show && (label.content.kind === 'value' || label.content.kind === 'percent') ? (
+            <NumberFormatRows
+              value={label.numberFormat ?? spec.numberFormat}
+              onChange={(numberFormat) => patchLabel({ numberFormat })}
+            />
           ) : null}
           {/* Type controls follow the text: with the label off there is nothing
               on screen for a size, a face or an ink to change. */}
@@ -1582,7 +1591,25 @@ export function ChartPartPopover({
                   onChange={(v) => patchAxis((a) => (a.tickStep = v))}
                 />
               </Row>
+              {/* The axis carries the same numbers the labels do, and often
+                  wants them written differently — millions on the axis, exact
+                  figures on the bars. Unset falls through to the chart's. */}
+              <NumberFormatRows
+                value={spec.axes[axisRef.axis]?.numberFormat ?? spec.numberFormat}
+                onChange={(numberFormat) => patchAxis((a) => (a.numberFormat = numberFormat))}
+              />
             </>
+          ) : null}
+          {/* --- how a DATED axis writes its periods ---
+                  The counterpart of `NumberFormatRows` above: the axis that
+                  carries dates has a form to pick too, and it is the same
+                  question the tick's right-click menu asks. */}
+          {tickGrain ? (
+            <DateFormatRow
+              grain={tickGrain}
+              value={spec.axes[axisRef.axis]?.dateFormat}
+              onChange={(dateFormat) => patchAxis((a) => (a.dateFormat = dateFormat))}
+            />
           ) : null}
           <Row label="Ticks">
             {TICK_MARKS.map((t) => (

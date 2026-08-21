@@ -19,8 +19,8 @@
  * in common are none. And neither ever empties the selection — that closes the
  * panel and drops the user out of the chart mid-edit.
  */
-import { partKind, type ChartRef } from '@/model';
-import { partsInReadingOrder, type PartEl } from './partOrder';
+import { legendSeriesKey, partKind, type ChartRef } from '@/model';
+import { partsInReadingOrder, seriesOrder, type PartEl } from './partOrder';
 
 export type { PartEl };
 
@@ -82,15 +82,35 @@ export function shiftClickParts(
   if (!from || from === clicked) return [clicked];
   const fromRef = refIn(parts, from)!;
 
-  // Two points of the SAME series run along that series alone: the reader who
+  const seriesOf = (ref: ChartRef): string | null =>
+    ref.part === 'mark' || ref.part === 'label' ? ref.series : null;
+  const clickedSeries = seriesOf(clickedRef);
+  const fromSeries = seriesOf(fromRef);
+
+  // Two ends in DIFFERENT series mean the series, not a run of individual
+  // points: nobody shift-clicks a bar in one row and a bar in another to get
+  // those two bars. So the span is taken over the series — every part of the
+  // kind in each series from the anchor's to the clicked one's, inclusive —
+  // which is what makes "these two rows, all of them" a two-click gesture.
+  if (clickedSeries && fromSeries && clickedSeries !== fromSeries) {
+    const order = seriesOrder(parts);
+    const a = order.indexOf(fromSeries);
+    const b = order.indexOf(clickedSeries);
+    if (a >= 0 && b >= 0) {
+      const span = new Set(order.slice(Math.min(a, b), Math.max(a, b) + 1));
+      const inSpan = partsInReadingOrder(parts, kind).filter((id) => {
+        const ref = refIn(parts, id);
+        const s = ref ? seriesOf(ref) : null;
+        return !!s && span.has(s);
+      });
+      if (inSpan.length) return inSpan;
+    }
+  }
+
+  // Both ends in the SAME series run along that series alone: the reader who
   // shift-clicks the first and last marker of one line means those markers, not
   // every other line's points that fall between them in category order.
-  const sameSeries =
-    (clickedRef.part === 'mark' || clickedRef.part === 'label') &&
-    (fromRef.part === 'mark' || fromRef.part === 'label') &&
-    clickedRef.series === fromRef.series
-      ? clickedRef.series
-      : null;
+  const sameSeries = clickedSeries && clickedSeries === fromSeries ? clickedSeries : null;
 
   const ordered = partsInReadingOrder(parts, kind, sameSeries);
   const a = ordered.indexOf(from);
@@ -119,4 +139,85 @@ export function toggleClickParts(
   const kind = kindIn(parts, clicked);
   if (!kind) return [clicked];
   return allOfKind(parts, selected, kind) ? [...selected, clicked] : [clicked];
+}
+
+/**
+ * Is this part one of MANY of its kind — a tick, a label, a legend key?
+ *
+ * The parts a reader thinks of as a set, and therefore the ones a plain click
+ * takes all of (see `clickSelectParts`). Marks are deliberately not here: a bar
+ * is an object, and clicking one has always meant that bar.
+ */
+export function isPopulationPart(ref: ChartRef): boolean {
+  switch (ref.part) {
+    case 'label':
+    case 'total':
+    case 'legend.item':
+    case 'axis':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * A plain click on a POPULATION part: how wide the selection gets.
+ *
+ * A chart's ticks, its data labels and its legend keys are populations, not
+ * objects — nobody wants one tick in a different font from the other five, and
+ * the edit almost always means all of them. So a click widens, the way a click
+ * in a word processor selects a word, a double-click a sentence:
+ *
+ * 1. **click** — every part of that kind: all the labels, all of that axis's
+ *    ticks, the whole legend.
+ * 2. **double-click** — the ones in the series clicked, so one line's markers
+ *    or one colour's labels can differ from the rest.
+ * 3. **triple-click** — the single part under the pointer.
+ *
+ * Levels that would come out identical collapse, so on a single-series chart
+ * the second click already reaches the one label, and a legend entry — swatch
+ * and name together, which is as narrow as a legend gets — is reached on the
+ * second rather than the third. `clicks` is a mousedown's
+ * `detail`; anything past the last level clamps to it.
+ *
+ * Null for everything else — a bar, a slice, a Gantt row — which stays one
+ * click, one object.
+ */
+export function clickSelectParts(
+  clicked: string,
+  parts: PartEl[],
+  clicks: number,
+): string[] | null {
+  const ref = refIn(parts, clicked);
+  if (!ref || !isPopulationPart(ref)) return null;
+  const kind = partKind(ref);
+  const same = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((id, i) => id === b[i]);
+  const levels: string[][] = [];
+  const add = (ids: string[]) => {
+    if (ids.length && !levels.some((l) => same(l, ids))) levels.push(ids);
+  };
+  const ofKind = partsInReadingOrder(parts, kind);
+
+  add(ofKind);
+  if (ref.part === 'label' || ref.part === 'mark') {
+    add(partsInReadingOrder(parts, kind, ref.series));
+  } else if (ref.part === 'legend.item') {
+    // A legend ENTRY is two parts — the swatch and the name beside it, which
+    // carry different series keys (see `legendSeriesKey`) — so the middle level
+    // is the entry, not the one node clicked. That is also the last level: a
+    // legend key IS its series, so there is nothing narrower to reach.
+    const key = legendSeriesKey(ref);
+    add(
+      ofKind.filter((id) => {
+        const r = refIn(parts, id);
+        return r?.part === 'legend.item' && legendSeriesKey(r) === key;
+      }),
+    );
+  }
+  // Not for a legend: the entry above is the narrowest thing there, and half of
+  // one — a swatch with no name — is not a selection anyone means.
+  if (ref.part !== 'legend.item') add([clicked]);
+
+  return levels[Math.min(Math.max(clicks, 1), levels.length) - 1];
 }

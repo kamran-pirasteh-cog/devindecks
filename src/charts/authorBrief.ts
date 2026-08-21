@@ -87,12 +87,32 @@ export function authorBriefFrom(
     // back from today — a range nobody asked for, which research must confirm
     // before a single figure is looked up.
     periodFrom: !brief.period ? 'inferred' : brief.period.stated ? 'derived' : 'inferred',
+    // Only ever recorded when something settled it — see `BriefPeriod.fiscal`.
+    // Undefined here is what makes the prompt ask, and asking is the right
+    // behaviour for a chart whose quarters carry no calendar.
+    calendar:
+      brief.period?.fiscal === undefined
+        ? undefined
+        : brief.period.fiscal
+          ? 'fiscal'
+          : 'calendar',
 
     unitNote: brief.unitNote,
     // A currency read off the measure name ("revenue" implies dollars) is a
     // house convention rather than a statement, and reporting in the wrong
     // currency is a whole-chart error.
     unitFrom: brief.unitStated ? 'stated' : 'inferred',
+
+    currentPeriod:
+      brief.period?.includeCurrent === undefined
+        ? undefined
+        : brief.period.includeCurrent
+          ? 'included'
+          : 'excluded',
+
+    // Verbatim, and deliberately not summarised or normalised: it is the one
+    // field here that is an instruction rather than a fact.
+    notes: brief.notes?.trim() || undefined,
 
     gaps: brief.gaps,
   };

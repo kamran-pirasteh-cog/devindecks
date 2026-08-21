@@ -5,7 +5,7 @@
  * Column, bar, line, area and combo all draw the same frame around different
  * marks, so this lives once and each placer only supplies its own geometry.
  */
-import type { AxisId, AxisSpec, ColorRef, EMU, LegendSpec, Rect } from '@/model';
+import type { AxisId, AxisSpec, ColorRef, DashStyle, EMU, LegendSpec, Rect } from '@/model';
 import { isInsideLegend, pointsToEmu, token } from '@/model';
 import type { LinearScale } from '../scale/linear';
 import type { ChartTheme } from '../theme';
@@ -139,6 +139,17 @@ export interface LegendItem {
   name: string;
   seriesKey: string;
   color: ColorRef;
+  /**
+   * Set for a series DRAWN as a line — a combo's line rows, and every series
+   * on a line chart. Its key then reads as a line in the legend too, at the
+   * same width and dash it is stroked with in the plot.
+   *
+   * A filled square standing for a line is the one legend that can be read
+   * wrong rather than merely plainly: on a combo it says "another column",
+   * which is exactly the thing the line is not — and on a dashed receded line
+   * the dash is the only thing telling it from its neighbours.
+   */
+  line?: { widthEmu: EMU; dash: DashStyle };
 }
 
 export function placeCartesianFurniture(input: CartesianInput): Mark[] {
@@ -624,13 +635,25 @@ function legendItem(
   w: EMU,
   style: MarkTextStyle,
 ): Mark[] {
+  const mid = Math.round(y + h / 2);
   return [
-    {
-      kind: 'rect',
-      ref: { chartId, part: 'legend.item', series: item.seriesKey },
-      rect: { x: Math.round(x), y: Math.round(y + (h - sw) / 2), w: sw, h: sw },
-      fill: { kind: 'solid', color: item.color },
-    },
+    item.line
+      ? {
+          kind: 'line',
+          ref: { chartId, part: 'legend.item', series: item.seriesKey },
+          // Full swatch width and zero height: the key is a stroke, so it wants
+          // the run to read as one, not a square's worth of it.
+          rect: rectFromEdges(Math.round(x), mid, Math.round(x + sw), mid),
+          color: item.color,
+          widthEmu: item.line.widthEmu,
+          dash: item.line.dash,
+        }
+      : {
+          kind: 'rect',
+          ref: { chartId, part: 'legend.item', series: item.seriesKey },
+          rect: { x: Math.round(x), y: Math.round(y + (h - sw) / 2), w: sw, h: sw },
+          fill: { kind: 'solid', color: item.color },
+        },
     {
       kind: 'text',
       ref: { chartId, part: 'legend.item', series: `${item.seriesKey}.label` },
