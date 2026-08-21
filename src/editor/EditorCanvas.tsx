@@ -32,7 +32,6 @@ import {
   type SlideElement,
   isGridSpec,
   elementIdFor,
-  legendSeriesKey,
   supportsTurn,
   type ChartInstance,
   showsPageNumbers,
@@ -43,10 +42,16 @@ import { SelectionFormatBar } from './SelectionFormatBar';
 import { ArrangeBar } from './ArrangeBar';
 import { TextEditor } from './TextEditor';
 import { CropOverlay } from './CropOverlay';
-import { CanvasContextMenu, contextMenuItems, type MenuItem } from './CanvasContextMenu';
+import { ContextMenu, type MenuItem } from './ContextMenu';
+import { contextMenuItems } from './canvasMenuItems';
 import { ChartDatasheetPanel } from './chart/ChartDatasheetPanel';
 import { ChartPartPopover } from './chart/ChartPartPopover';
-import { shiftClickParts, toggleClickParts } from './chart/partSelect';
+import {
+  clickSelectParts,
+  isPopulationPart,
+  shiftClickParts,
+  toggleClickParts,
+} from './chart/partSelect';
 import { hitTestChart } from './chart/previewHitTest';
 import {
   ChartPartHighlights,
@@ -225,7 +230,12 @@ export function EditorCanvas() {
   const dragGhostsRef = useRef<Map<HTMLElement, HTMLElement>>(new Map());
   // A selection change that mousedown on an already-selected element implies,
   // held until mouseup so it can be dropped if the gesture turns into a drag.
-  const pendingSelectRef = useRef<{ id: string; mode: DeferredSelect } | null>(null);
+  const pendingSelectRef = useRef<{
+    id: string;
+    mode: DeferredSelect;
+    /** The press's click count, so a deferred chart click still widens. */
+    clicks: number;
+  } | null>(null);
   /**
    * The chart part a shift-click measures its range from: the last one clicked
    * without a modifier. Held here rather than in the store because it is a
@@ -747,27 +757,27 @@ export function EditorCanvas() {
       ?.elements.find((x) => x.id === id);
 
   /**
-   * What drilling into a chart actually selects.
+   * What a plain click on a chart part selects, `clicks` presses in.
    *
-   * A legend key means "this series", the way it does in think-cell: the swatch
-   * stands for every bar of that series, so selecting the one rectangle in the
-   * legend would be a trap — recoloring it would repaint a 6px square and
-   * nothing else on the slide.
+   * The parts a chart has MANY of — its ticks, its data labels, its legend
+   * keys — are populations rather than objects, and an edit to one is almost
+   * always an edit to all of them: nobody wants the third tick in a different
+   * font from the other five. So a click on one takes the whole kind, a
+   * double-click narrows to the series clicked, and a triple-click reaches the
+   * single part (`clickSelectParts` collapses the levels that would repeat).
+   *
+   * Everything else is one click, one part — a bar is an object, and clicking
+   * one has always meant that bar. That includes a legend key, which no longer
+   * stands in for its series' marks: a click on the legend is now about the
+   * legend, and the way to reach a series is to click one of its bars (then
+   * double-click, for all of them).
    */
-  const chartDrillIds = (id: string): string[] => {
+  const chartClickIds = (id: string, clicks: number): string[] => {
     const els = slide?.elements ?? [];
     const ref = els.find((e) => e.id === id)?.chartRef;
-    if (ref?.part !== 'legend.item') return [id];
-    const key = legendSeriesKey(ref);
-    const marks = els
-      .filter(
-        (e) =>
-          e.chartRef?.part === 'mark' &&
-          e.chartRef.chartId === ref.chartId &&
-          e.chartRef.series === key,
-      )
-      .map((e) => e.id);
-    return marks.length ? marks : [id];
+    if (!ref || !isPopulationPart(ref)) return [id];
+    const parts = els.filter((e) => e.chartRef?.chartId === ref.chartId);
+    return clickSelectParts(id, parts, clicks) ?? [id];
   };
 
   /** The side a pointer at these client coordinates would drop the legend on. */
@@ -797,6 +807,9 @@ export function EditorCanvas() {
   const armLegendDrag = (e: React.MouseEvent, chart: ChartInstance, id: string) => {
     const startX = e.clientX;
     const startY = e.clientY;
+    // Read now: the event is pooled by the time the release handler runs, and
+    // the second press of a double-click is what widens the selection.
+    const clicks = e.detail;
     let dragging = false;
 
     // Solved once, on the first move rather than on every one: the two boxes
@@ -825,7 +838,7 @@ export function EditorCanvas() {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       if (!dragging) {
-        store().selectExact(chartDrillIds(id));
+        store().selectExact(chartClickIds(id, clicks));
         return;
       }
       const side = legendSideAt(chart, ev.clientX, ev.clientY);
@@ -841,15 +854,15 @@ export function EditorCanvas() {
     window.addEventListener('mouseup', up);
   };
 
-  const deferSelect = (id: string, mode: DeferredSelect) => {
-    pendingSelectRef.current = { id, mode };
+  const deferSelect = (id: string, mode: DeferredSelect, clicks = 1) => {
+    pendingSelectRef.current = { id, mode, clicks };
     const finalize = () => {
       const pending = pendingSelectRef.current;
       pendingSelectRef.current = null;
       window.removeEventListener('mouseup', finalize);
       if (pending?.id !== id) return;
       if (pending.mode === 'toggle') store().toggleSelect(id);
-      else if (pending.mode === 'member') store().selectExact(chartDrillIds(id));
+      else if (pending.mode === 'member') store().selectExact(chartClickIds(id, pending.clicks));
       else store().select([id]);
     };
     window.addEventListener('mouseup', finalize);
@@ -1506,6 +1519,32 @@ export function EditorCanvas() {
       return;
     }
 
+    /*
+     * Already in this chart, and the press is on one of the parts it has many
+     * of: the click widens instead of picking the one node — all the labels,
+     * then that series' labels, then the one label (see `chartClickIds`). Ahead
+     * of the group rules, which would otherwise bounce the press back out to
+     * the whole chart, and ahead of the drill-in ladder, which counts presses of
+     * its own.
+     *
+     * Deferred to mouseup like any press on something already selected, so the
+     * chart can still be dragged by a label or a tick: the press is handed to
+     * Moveable first, and the selection change is dropped if a drag begins.
+     */
+    if (
+      selectionChart &&
+      pressedRef &&
+      pressedRef.chartId === selectionChart.id &&
+      isPopulationPart(pressedRef) &&
+      !e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey
+    ) {
+      if (soleChart && selectedIds.includes(id)) moveableRef.current?.dragStart(e.nativeEvent);
+      deferSelect(id, 'member', e.detail);
+      return;
+    }
+
     // Groups are one object to a click: `store().select` grows any id into its
     // whole group. The two exceptions below are PowerPoint's way INTO a group —
     // click the group, then click the member you want.
@@ -1540,7 +1579,7 @@ export function EditorCanvas() {
       outerGroupId(els.find((x) => x.id === selectedIds[0])!) === outerGroupId(els.find((x) => x.id === id)!);
 
     if (drilledInHere && !e.shiftKey) {
-      store().selectExact(chartDrillIds(id));
+      store().selectExact(chartClickIds(id, e.detail));
       return;
     }
 
@@ -1851,7 +1890,15 @@ export function EditorCanvas() {
               }}
               onDoubleClick={(e) => {
                 // A chart's parts are text and shapes too, but double-clicking
-                // one means "edit the chart's data", not "edit this label".
+                // one means "edit the chart's data", not "edit this label" —
+                // except on the parts a chart has many of, where the second and
+                // third press narrow the selection to a series and then to one
+                // tick or label (see `chartClickIds`). Opening the datasheet
+                // there would swallow the gesture.
+                if (el.chartRef && isPopulationPart(el.chartRef)) {
+                  e.stopPropagation();
+                  return;
+                }
                 if (el.chartRef) {
                   e.stopPropagation();
                   setOpenChartId(el.chartRef.chartId);
@@ -2652,7 +2699,7 @@ export function EditorCanvas() {
       />
 
       {menu ? (
-        <CanvasContextMenu
+        <ContextMenu
           x={menu.x}
           y={menu.y}
           items={menu.items}

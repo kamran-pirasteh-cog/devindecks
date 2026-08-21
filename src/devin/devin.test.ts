@@ -16,10 +16,7 @@ import { parseDevinChartResult } from './parseResult';
 const column = () => defaultChartSpec('column', 'stacked') as ColumnBarSpec;
 
 const contractFor = (spec = column()) =>
-  chartResultContract(
-    sheetSchemaFor(spec),
-    sheetSeriesFor(spec).map((s) => s.key),
-  );
+  chartResultContract(sheetSchemaFor(spec), sheetSeriesFor(spec));
 
 /* ------------------------------------------------------------------ */
 
@@ -315,7 +312,9 @@ describe('buildDevinChartPrompt', () => {
     spec.data.series = [{ key: 's0', name: 'ARR', values: [1, 2] }];
     const t = prompt(spec);
     expect(t).toContain("Q1'26");
-    expect(t).toContain('fiscal quarter');
+    // "quarter", not "fiscal quarter": nothing on this chart says which calendar
+    // its quarters are on, and the prompt asks rather than asserting one.
+    expect(t).toContain('One row per quarter');
     expect(t).not.toContain('Enterprise');
   });
 
@@ -436,7 +435,7 @@ describe('buildDevinChartPrompt', () => {
 
   it('will not start with a question outstanding', () => {
     expect(prompt()).toContain('Ask before you research');
-    expect(prompt()).toContain('ask anything else you need');
+    expect(prompt()).toContain('Ask anything else you need');
   });
 
   it('does not read "Mid-Market" as the dimension "market"', () => {
@@ -457,17 +456,18 @@ describe('buildDevinChartPrompt', () => {
   it('forbids interpolating a missing figure', () => {
     const t = prompt();
     expect(t).toContain('Do not interpolate');
-    expect(t).toContain('`null`');
+    expect(t).toContain('blank');
   });
 
   it('demands a source per row', () => {
     expect(prompt()).toContain('`source_url`');
   });
 
-  it('embeds the JSON schema and a worked example', () => {
+  it('asks for a CSV rather than printing a JSON schema at it', () => {
     const t = prompt();
-    expect(t).toContain('"$schema"');
-    expect(t).toContain('source_note');
+    expect(t).toContain('label,s0_value,s1_value,s2_value,source_url,source_note,confidence');
+    // The schema is still generated — it is just too long to be worth printing.
+    expect(t).not.toContain('"$schema"');
   });
 
   it('explains every waterfall Kind, so the roles are not guesswork', () => {

@@ -57,6 +57,28 @@ export function deleteRows(sheet: SheetModel, from: number, to = from): SheetMod
   return { ...withRows(sheet, rows), bandValues };
 }
 
+/**
+ * Does this row hold any data, beyond the key columns that merely name it?
+ *
+ * What makes Delete safe to overload. A row nobody has typed a number into is
+ * scaffolding — Delete takes the whole thing away, which is what "delete this
+ * series" means when the sheet is transposed and a row IS a series. A row with
+ * figures in it is data, and Delete goes back to meaning "clear this cell".
+ */
+export function rowHasData(sheet: SheetModel, r: number): boolean {
+  const row = sheet.rows[r];
+  if (!row) return false;
+  const keys = sheet.schema.keyColumns.length;
+  return row.some((cell, c) => c >= keys && (cell?.kind ?? 'empty') !== 'empty');
+}
+
+/** The same question of a series, across every column it owns. */
+export function seriesHasData(sheet: SheetModel, seriesKey: string): boolean {
+  const owned = sheet.columns.flatMap((col, i) => (col.seriesKey === seriesKey ? [i] : []));
+  if (!owned.length) return false;
+  return sheet.rows.some((row) => owned.some((i) => (row[i]?.kind ?? 'empty') !== 'empty'));
+}
+
 export function moveRow(sheet: SheetModel, from: number, to: number): SheetModel {
   if (!sheet.schema.caps.reorderRows || from === to) return sheet;
   const rows = [...sheet.rows];

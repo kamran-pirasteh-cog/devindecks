@@ -400,6 +400,59 @@ describe('compileChart — labels fit on one line', () => {
     expect(title?.body.wrap).toBe(true);
   });
 
+  it('writes a dated category axis in the house form for its grain', () => {
+    const dated = (labels: string[]) =>
+      compile(
+        chart((s) => {
+          s.data.categories = labels.map((label, i) => ({ key: `c${i}`, label }));
+        }),
+      ).elements
+        .filter(isText)
+        .filter(
+          (e) =>
+            e.chartRef?.part === 'axis' && e.chartRef.axis === 'x' && e.chartRef.sub === 'tick',
+        )
+        .map((e) => e.body.paragraphs[0].runs[0].text);
+
+    // The house design system sets category labels in caps; the FORM of the
+    // label — what it says and in what order — is what's under test.
+    expect(dated(['Q2 2025', 'Q3 2025', 'Q4 2025'])).toEqual(['2Q25', '3Q25', '4Q25']);
+    expect(dated(['May 2024', 'Jun 2024', 'Jul 2024'])).toEqual(['MAY-24', 'JUN-24', 'JUL-24']);
+    expect(dated(['2017', '2018', '2019'])).toEqual(["'17", "'18", "'19"]);
+    // Segment names are not periods, so they are left as the author wrote them.
+    expect(dated(['North', 'South', 'East'])).toEqual(['NORTH', 'SOUTH', 'EAST']);
+  });
+
+  it('captions a weekly axis, and lets the author overrule both', () => {
+    const els = (mutate: (s: ColumnBarSpec) => void) =>
+      compile(
+        chart((s) => {
+          s.data.categories = ['2025-07-07', '2025-07-14', '2025-07-21'].map((label, i) => ({
+            key: `c${i}`,
+            label,
+          }));
+          mutate(s);
+        }),
+      ).elements.filter(isText);
+
+    const auto = els(() => {});
+    const axisText = (list: typeof auto, sub: string) =>
+      list
+        .filter((e) => e.chartRef?.part === 'axis' && e.chartRef.axis === 'x' && e.chartRef.sub === sub)
+        .map((e) => e.body.paragraphs[0].runs[0].text);
+
+    // Mondays in the sheet, the Sundays they end on on the axis.
+    expect(axisText(auto, 'tick')).toEqual(['7/13', '7/20', '7/27']);
+    expect(axisText(auto, 'title')).toEqual(['WEEK ENDING']);
+
+    const own = els((s) => {
+      s.axes.x.dateFormat = 'MM/dd';
+      s.axes.x.title = 'Fiscal week';
+    });
+    expect(axisText(own, 'tick')).toEqual(['07/13', '07/20', '07/27']);
+    expect(axisText(own, 'title')).toEqual(['FISCAL WEEK']);
+  });
+
   it('still lets a banded category label wrap — its box is the band', () => {
     const { elements } = compile(
       chart((s) => {
@@ -1052,6 +1105,24 @@ describe('compileChart — combo', () => {
     expect(line).toHaveLength(1);
     expect(pointOf(line[0])).toBe('line');
     expect(fillOf(line[0])).toEqual({ kind: 'none' });
+  });
+
+  it('gives a line member a LINE for its legend key, not a filled swatch', () => {
+    const els = combo({ s2: 'line' }).elements;
+    const keyFor = (series: string) =>
+      els.find(
+        (e) => e.chartRef?.part === 'legend.item' && e.chartRef.series === series,
+      )!;
+    const line = marksFor(els, 's2')[0];
+    const key = keyFor('s2');
+    // A filled square standing for a line reads as another column, which is the
+    // one thing the line is not.
+    expect(key.type).toBe('line');
+    expect(keyFor('s1').type).toBe('shape');
+    // Stroked exactly as the line in the plot is, or the key points at nothing.
+    expect('outline' in key ? key.outline : undefined).toEqual(
+      'outline' in line ? line.outline : undefined,
+    );
   });
 
   it('still fills a member asked to render as an area', () => {

@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "mock:api": "tsx scripts/mock-anthropic.ts",
+    "dev:mock": "tsx scripts/mock-anthropic.ts & MOCK=$!; trap 'kill $MOCK' EXIT INT TERM; ANTHROPIC_API_KEY=mock-key ANTHROPIC_BASE_URL=http://127.0.0.1:4010 next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

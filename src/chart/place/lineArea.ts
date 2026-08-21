@@ -210,6 +210,39 @@ export function endLabelTexts(spec: LineSpec, derived: GridDerived): string[] {
   );
 }
 
+/**
+ * How each series is stroked AS A LINE, aligned with `derived.series`, and null
+ * for the ones that aren't lines at all — a combo's columns, an area chart.
+ *
+ * The legend needs exactly this, and it has to be the same answer the plot
+ * gives: a key drawn at a width and dash the line beside it doesn't use is a
+ * key that points at the wrong series. So the placer reads it from here too,
+ * rather than each side walking the emphasis/recede ladder on its own.
+ */
+export function lineStrokes(
+  spec: LineLikeSpec,
+  derived: GridDerived,
+  theme: ChartTheme,
+): (LineLook | null)[] {
+  const emphasisKey = emphasisSeriesKey(spec, derived.series.map((s) => s.key));
+  let recedeIndex = 0;
+  return derived.series.map((s, si) => {
+    const drawsLine =
+      spec.kind === 'line' || (spec.kind === 'combo' && comboMode(spec, s.key) === 'line');
+    if (!drawsLine) return null;
+    const look = lineLook(theme, si, s.key === emphasisKey, emphasisKey !== null, recedeIndex);
+    if (emphasisKey !== null && !look.emphasized) recedeIndex++;
+    return {
+      ...look,
+      color:
+        s.format?.outline?.color ??
+        (s.format?.fill?.kind === 'solid' ? s.format.fill.color : look.color),
+      widthEmu: s.format?.lineWidthEmu ?? look.widthEmu,
+      dash: s.format?.dash ?? look.dash,
+    };
+  });
+}
+
 export function placeLineArea(input: LineAreaInput): Mark[] {
   const { chartId, spec, derived, proj, theme, measurer, onlySeries, uprightText } = input;
   const marks: Mark[] = [];
@@ -268,25 +301,20 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
     }
   }
 
-  // The subject of the chart, and the running count of the lines that recede
-  // behind it — see `lineLook`.
-  const emphasisKey = emphasisSeriesKey(spec, derived.series.map((k) => k.key));
+  // How every line is stroked, solved over ALL the series: a partial rerender
+  // through `onlySeries` must not shift the emphasis ladder under the series it
+  // does draw.
+  const strokes = lineStrokes(spec, derived, theme);
   const endLabels = spec.kind === 'line' ? endLabelTexts(spec, derived) : [];
-  let recedeIndex = 0;
 
   // Then the lines and their markers, on top.
   for (const s of series) {
     const si = derived.series.indexOf(s);
-    if (spec.kind === 'combo' && comboMode(spec, s.key) !== 'line') continue;
-    if (spec.kind === 'area') continue;
+    const look = strokes[si];
+    if (!look) continue;
 
-    const look = lineLook(theme, si, s.key === emphasisKey, emphasisKey !== null, recedeIndex);
-    if (emphasisKey !== null && !look.emphasized) recedeIndex++;
-
-    const color =
-      s.format?.outline?.color ??
-      (s.format?.fill?.kind === 'solid' ? s.format.fill.color : look.color);
-    const width = s.format?.lineWidthEmu ?? look.widthEmu;
+    const color = look.color;
+    const width = look.widthEmu;
     const tops = pointsOf(derived, s.key, proj, centers, true);
 
     for (const run of runs(tops)) {
@@ -299,7 +327,7 @@ export function placeLineArea(input: LineAreaInput): Mark[] {
         rect: path.box,
         d: path.d,
         fill: { kind: 'none' },
-        outline: { color, widthEmu: width, dash: s.format?.dash ?? look.dash },
+        outline: { color, widthEmu: width, dash: look.dash },
       });
     }
 

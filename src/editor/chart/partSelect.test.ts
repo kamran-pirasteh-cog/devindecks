@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { elementIdFor, type ChartRef } from '@/model';
-import { shiftClickParts, toggleClickParts, type PartEl } from './partSelect';
+import {
+  clickSelectParts,
+  shiftClickParts,
+  toggleClickParts,
+  type PartEl,
+} from './partSelect';
 
 const C = 'chart-1';
 const mark = (series: string, point: string): ChartRef =>
@@ -9,6 +14,7 @@ const label = (series: string, point: string): ChartRef =>
   ({ chartId: C, part: 'label', series, point });
 const tick = (axis: 'x' | 'y', i: number): ChartRef =>
   ({ chartId: C, part: 'axis', axis, sub: 'tick', i });
+const legend = (series: string): ChartRef => ({ chartId: C, part: 'legend.item', series });
 
 /**
  * The chart's elements in PAINTED order — series-major, the way the compiler
@@ -34,6 +40,8 @@ const labels = {
   a: id(label('s0', 'c0')),
   b: id(label('s0', 'c1')),
   c: id(label('s0', 'c2')),
+  // One label in the OTHER series, so "all of them" and "this series" differ.
+  d: id(label('s1', 'c0')),
 };
 const ticks = [id(tick('y', 0)), id(tick('y', 1)), id(tick('y', 2)), id(tick('x', 0))];
 
@@ -50,16 +58,18 @@ describe('shiftClickParts', () => {
     ]);
   });
 
-  it('reads category-first when the ends are in different series', () => {
-    // Painted order is s0.c0, s0.c1, … s1.c0 — the range must not sweep the
-    // whole of s0 to reach s1's second bar.
+  it('takes both series whole when the ends are in different ones', () => {
+    // Not the two bars clicked, and not a category-order run between them:
+    // reaching across series means the series.
     expect(shift(bars['s1.c1'], [bars['s0.c1']])).toEqual([
-      bars['s0.c1'],
-      bars['s1.c1'],
-    ]);
-    expect(shift(bars['s1.c0'], [bars['s0.c0']])).toEqual([
       bars['s0.c0'],
       bars['s1.c0'],
+      bars['s0.c1'],
+      bars['s1.c1'],
+      bars['s0.c2'],
+      bars['s1.c2'],
+      bars['s0.c3'],
+      bars['s1.c3'],
     ]);
   });
 
@@ -109,5 +119,45 @@ describe('toggleClickParts', () => {
 
   it('starts over when the kinds have nothing in common', () => {
     expect(toggle(labels.a, [bars['s0.c0']])).toEqual([labels.a]);
+  });
+});
+
+describe('clickSelectParts', () => {
+  const click = (id: string, clicks: number) => clickSelectParts(id, parts, clicks);
+
+  it('takes every label of the chart on the first click', () => {
+    // Category-first, so the two labels on c0 come out together.
+    expect(click(labels.a, 1)).toEqual([labels.a, labels.d, labels.b, labels.c]);
+  });
+
+  it('narrows to the series on the second, and to the one part on the third', () => {
+    expect(click(labels.a, 2)).toEqual([labels.a, labels.b, labels.c]);
+    expect(click(labels.a, 3)).toEqual([labels.a]);
+    // …and a press past the last level stays on it.
+    expect(click(labels.a, 7)).toEqual([labels.a]);
+  });
+
+  it('takes the ticks of the axis clicked, not the other axis', () => {
+    expect(click(ticks[0], 1)).toEqual([ticks[0], ticks[1], ticks[2]]);
+    expect(click(ticks[3], 1)).toEqual([ticks[3]]);
+    expect(click(ticks[0], 2)).toEqual([ticks[0]]);
+  });
+
+  it('reaches one legend ENTRY in two clicks — swatch and name together', () => {
+    // The compiler emits the name as its own part, keyed `<series>.label`.
+    const keys = [
+      id(legend('s0')),
+      id(legend('s0.label')),
+      id(legend('s1')),
+      id(legend('s1.label')),
+    ];
+    expect(click(keys[3], 1)).toEqual(keys);
+    expect(click(keys[3], 2)).toEqual([keys[2], keys[3]]);
+    // A key IS its series, so there is nothing narrower than the entry.
+    expect(click(keys[3], 3)).toEqual([keys[2], keys[3]]);
+  });
+
+  it('leaves a mark alone — a bar is one object', () => {
+    expect(click(bars['s0.c0'], 1)).toBeNull();
   });
 });

@@ -85,7 +85,7 @@ function authorSection(meta: ChartMeta): string[] {
     return [
       '## What the author asked for',
       '',
-      'Nothing. The author was asked what this chart shows and chose not to say, so **every label on it is a placeholder we generated** — the title, the row names and the series names included. Do not read intent into any of them, and do not treat the numbers currently in the chart as a starting point. Establish what this chart is for before looking anything up.',
+      'Nothing. The author was asked and chose not to say, so **every label on it is a placeholder we generated** — title, rows and series alike. Read no intent into them, and treat none of the numbers as a starting point. Establish what this chart is for before looking anything up.',
       '',
     ];
   }
@@ -118,7 +118,7 @@ function authorSection(meta: ChartMeta): string[] {
     // asterisks rather than as bold.
     const one = ours.length === 1;
     lines.push(
-      `**Filled in by us, not asked for:** ${ours.join(', ')}. Nobody has agreed to ${one ? 'it' : 'these'} — confirm ${one ? 'it' : 'each of them'} before use. A figure looked up against a period or a metric the author never chose is the wrong figure, however well sourced.`,
+      `**Filled in by us, not asked for:** ${ours.join(', ')}. Confirm ${one ? 'it' : 'each of them'} before use — a figure looked up against a period or a metric the author never chose is the wrong figure, however well sourced.`,
     );
   }
   if (meta.gaps.length) {
@@ -130,6 +130,34 @@ function authorSection(meta: ChartMeta): string[] {
   return lines;
 }
 
+/**
+ * The author's notes, verbatim.
+ *
+ * Its own block, above the sourcing rules and clearly the author's words: these
+ * are INSTRUCTIONS, and the two failure modes are opposite. Buried among the
+ * facts they get skimmed past; mixed into the sourcing floor they read as
+ * qualifying rules that are not negotiable. So they sit here, quoted, with one
+ * line on what to do when a note and a rule disagree — which is to ask, not to
+ * pick.
+ */
+function notesSection(meta: ChartMeta): string[] {
+  if (!meta.notes?.trim()) return [];
+  return [
+    '### Notes from the author',
+    '',
+    // Every line quoted, so a multi-line note doesn't break out of the block
+    // and read as our own prose.
+    meta.notes
+      .trim()
+      .split('\n')
+      .map((line) => `> ${line}`)
+      .join('\n'),
+    '',
+    'These are instructions, not context — follow them. If one conflicts with the sourcing rules below, or you cannot follow it, say so rather than choosing between them.',
+    '',
+  ];
+}
+
 export function buildDevinChartPrompt(
   spec: ChartSpec,
   ctx: DevinPromptContext = {},
@@ -137,7 +165,7 @@ export function buildDevinChartPrompt(
   const meta = inferChartMeta(spec, ctx);
   const schema = sheetSchemaFor(spec);
   const series = sheetSeriesFor(spec);
-  const contract = chartResultContract(schema, series.map((s) => s.key));
+  const contract = chartResultContract(schema, series);
 
   const noun = KIND_NOUN[spec.kind] ?? 'chart';
   const subject = meta.subject ?? null;
@@ -164,48 +192,68 @@ export function buildDevinChartPrompt(
 
   /* 1a — the author's own words, and which parts are ours */
   lines.push(...authorSection(meta));
+  // Pushed here rather than inside `authorSection`, which returns early for a
+  // chart that carries no description: a note is worth printing even then.
+  lines.push(...notesSection(meta));
 
-  /* 1b — the questions, before any research happens */
+  /* 1b — the questions, before any research happens. Printed only when there
+     ARE questions: a chart set up in the form has answered most of them, and a
+     section of questions nobody needs to ask is what teaches a reader to skim
+     the one that matters. */
   const clarifications = chartClarifications(meta);
-  lines.push('## Ask these first');
-  lines.push('');
-  lines.push(
-    'A chart says what it plots, not what was meant by it. Confirm every point below before looking anything up:',
-  );
-  lines.push('');
-  lines.push(clarificationLines(clarifications));
-  lines.push('');
-  lines.push('How to ask:');
-  lines.push('');
-  lines.push(ASK_FIRST_RULES.join('\n'));
-  lines.push('');
+  if (clarifications.length) {
+    lines.push('## Ask first');
+    lines.push('');
+    lines.push('Confirm these before looking anything up:');
+    lines.push('');
+    lines.push(clarificationLines(clarifications));
+    lines.push('');
+    lines.push(ASK_FIRST_RULES.join('\n'));
+    lines.push('');
+  } else {
+    lines.push(
+      'Everything the brief needed is stated above. If something is still ambiguous once you are into the sources — how the metric is defined, the scope of the entity, where a segment boundary sits — **ask rather than picking the likelier reading**.',
+    );
+    lines.push('');
+  }
 
-  /* 2 — units */
-  lines.push('## Units and precision');
+  /* 2 — units and the shape of the answer, under one heading: they are one
+     question ("what goes in a cell, and what is a row?") and were two. */
+  lines.push('## What to return');
   lines.push('');
-  lines.push(meta.unitSentence);
-  if (meta.unit) lines.push(`The unit is **${meta.unit}**.`);
+  lines.push(meta.unit ? `${meta.unitSentence} The unit is **${meta.unit}**.` : meta.unitSentence);
   lines.push('');
-
-  /* 3 — shape of the answer */
-  lines.push('## What each row is');
-  lines.push('');
-  const period = periodPhrase(meta.period);
+  const period = periodPhrase(meta.period, meta.calendar);
   if (period) {
     lines.push(`- ${capitalize(period)}.`);
+    // Said plainly, because the alternative reading of the same axis is "this
+    // chart is a week out of date", and acting on that reading puts a partial
+    // period next to complete ones — a dip at the right-hand edge that reads as
+    // a collapse.
+    // Both halves matter, and they are opposite failures. An axis that stops
+    // short reads as out of date, and the helpful thing to do with that reading
+    // is add the partial period back. An axis that ends ON the current period
+    // has a partial figure in it that looks exactly like a complete one.
+    if (meta.currentPeriod === 'excluded') {
+      lines.push(
+        `- The ${meta.period!.grain} in progress is deliberately **excluded** — the range ends on the last complete one. Do not add a partial period, and do not roll the range forward without asking.`,
+      );
+    } else if (meta.currentPeriod === 'included') {
+      lines.push(
+        `- The last row is the **${meta.period!.grain} in progress**, so its figure is partial. Return it to-date, say in \`notes\` what date it is measured through, and mark it \`estimated\` if the source itself is a running total.`,
+      );
+    }
   } else {
     lines.push(`- One row per ${schema.keyColumns[0]?.header.toLowerCase() ?? 'category'}.`);
   }
-  lines.push(`- The chart currently has these ${meta.categories.length} rows, in order:`);
+  lines.push(`- These ${meta.categories.length} rows, in order:`);
   lines.push('');
   lines.push(meta.categories.map((c) => `  - ${c}`).join('\n'));
   lines.push('');
 
   if (meta.seriesNames.length) {
     const dimension = meta.dimension ? ` (broken down by ${meta.dimension})` : '';
-    lines.push(
-      `- For every row, return a figure for each of these ${meta.seriesNames.length} series${dimension}:`,
-    );
+    lines.push(`- A figure per row for each of these ${meta.seriesNames.length} series${dimension}:`);
     lines.push('');
     lines.push(meta.seriesNames.map((s) => `  - ${s}`).join('\n'));
     lines.push('');
@@ -245,7 +293,7 @@ export function buildDevinChartPrompt(
   }
 
   lines.push(
-    'Keep these row and series labels unless the research shows one is wrong — if it is, use the correct label and say so in `notes`.',
+    'Keep these row and series labels unless the research shows one is wrong — if it is, use the correct label and say so.',
   );
   lines.push('');
 
@@ -254,12 +302,10 @@ export function buildDevinChartPrompt(
   lines.push('');
   lines.push(
     [
-      '- Prefer primary sources: 10-K/10-Q and equivalent filings, company IR decks, regulator and statistical-agency publications.',
-      '- Give `source_url` and `source_note` (page or table reference) for **every** row.',
-      '- Mark each row `reported` (stated verbatim in a source), `derived` (computed from stated figures — explain how in `notes`) or `estimated`.',
-      '- If a figure genuinely is not available, return `null` and list it in `unresolved`. Do not interpolate, extrapolate or fill a gap with a plausible number.',
-      '- State the currency and, if you converted anything, the FX basis and date.',
-      '- If a source restates a prior period, use the restated figure and note it.',
+      '- Prefer primary sources: 10-K/10-Q and equivalent filings, company IR decks, regulator and statistical-agency publications. Use a restated figure over the original, and say so.',
+      '- Every row needs `source_url`, `source_note` (page or table) and `confidence`: `reported` (verbatim in a source), `derived` (computed — show the arithmetic) or `estimated`.',
+      '- Leave a figure you cannot source **blank**, and say which. Do not interpolate, extrapolate or fill a gap with a plausible number.',
+      '- If you converted a currency, state the FX basis and date.',
     ].join('\n'),
   );
   // House rules go AFTER the floor above, never mixed into it. A chart-specific
@@ -277,24 +323,33 @@ export function buildDevinChartPrompt(
   }
   lines.push('');
 
-  /* 5 — the contract */
-  lines.push('## Return format');
+  /* 5 — the contract. CSV first, because that is what an answer to a chart of
+     eight rows actually looks like, and because the JSON Schema this used to
+     print in full was longer than the rest of the brief put together. JSON is
+     still parsed on the way back in, so an answer that arrives as JSON works. */
+  lines.push('## Format');
   lines.push('');
-  lines.push('Return **only** a JSON object matching this schema:');
+  lines.push(`CSV, with exactly this header:\n\n\`\`\`\n${contract.csvHeader.join(',')}\n\`\`\``);
   lines.push('');
-  lines.push('```json');
-  lines.push(JSON.stringify(contract.jsonSchema, null, 2));
-  lines.push('```');
-  lines.push('');
-  lines.push('Worked example of the shape:');
-  lines.push('');
-  lines.push('```json');
-  lines.push(JSON.stringify(contract.example, null, 2));
-  lines.push('```');
+  // The legend, because the column names say nothing about which series is
+  // which, and an answer that fills them in the wrong order parses, pastes, and
+  // is wrong on the slide with nothing to show for it.
+  lines.push('| Column | Holds | Type | Required |');
+  lines.push('| --- | --- | --- | --- |');
+  lines.push(
+    contract.legend
+      .map((c) => `| \`${c.name}\` | ${c.means} | ${c.type} | ${c.required ? 'yes' : 'no'} |`)
+      .join('\n'),
+  );
+  lines.push(
+    `| \`source_url\`, \`source_note\`, \`confidence\` | Where the figure came from | text | yes |`,
+  );
   lines.push('');
   lines.push(
-    `If JSON is impractical, return CSV with exactly this header instead:\n\n\`\`\`\n${contract.csvHeader.join(',')}\n\`\`\``,
+    '**Column order is not the contract — the names are.** Match each figure to the column named for its series, and never shift a value into a neighbouring column to make a row fit.',
   );
+  lines.push('');
+  lines.push('Anything the figures need caveating with goes in prose after the CSV.');
   lines.push('');
 
   /* 6 — provenance */

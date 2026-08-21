@@ -317,6 +317,7 @@ export function ChartDatasheetPanel({
             onChange={(next) => commit(next)}
             onLiveEdit={live}
             onIndentRow={indentRow}
+            autoFocus
           />
         </div>
 

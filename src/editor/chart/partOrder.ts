@@ -92,3 +92,14 @@ export function partsInReadingOrder(
     .sort((a, b) => compare(rank(a.ref, a.i), rank(b.ref, b.i)))
     .map((p) => p.id);
 }
+
+/**
+ * The chart's data series, in the order they were emitted — spec order.
+ *
+ * Exported for `partSelect`, which needs the RUN of series between two clicks:
+ * shift-clicking a label in the first series and one in the third means those
+ * three series, and the order the reader sees them in is the one used here.
+ */
+export function seriesOrder(parts: PartEl[]): string[] {
+  return [...keyOrder(parts).series.keys()];
+}

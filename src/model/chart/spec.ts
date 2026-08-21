@@ -296,6 +296,16 @@ export interface AxisSpec {
   unitNote?: string;
   numberFormat?: NumberFormat;
   /**
+   * How a DATED category axis writes its periods — `formatDate`'s vocabulary,
+   * e.g. `MMM-yy`. Unset means the grain's house form (see
+   * `DEFAULT_TICK_FORMAT`), which is what almost every chart wants; this is
+   * here for the deck whose convention is "Q2 2025" rather than "2Q25".
+   *
+   * Ignored by an axis whose labels aren't periods — the sibling of
+   * `numberFormat`, for the axis that carries dates instead of numbers.
+   */
+  dateFormat?: string;
+  /**
    * Short rules at each tick, the way a printed axis is drawn. Off by default:
    * a business chart's gridlines already say where the values are, and adding
    * ticks on top is ink for nothing. Worth having when the gridlines are off and
@@ -540,11 +550,42 @@ export interface AuthorChartBrief {
    */
   period?: { grain: GanttGrain; from: string; to: string; count: number };
   periodFrom: BriefFieldSource;
+  /**
+   * Whether those periods are fiscal or calendar, when the author settled it.
+   *
+   * Unset means nobody said, and that is a real state rather than a default: a
+   * quarter label carries no calendar of its own, so "Q3'25" read off an axis
+   * could be either, and a research brief has to ASK. Set, it is the one thing
+   * that lets the brief stop asking a question that has already been answered —
+   * which is what the setup step is for.
+   */
+  calendar?: 'fiscal' | 'calendar';
+  /**
+   * Whether the period in progress is on the axis, when the author settled it.
+   *
+   * Worth recording for one reason: 'excluded' is a DECISION, and a researcher
+   * looking at an axis that stops at last week has no way to tell it from an
+   * axis that is simply out of date. Told nothing, the helpful thing to do is
+   * add the current week — which is the partial period the author removed on
+   * purpose.
+   */
+  currentPeriod?: 'included' | 'excluded';
 
   /** "in $M" — the scale note, when the sentence carried one. */
   unitNote?: string;
   unitFrom: BriefFieldSource;
 
+  /**
+   * Anything else the author wanted the research to know, verbatim.
+   *
+   * Distinct from `description`, which is WHAT the chart shows: this is
+   * instruction about how to fill it — "use exit ARR, not average", "exclude
+   * the trial accounts", "Q3 is a 14-week quarter". A chart cannot carry that
+   * anywhere else: it isn't a label, so there is no axis it could be read back
+   * off, and without a field for it the note only ever existed in whatever
+   * message the author remembered to send alongside the prompt.
+   */
+  notes?: string;
   /** What the sentence didn't say, verbatim from the brief that read it. */
   gaps: string[];
 

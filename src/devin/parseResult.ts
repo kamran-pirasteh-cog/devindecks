@@ -40,10 +40,7 @@ export function parseDevinChartResult(text: string, spec: ChartSpec): DevinResul
   const diagnostics: SheetDiagnostic[] = [];
   const schema = sheetSchemaFor(spec);
   const series = sheetSeriesFor(spec);
-  const contract = chartResultContract(
-    schema,
-    series.map((s) => s.key),
-  );
+  const contract = chartResultContract(schema, series);
 
   const json = extractJson(text);
   const table = json

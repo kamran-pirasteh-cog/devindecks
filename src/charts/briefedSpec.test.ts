@@ -47,7 +47,7 @@ describe('specFromBrief', () => {
     const spec = build('revenue by region over the last 3 years in $M');
     expect(spec.numberFormat.style).toBe('currency');
     expect(spec.axes.y.unitDivisor).toBe(1e6);
-    expect(spec.axes.y.unitNote).toBe('in $M');
+    expect(spec.axes.y.unitNote).toBeUndefined();
     expect(spec.axes.y.title).toBe('Revenue');
   });
 

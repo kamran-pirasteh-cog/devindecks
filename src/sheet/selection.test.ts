@@ -7,6 +7,7 @@ import {
   move,
   reconcileSelection,
   selectColumn,
+  selectionSpan,
   selectRow,
   singleCell,
 } from './selection';
@@ -142,5 +143,37 @@ describe('reconcileSelection', () => {
     const s = sheet();
     const sel = reconcileSelection(s, singleCell({ r: 99, c: 99 }));
     expect(sel.active).toEqual({ r: 2, c: 3 });
+  });
+});
+
+describe('selectionSpan', () => {
+  const extent = { rows: 8, cols: 6 }; // phantom rows and series, as the grid renders them
+
+  it('reads a header click as whole columns', () => {
+    const s = sheet();
+    expect(selectionSpan(s, selectColumn(s, 2, extent), extent)).toBe('columns');
+  });
+
+  it('reads a gutter click as whole rows', () => {
+    const s = sheet();
+    expect(selectionSpan(s, selectRow(s, 1, extent), extent)).toBe('rows');
+  });
+
+  it('a block one row short of the full height is still just cells', () => {
+    const s = sheet();
+    const sel = { active: { r: 0, c: 2 }, range: { anchor: { r: 0, c: 2 }, focus: { r: 6, c: 2 } } };
+    expect(selectionSpan(s, sel, extent)).toBe('cells');
+  });
+
+  it('the whole grid is cells — neither axis is the honest answer', () => {
+    const s = sheet();
+    const sel = { active: { r: 0, c: 0 }, range: { anchor: { r: 0, c: 0 }, focus: { r: 7, c: 5 } } };
+    expect(selectionSpan(s, sel, extent)).toBe('cells');
+  });
+
+  it('measures against the model when no extent is given', () => {
+    const s = sheet();
+    expect(selectionSpan(s, selectColumn(s, 1))).toBe('columns');
+    expect(selectionSpan(s, singleCell({ r: 0, c: 1 }))).toBe('cells');
   });
 });

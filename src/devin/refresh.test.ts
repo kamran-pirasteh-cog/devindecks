@@ -51,7 +51,7 @@ describe('clarifying questions', () => {
     const { text } = buildDeckRefreshPrompt(withChart());
     expect(text).toContain('Ask these first');
     expect(text).toContain('Ask before you research');
-    expect(text).toContain('ask anything else you need');
+    expect(text).toContain('Ask anything else you need');
   });
 
   it('asks which entity, how the segments are cut and which calendar applies', () => {

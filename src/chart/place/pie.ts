@@ -91,12 +91,15 @@ export function placePie(input: PieInput): Mark[] {
     if (labels.show && !override?.hidden) {
       const labelH = lineHeightEmu(labelRole(theme, labels.font));
       const share = magnitude / total;
+      // The slice's own format when it has one — the panel writes it to the
+      // point override, the same node the label settings above came from.
+      const fmt = labels.numberFormat ?? spec.numberFormat;
       const text =
         labels.content.kind === 'percent'
-          ? formatNumber(share, { ...spec.numberFormat, style: 'percent' }, { peers: [share] }).text
+          ? formatNumber(share, { ...fmt, style: 'percent' }, { peers: [share] }).text
           : labels.content.kind === 'category'
             ? d.pointLabel
-            : formatNumber(d.value ?? 0, spec.numberFormat, { peers }).text;
+            : formatNumber(d.value ?? 0, fmt, { peers }).text;
 
       // A slice label always sits ON its slice, so its ink is decided per slice
       // rather than once for the chart.

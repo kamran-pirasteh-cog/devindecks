@@ -890,6 +890,66 @@ describe('applyChartTextFormat', () => {
     expect(spec.data.series[0].pointOverrides).toBeUndefined();
   });
 
+  /*
+   * The two selections a plain click now makes (see `clickSelectParts`): one
+   * click takes every label in the chart, and a shift-click across series takes
+   * those series whole. Both used to reach `labelHomeFor` as "several series" and
+   * come back null — a font control with nothing to write to, which is a panel
+   * that looks broken.
+   */
+  it('writes chart-wide when EVERY label is selected, so a later series matches', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const ids = slide.elements.filter((e) => e.chartRef?.part === 'label').map((e) => e.id);
+
+    expect(applyChartTextFormat(slide, ids, DS, () => ({ sizePt: 15 })).length).toBe(ids.length);
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.decorations.labels.font?.sizePt).toBe(15);
+    for (const series of spec.data.series) expect(series.pointOverrides).toBeUndefined();
+  });
+
+  it('writes one node per series when two whole series are selected', () => {
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec0 = slide.charts![0].spec as ColumnBarSpec;
+    // Every label of the first two series of the three.
+    const wanted = new Set([spec0.data.series[0].key, spec0.data.series[1].key]);
+    const ids = slide.elements
+      .filter((e) => e.chartRef?.part === 'label' && wanted.has(e.chartRef.series))
+      .map((e) => e.id);
+    expect(wanted.size).toBeLessThan(spec0.data.series.length);
+
+    applyChartTextFormat(slide, ids, DS, () => ({ bold: true }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    expect(spec.data.series[0].labels?.font?.bold).toBe(true);
+    expect(spec.data.series[1].labels?.font?.bold).toBe(true);
+    // The series left out keeps the chart's own type, and nothing landed on the
+    // chart-wide node — which would have styled it too.
+    expect(spec.data.series[2].labels?.font?.bold).toBeUndefined();
+    expect(spec.decorations.labels.font?.bold).toBeUndefined();
+  });
+
+  it('writes a point override per label for two labels in two different series', () => {
+    // ⌘-click can still gather parts across series, and those two labels have no
+    // node in common — so each gets its own override rather than the two series
+    // being restyled whole.
+    const slide = emptySlide();
+    insertChartInto(slide, defaultChartSpec('column', 'stacked'), FRAME, DS);
+    const spec0 = slide.charts![0].spec as ColumnBarSpec;
+    const pick = (series: string) =>
+      slide.elements.find((e) => e.chartRef?.part === 'label' && e.chartRef.series === series)!;
+    const picked = [pick(spec0.data.series[0].key), pick(spec0.data.series[1].key)];
+
+    applyChartTextFormat(slide, picked.map((e) => e.id), DS, () => ({ sizePt: 22 }));
+    const spec = slide.charts![0].spec as ColumnBarSpec;
+    for (const [i, el] of picked.entries()) {
+      const point = (el.chartRef as { point: string }).point;
+      expect(spec.data.series[i].pointOverrides?.[point]?.label?.font?.sizePt).toBe(22);
+      expect(spec.data.series[i].labels?.font?.sizePt).toBeUndefined();
+    }
+    expect(spec.decorations.labels.font?.sizePt).not.toBe(22);
+  });
+
   it('routes an axis label to that axis, and the title to the title', () => {
     const slide = emptySlide();
     insertChartInto(slide, { ...defaultChartSpec('column', 'stacked'), title: 'Revenue' }, FRAME, DS);

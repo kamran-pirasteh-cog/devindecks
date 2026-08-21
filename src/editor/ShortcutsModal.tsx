@@ -157,9 +157,20 @@ const buildGroups = (MOD: string): Group[] => [
       { keys: [MOD, '↑ ↓ ← →'], label: 'Jump to the end of the data' },
       { keys: ['⇧', '↑ ↓ ← →'], label: 'Extend the selection' },
       { keys: ['Tab', 'Enter'], label: 'Next cell', note: 'inside a selected block they cycle within it' },
-      { keys: [MOD, '+'], label: 'Insert a row' },
+      {
+        keys: [MOD, '⇧', '+'],
+        label: 'Insert',
+        note: 'rows above the selection, or columns to its left when whole columns are picked',
+      },
+      { keys: [MOD, '−'], label: 'Delete the selected rows or columns' },
+      { keys: ['⇧', 'Space'], label: 'Select the row' },
+      { keys: ['⌃', 'Space'], label: 'Select the column', note: `${MOD}Space too, where macOS lets it through` },
       { keys: ['F2'], label: 'Edit the cell', note: 'or just start typing to overwrite it' },
-      { keys: ['Delete'], label: 'Clear the selected cells' },
+      {
+        keys: ['Delete'],
+        label: 'Clear the selected cells',
+        note: 'a whole row or column is removed instead, as is an empty series or row from any of its cells',
+      },
     ],
   },
 ];

@@ -208,3 +208,14 @@ export const LAYOUT_GROUPS: LayoutGroup[] = [
 
 export const layoutById = (id: string): ChartLayout | undefined =>
   CHART_LAYOUTS.find((l) => l.id === id);
+
+/**
+ * The layout a bare KIND means.
+ *
+ * A brand style variant names a kind ("our gridless column") and no archetype,
+ * so anything that needs a layout for one — the setup step, which asks its
+ * questions per layout — has to resolve it. The first tile of that kind is the
+ * plain reading of it: clustered for a column, build-up for a waterfall.
+ */
+export const layoutForKind = (kind: ChartKind): ChartLayout | undefined =>
+  CHART_LAYOUTS.find((l) => l.kind === kind);

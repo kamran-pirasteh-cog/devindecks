@@ -29,6 +29,8 @@ import {
   moveSeries,
   pasteTable,
   renameSeries,
+  rowHasData,
+  seriesHasData,
   setCell,
 } from './sheetOps';
 
@@ -651,6 +653,31 @@ describe('a combo chart in the datasheet', () => {
     expect(sheet.schema.layout).toBe('recordsDown');
     expect(sheet.series.map((x) => x.badge)).toEqual([undefined, undefined, 'Line']);
     expect(sheet.columns.filter((c) => c.badge === 'Line')).toHaveLength(1);
+  });
+});
+
+describe('rowHasData / seriesHasData', () => {
+  it('reads a row named but never filled in as empty', () => {
+    const s = insertRow(sheetOf(), 3);
+    expect(rowHasData(s, 3)).toBe(false);
+    expect(rowHasData(setCell(s, 3, 0, { kind: 'text', text: 'SMB' }), 3)).toBe(false);
+    expect(rowHasData(setCell(s, 3, 1, { kind: 'number', n: 4 }), 3)).toBe(true);
+  });
+
+  it('is false for a row that does not exist', () => {
+    expect(rowHasData(sheetOf(), 99)).toBe(false);
+  });
+
+  it('reads a freshly added series as empty until a cell is filled', () => {
+    const s = addSeries(sheetOf());
+    const key = s.series[s.series.length - 1]!.key;
+    expect(seriesHasData(s, key)).toBe(false);
+    const c = s.columns.findIndex((col) => col.seriesKey === key);
+    expect(seriesHasData(setCell(s, 0, c, { kind: 'number', n: 1 }), key)).toBe(true);
+  });
+
+  it('is false for a series key that owns no columns', () => {
+    expect(seriesHasData(sheetOf(), 'nope')).toBe(false);
   });
 });
 

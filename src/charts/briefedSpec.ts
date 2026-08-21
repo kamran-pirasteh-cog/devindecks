@@ -212,6 +212,17 @@ const axisXTitle = (brief: ChartBrief, kind: string): string | undefined =>
 /** Percent data is a proportion, so its placeholders live in 0…1. */
 const isProportion = (brief: ChartBrief): boolean => brief.numberFormat.style === 'percent';
 
+/**
+ * Where the placeholder figures sit.
+ *
+ * A brief that knows its measure says so outright. Otherwise the scale is read
+ * off the unit note — "in $M" means the stored figures are millions — and
+ * failing that it's a thousand, which is the magnitude that makes a chart look
+ * like a chart without asserting anything.
+ */
+const briefMagnitude = (brief: ChartBrief): number =>
+  brief.magnitude ?? (brief.unitDivisor ? 1_000 * brief.unitDivisor : 1_000);
+
 function gridFromBrief(brief: ChartBrief, kind: string, rand: () => number): GridData {
   const categories = brief.categories.map((label, i) => ({ key: `c${i}`, label }));
 
@@ -224,7 +235,7 @@ function gridFromBrief(brief: ChartBrief, kind: string, rand: () => number): Gri
         : [brief.measure ?? 'Value'];
 
   const proportion = isProportion(brief);
-  const magnitude = proportion ? 1 : brief.unitDivisor ? 1_000 * brief.unitDivisor : 1_000;
+  const magnitude = proportion ? 1 : briefMagnitude(brief);
 
   const series: GridSeries[] = names.map((name, i) => ({
     key: `s${i}`,
@@ -272,8 +283,12 @@ function shapedValues(
   }
   const start = magnitude * (1 - index * 0.28) * (0.8 + rand() * 0.4);
   const growth = 0.06 + rand() * 0.08;
+  // Small magnitudes keep a decimal. A per-something measure lives in the part
+  // after the point — "13.4 ACUs per merged PR" — and rounding it to whole
+  // numbers hands back a column of 13s that all look the same height.
+  const dp = magnitude < 100 ? 1 : 0;
   return Array.from({ length: count }, (_, c) =>
-    Math.round(Math.max(1, start * Math.pow(1 + growth, c) * (0.95 + rand() * 0.1))),
+    round(Math.max(dp ? 0.1 : 1, start * Math.pow(1 + growth, c) * (0.95 + rand() * 0.1)), dp),
   );
 }
 
@@ -314,7 +329,7 @@ function waterfallFromBrief(
     return sampleWaterfallData(direction);
   }
 
-  const magnitude = brief.unitDivisor ? 1_000 * brief.unitDivisor : 1_000;
+  const magnitude = briefMagnitude(brief);
   const start = Math.round(magnitude * (0.9 + rand() * 0.4));
   const sign = direction === 'down' ? -1 : 1;
 

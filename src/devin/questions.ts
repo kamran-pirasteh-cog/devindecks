@@ -1,18 +1,18 @@
 /**
- * The questions Devin has to ask before it researches anything.
+ * The questions Devin has to ask before it researches anything — and only the
+ * ones a person can actually answer.
  *
- * A chart tells you its shape but not its intent. "Revenue" over "FY23..FY25"
- * broken into "Enterprise / Mid-Market / SMB" is unambiguous to the author and
- * genuinely ambiguous to a researcher: whose revenue, on whose fiscal calendar,
- * and where are those segment boundaries drawn? Guessing any one of them
- * produces figures that are internally consistent, well-sourced, and wrong —
- * the most expensive kind of answer, because nothing about the slide looks
- * broken afterwards.
+ * The rule here is narrow on purpose: ask about what nobody has said, and stay
+ * quiet about what somebody has. A chart built in the setup step arrives with
+ * its measure, its cut, its grain and its span all chosen by the author, and
+ * re-asking any of them ("how do you define ACUs?", "where do the cohort
+ * boundaries sit?") buries the one question that genuinely is open under four
+ * that aren't — which is how a reader learns to skim the list. What the deck
+ * could not tell us still gets asked; everything else is covered by the
+ * standing instruction to ask rather than guess.
  *
- * So every gap the model can detect becomes a question in the prompt rather
- * than an assumption inside it. Derived from the same `ChartMeta` the briefs
- * are written from, so a question can't describe a chart that has since
- * changed.
+ * Derived from the same `ChartMeta` the briefs are written from, so a question
+ * can't describe a chart that has since changed.
  */
 import { isSubjectStated, type ChartMeta } from './meta';
 
@@ -30,11 +30,8 @@ export interface Clarification {
  * the expected behaviour rather than an admission of being stuck.
  */
 export const ASK_FIRST_RULES = [
-  '- **Ask before you research.** Put every question in one message up front, and wait for answers. Do not begin the data gathering with an open question outstanding.',
-  '- The list above is what the deck could not tell us. It is not exhaustive — **ask anything else you need** to be certain you are returning the exact figure that was intended, including anything you only discover once you are into the sources.',
-  '- **Never resolve an ambiguity by picking the most likely reading.** If two definitions of a metric, two fiscal calendars or two entity scopes would both fit, ask which. A plausible guess is indistinguishable from a correct answer once it is on the slide.',
-  "- If an answer changes the shape of the request — a different segmentation, a period that isn't reported, a metric the company doesn't disclose — say so and agree the approach before continuing.",
-  '- **What is marked above as stated by the author is a fact; what is marked as filled in by us is not.** Confirm the second kind before using it, and do not treat a value as agreed merely because this brief printed it.',
+  '- **Ask before you research.** One message, every question, then wait — do not start with a question outstanding.',
+  '- The list above is only what the deck could not tell us. **Ask anything else you need**, including what you only hit once you are into the sources — never resolve an ambiguity by picking the likelier reading.',
 ] as const;
 
 /**
@@ -61,9 +58,9 @@ export function chartClarifications(meta: ChartMeta, scope?: string): Clarificat
     // scope — "Acme Q3 Review" could mean the group, a division or one region.
     ask(
       'Subject',
-      `**Is the subject ${meta.subject}?** That is read from the ${
+      `**Is the subject ${meta.subject}?** That is read off the ${
         meta.subjectSource === 'slide' ? 'slide' : 'deck'
-      } title, not stated as the research subject. Confirm the entity — and its scope: whole group, a named segment or subsidiary, or a single geography?`,
+      } title, not stated — confirm the entity and its scope (whole group, one segment, one geography).`,
       false,
     );
   }
@@ -73,16 +70,13 @@ export function chartClarifications(meta: ChartMeta, scope?: string): Clarificat
       'Metric',
       "**What is being measured?** The value axis has no title and the series names don't share one, so the metric is unstated.",
     );
-  } else {
-    // Asked even when the author named the metric: they gave a NAME, not an
-    // accounting basis, and "revenue" is several different numbers.
+  } else if (meta.measureConfidence !== 'stated') {
+    // Read off the picture, so the NAME is the question. How it's defined is
+    // covered by the standing "ask rather than guess" rule — printing it as its
+    // own bullet on every chart is what made these lists unreadable.
     ask(
       'Metric',
-      `**How is "${meta.measure}" defined?** Confirm the exact definition to research — gross or net, reported or adjusted, including or excluding the usual carve-outs — since companies publish several figures under one name.${
-        meta.measureConfidence === 'stated'
-          ? ''
-          : ' Note the metric itself is read off the chart rather than stated, so confirm it is even the right one.'
-      }`,
+      `**Is the metric "${meta.measure}"?** It is read off the chart rather than stated, so confirm it — and how it is defined, if more than one figure goes by that name.`,
     );
   }
 
@@ -95,39 +89,49 @@ export function chartClarifications(meta: ChartMeta, scope?: string): Clarificat
           : ''
       }, so state the as-of date or reporting period each figure should be taken from.`,
     );
-  } else if (meta.periodConfidence === 'stated') {
+  } else if (meta.periodConfidence !== 'stated') {
+    // A range nobody asked for is the worst of these: every row underneath it
+    // is the wrong row, and the chart looks entirely fine while being about the
+    // wrong years.
     ask(
       'Timeframe',
-      `**Is ${meta.period.from} to ${meta.period.to} the fiscal or the calendar year?** Confirm the year-end, and whether the range should stay as-is or roll forward to the latest reported period.`,
+      `**Was ${meta.period.from} to ${meta.period.to} meant to be the range?** It is not stated anywhere — the chart spans it because that is what got laid out. Agree the range first; if it is wrong, every figure below it is wrong too.`,
     );
-  } else {
-    // A range nobody asked for is a different and much worse problem than an
-    // ambiguous calendar: every row underneath it is the wrong row, and the
-    // chart looks entirely fine while being about the wrong years.
+  } else if (!meta.calendar) {
     ask(
       'Timeframe',
-      `**Was ${meta.period.from} to ${meta.period.to} meant to be the range?** It is not stated anywhere — the chart spans it because that is what got laid out, not because it was asked for. Agree the range first; if it is wrong, every figure below it is the wrong figure. Then confirm the year-end, and whether it should roll forward to the latest reported period.`,
+      `**Is ${meta.period.from} to ${meta.period.to} the fiscal or the calendar year?** Confirm the year-end.`,
     );
   }
 
-  if (meta.seriesNames.length > 1) {
+  // Only when the cut was read off the series names. An author who picked the
+  // breakdown in the setup step has already answered this.
+  if (meta.seriesNames.length > 1 && meta.dimensionConfidence !== 'stated') {
     ask(
       'Segmentation',
-      `**How are ${meta.seriesNames.join(', ')} defined?** ${
-        meta.dimension ? `They break the measure down by ${meta.dimension}. ` : ''
-      }Confirm where the boundaries sit, whether they are mutually exclusive, and whether they should sum to the total — a company's own segment reporting often doesn't match the labels a deck uses.`,
+      `**Are ${meta.seriesNames.join(', ')} the right split?** ${
+        meta.dimension ? `They read as a breakdown by ${meta.dimension}. ` : ''
+      }Confirm the boundaries, and whether they should sum to the total.`,
     );
   }
 
-  if (!meta.unit) {
+  // A plain count has no unit word worth printing — "ACUs" is the measure, not
+  // a unit — so the absence of one is only a question when the author never
+  // settled the units either. Picking the measure from the setup form settles
+  // them, the same way picking the breakdown settles the split above.
+  if (!meta.unit && meta.unitConfidence !== 'stated') {
     ask(
       'Units',
       "**What unit are these figures in?** The chart's number format doesn't say, and a unit assumed wrongly is off by orders of magnitude without looking wrong.",
     );
-  } else if (meta.unit !== '%') {
+  } else if (meta.currency) {
+    // Gated on the figures actually being MONEY. It used to fire for anything
+    // that wasn't a percentage, which asked the reporting currency of a chart
+    // measured in sessions, or in ACUs per merged PR — a question with no
+    // answer, printed alongside the ones that matter.
     ask(
       'Units',
-      `**Reporting currency?** The chart is in ${meta.unit}. If a source reports in another currency, confirm the FX rate and date to convert at — or whether to report constant-currency instead.`,
+      `**Reporting currency?** The chart is in ${meta.currency}. If a source reports in another currency, confirm the FX rate and date to convert at — or whether to report constant-currency instead.`,
     );
   }
 

@@ -41,6 +41,19 @@ export interface BriefPeriod {
   labels: string[];
   /** True when the labels came from an explicit range or count in the text. */
   stated: boolean;
+  /**
+   * Fiscal rather than calendar periods. Only ever set when something settled
+   * it — "FY25" in the text, or the choice made in the setup step. Undefined is
+   * "nobody said", which the research brief has to ask about rather than
+   * assume.
+   */
+  fiscal?: boolean;
+  /**
+   * Whether the newest period on the axis is the one still running. Only set
+   * when something settled it; the parser never does, because a sentence saying
+   * "the last 8 quarters" doesn't say whether this one counts.
+   */
+  includeCurrent?: boolean;
 }
 
 export interface ChartBrief {
@@ -63,6 +76,12 @@ export interface ChartBrief {
   period?: BriefPeriod;
   numberFormat: NumberFormat;
   unitDivisor?: number;
+  /**
+   * The unit the figures are in, when the measure has one worth saying —
+   * "hours", "per merged PR". Never the display scale: a "$M" under the title
+   * is a note about the axis, not about the measure, and the axis already
+   * abbreviates its own ticks.
+   */
   unitNote?: string;
   /**
    * True when the text itself named the currency or the scale. A currency read
@@ -70,6 +89,22 @@ export interface ChartBrief {
    * statement, and a research prompt has to be able to tell the two apart.
    */
   unitStated: boolean;
+  /**
+   * Roughly where the placeholder figures should sit.
+   *
+   * Never set by the parser — a sentence doesn't say how big its numbers are —
+   * but the setup step knows it from the measure it was handed, and a chart of
+   * "ACUs per merged PR" whose axis reads 1,000 is a chart nobody can judge.
+   */
+  magnitude?: number;
+  /**
+   * The author's own instructions for the research, verbatim — not what the
+   * chart shows but how to fill it. Never parsed, never read for a measure or a
+   * period: a note that got mined for facts would put the author's caveats and
+   * our inferences in the same bucket, which is the one distinction this whole
+   * record exists to keep.
+   */
+  notes?: string;
   /** What the sentence didn't say. Shown to the author, never filled in. */
   gaps: string[];
 }
@@ -267,6 +302,28 @@ const NOT_A_SUBJECT = new RegExp(
   'i',
 );
 
+/**
+ * The subject the DECK can supply, with the precedence `readBrief` uses: a tag
+ * (documented as holding client names) beats the slide title, which beats the
+ * deck's own title.
+ *
+ * Exported because the setup step asks its questions in fields rather than in a
+ * sentence, and a chart built that way should still be titled for the same
+ * client as one built by typing — one precedence, not two.
+ */
+export function subjectFromContext(ctx: BriefContext): {
+  subject?: string;
+  subjectFrom: ChartBrief['subjectFrom'];
+} {
+  const tag = named(ctx.deckTags?.find((t) => t.trim()));
+  const slide = named(ctx.slideTitle);
+  const deckTitle = named(ctx.deckTitle);
+  return {
+    subject: tag ?? slide ?? deckTitle,
+    subjectFrom: tag ? 'tag' : slide ? 'slide' : deckTitle ? 'deck' : 'unknown',
+  };
+}
+
 export function readBrief(description: string, ctx: BriefContext = {}): ChartBrief {
   const text = description.trim();
   const gaps: string[] = [];
@@ -277,19 +334,11 @@ export function readBrief(description: string, ctx: BriefContext = {}): ChartBri
   const listed = explicitMembers(text) ?? rankedMembers(text, dimension);
 
   const subjectFromText = subjectInText(text);
-  const tag = named(ctx.deckTags?.find((t) => t.trim()));
-  const slide = named(ctx.slideTitle);
-  const deckTitle = named(ctx.deckTitle);
-  const subject = subjectFromText ?? tag ?? slide ?? deckTitle;
+  const fromDeck = subjectFromContext(ctx);
+  const subject = subjectFromText ?? fromDeck.subject;
   const subjectFrom: ChartBrief['subjectFrom'] = subjectFromText
     ? 'described'
-    : tag
-      ? 'tag'
-      : slide
-        ? 'slide'
-        : deckTitle
-          ? 'deck'
-          : 'unknown';
+    : fromDeck.subjectFrom;
 
   const period = readPeriod(text, ctx.asOf);
   // One named period is a MOMENT, not a trend — "revenue mix by region for
@@ -336,7 +385,6 @@ export function readBrief(description: string, ctx: BriefContext = {}): ChartBri
     period,
     numberFormat: format.numberFormat,
     unitDivisor: format.unitDivisor,
-    unitNote: format.unitNote,
     unitStated: format.unitStated,
     gaps,
   };
@@ -458,7 +506,6 @@ const CURRENCY_MEASURES =
 interface BriefFormat {
   numberFormat: NumberFormat;
   unitDivisor?: number;
-  unitNote?: string;
   unitStated: boolean;
 }
 
@@ -509,12 +556,9 @@ function readFormat(text: string, measure?: string): BriefFormat {
     ? { ...DEFAULT_NUMBER_FORMAT, style: 'currency', currency, decimals: 0 }
     : { ...DEFAULT_NUMBER_FORMAT, decimals: 0 };
 
-  const symbol = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : currency === 'JPY' ? '¥' : '$';
-  const suffix = divisor === 1e9 ? 'B' : divisor === 1e6 ? 'M' : 'K';
   return {
     numberFormat,
     unitDivisor: divisor,
-    unitNote: divisor ? `in ${currency ? symbol : ''}${suffix}` : undefined,
     unitStated: !!divisor || currencyStated,
   };
 }
@@ -558,19 +602,24 @@ function readPeriod(text: string, asOf?: string): BriefPeriod | undefined {
   if (!grain) return undefined;
 
   const fiscal = /\bfy|fiscal\b/i.test(text);
+  // `fiscal` doubles as "how to label the years" and "what we were told". Only
+  // the true case is a statement: no "FY" in a sentence means nobody said, not
+  // that they said calendar — so the flag on the period is left undefined, and
+  // the research brief goes on asking.
+  const said = fiscal || undefined;
 
   // Periods the author named themselves win outright: they said both ends, so
   // nothing has to be inferred from today's date. Two mentions are enough —
   // "FY21-FY25" and "how FY24 bridged to FY25" both name their span.
   const stated = statedSpan(text, grain, fiscal);
-  if (stated) return { grain: stated.grain, labels: stated.labels, stated: true };
+  if (stated) return { grain: stated.grain, labels: stated.labels, stated: true, fiscal: said };
 
   // A single named period — "for FY25", "in Q3'25" — with nothing asking for a
   // span. One tick is not a time axis, so this is a moment the chart is AT, and
   // the layout rules read it that way (a mix at one date is a pie, not a
   // one-column stack).
   const single = singlePeriod(text, fiscal);
-  if (single) return { grain: single.grain, labels: [single.label], stated: true };
+  if (single) return { grain: single.grain, labels: [single.label], stated: true, fiscal: said };
 
   const explicitCount = /\blast\s+(\d{1,2})\s+(quarters?|months?|years?|weeks?|days?)\b/i.exec(text);
   const count = Math.min(
@@ -589,6 +638,7 @@ function readPeriod(text: string, asOf?: string): BriefPeriod | undefined {
       grain: 'year',
       labels: Array.from({ length: count }, (_, i) => yearLabel(end - count + 1 + i, fiscal)),
       stated: !!explicitCount,
+      fiscal: said,
     };
   }
 
@@ -596,6 +646,7 @@ function readPeriod(text: string, asOf?: string): BriefPeriod | undefined {
     grain,
     labels: backFrom(anchor, grain, count, fiscal),
     stated: !!explicitCount,
+    fiscal: said,
   };
 }
 
@@ -755,6 +806,31 @@ function backFrom(
   }
   return out;
 }
+
+/**
+ * The last `count` periods at `grain`, counted back from `asOf` and labelled the
+ * way `parseGrain` reads them back.
+ *
+ * The public face of `backFrom`, for the setup step: an author who picks
+ * "quarterly, last 8" has stated exactly what a sentence saying "the last 8
+ * quarters" states, and both routes must produce the same axis or the same chart
+ * is two charts.
+ */
+export function periodLabels(
+  grain: DateGrain,
+  count: number,
+  /** Required, not optional: a period range counted back from an invented today
+   * is the one thing this module refuses to produce. */
+  asOf: string,
+  fiscal = false,
+): string[] {
+  const anchor = parseAsOf(asOf);
+  if (!anchor) return [];
+  return backFrom(anchor, grain, Math.max(1, count), fiscal);
+}
+
+/** The noun for one period at this grain — "quarter", "month". */
+export const periodNoun = (grain: DateGrain): string => grainNoun(grain);
 
 /* ------------------------------------------------------------------ */
 /* Recommendation                                                     */

@@ -163,6 +163,34 @@ export function reconcileSelection(
   };
 }
 
+/**
+ * What the selection covers: whole columns, whole rows, or a block of cells.
+ *
+ * This is what lets one key mean two things the way it does in Excel. A
+ * selection spanning every row is a COLUMN — a series — so Delete takes the
+ * series off the chart and ⌘- removes it; the same block one row short is just
+ * cells, and both keys act on the numbers instead.
+ *
+ * Selecting the entire grid is deliberately `cells`: it spans both axes, there
+ * is no honest answer to "row or column", and guessing would delete half the
+ * chart on a keystroke meant to empty it.
+ */
+export type SelectionSpan = 'rows' | 'columns' | 'cells';
+
+export function selectionSpan(
+  sheet: SheetModel,
+  sel: SheetSelection,
+  extent?: SelectionExtent,
+): SelectionSpan {
+  const { maxR, maxC } = bounds(sheet, extent);
+  const { r0, r1, c0, c1 } = rangeBounds(sel.range);
+  const fullHeight = r0 === 0 && r1 >= maxR;
+  const fullWidth = c0 === 0 && c1 >= maxC;
+  if (fullHeight && !fullWidth) return 'columns';
+  if (fullWidth && !fullHeight) return 'rows';
+  return 'cells';
+}
+
 /** Select whole rows or columns, for the gutter and header clicks. */
 export const selectRow = (
   sheet: SheetModel,
