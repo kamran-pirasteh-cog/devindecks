@@ -35,7 +35,7 @@ import { buildColorMap, type ColorMap } from './palette';
 import { refitSlide, scaleBody, type RefitContext, type RefitOutcome } from './refit';
 import { restyleSlide, type RestyleTrace } from './restyle';
 import { surveyDeck, type DeckSurvey } from './survey';
-import { buildSizeMap, type SizeMap } from './type';
+import { buildSizeMap, minLegiblePtFor, MIN_LEGIBLE_PT, scaleTypeForSlide, type SizeMap } from './type';
 import { bodyOf } from './classify';
 
 /* ------------------------------------------------------------------ */
@@ -167,67 +167,95 @@ export interface CoherenceDecision {
 }
 
 /**
- * Which roles the whole deck should resize, and to what.
+ * Which tiers of type the whole deck should resize, and to what.
  *
  * "Shrank" means the element's final size came out below the size the brand
  * assigned it. The target is the MEDIAN of the shrunken sizes rather than the
  * minimum: one pathological box stuffed with three paragraphs should not drag
  * the entire deck's body copy down with it.
+ *
+ * A TIER is a role at one brand size, not a role. Bucketing by role alone and
+ * then bailing out when its elements disagreed about their brand size — which
+ * was the rule here — meant this pass almost never ran on a real deck: `body`
+ * covers the bullets AND the card captions AND the footnote line, they arrive at
+ * two or three source sizes, and one such element anywhere in the deck disabled
+ * the role everywhere. Splitting by size is what "resized as one" was already
+ * asking for; `applyCoherence` has always matched on `brandPt` too.
  */
 export function coherenceDecisions(
   outcomes: Map<string, RefitOutcome>,
   traces: Map<string, RestyleTrace>,
   roles: Map<string, BrandRole>,
+  minPt: number = MIN_LEGIBLE_PT,
 ): CoherenceDecision[] {
-  const byRole = new Map<string, { brandPt: number; finalPt: number }[]>();
+  const byTier = new Map<string, { role: string; brandPt: number; finalPt: number }[]>();
   for (const [id, outcome] of outcomes) {
     const trace = traces.get(id);
     const role = roles.get(id);
     if (!trace || !role || outcome.finalPt <= 0) continue;
-    byRole.set(role, [...(byRole.get(role) ?? []), { brandPt: trace.brandPt, finalPt: outcome.finalPt }]);
+    const key = `${role}|${trace.brandPt}`;
+    byTier.set(key, [
+      ...(byTier.get(key) ?? []),
+      { role, brandPt: trace.brandPt, finalPt: outcome.finalPt },
+    ]);
   }
 
   const decisions: CoherenceDecision[] = [];
-  for (const [role, entries] of byRole) {
-    // Only meaningful for a role with enough instances for "most" to mean
+  for (const entries of byTier.values()) {
+    // Only meaningful for a tier with enough instances for "most" to mean
     // something. Two boxes disagreeing is not a deck-wide pattern.
     if (entries.length < 4) continue;
-    const brandPt = entries[0].brandPt;
-    // Compare against one brand size: a role whose elements were assigned
-    // different sizes isn't a single tier and can't be resized as one.
-    if (entries.some((e) => e.brandPt !== brandPt)) continue;
+    const { role, brandPt } = entries[0];
 
     const shrunk = entries.filter((e) => e.finalPt < brandPt - 0.01);
     const share = shrunk.length / entries.length;
     if (share < COHERENCE_THRESHOLD) continue;
 
     const sizes = shrunk.map((e) => e.finalPt).sort((a, b) => a - b);
-    const median = sizes[Math.floor(sizes.length / 2)];
+    // Never below the legibility floor: a deck-wide decision is the last place
+    // that should be allowed to produce text nobody can read, and the median of
+    // a tier whose boxes were restored to a small source size can land there.
+    const median = Math.max(sizes[Math.floor(sizes.length / 2)], minPt);
     if (median >= brandPt - 0.01) continue;
     decisions.push({ role, fromPt: brandPt, toPt: median, share });
   }
-  return decisions.sort((a, b) => a.role.localeCompare(b.role));
+  return decisions.sort((a, b) => a.role.localeCompare(b.role) || a.fromPt - b.fromPt);
 }
 
-/** Apply a coherence decision to every element of that role on a slide. */
+/**
+ * Apply a coherence decision to every element of that tier on a slide.
+ *
+ * Never ABOVE what the element's own refit could hold. The decision is a target
+ * for the tier, and the tier's target is now floored at `MIN_LEGIBLE_PT` — so on
+ * a dense deck it can land above a box that had been restored to its author's
+ * smaller size, and pinning that box up to the tier's size makes it overflow.
+ * An error for the sake of half a point of consistency is the wrong trade, so
+ * each element takes the smaller of the two.
+ */
 function applyCoherence(
   slide: Slide,
   decisions: CoherenceDecision[],
   roles: Map<string, BrandRole>,
   traces: Map<string, RestyleTrace>,
+  outcomes: Map<string, RefitOutcome>,
   ds: DesignSystem,
 ): Slide {
   if (!decisions.length) return slide;
-  const byRole = new Map(decisions.map((d) => [d.role, d]));
+  // Keyed by tier, not by role: one role can carry several brand sizes and each
+  // is decided on its own, so a map keyed by role would drop all but the last.
+  const byTier = new Map(decisions.map((d) => [`${d.role}|${d.fromPt}`, d]));
   return {
     ...slide,
     elements: slide.elements.map((el) => {
       const role = roles.get(el.id);
-      const decision = role ? byRole.get(role) : undefined;
       const trace = traces.get(el.id);
+      const decision = role && trace ? byTier.get(`${role}|${trace.brandPt}`) : undefined;
       const body = bodyOf(el);
       if (!decision || !trace || !body || trace.brandPt !== decision.fromPt) return el;
-      return { ...el, body: scaleBody(body, decision.toPt / decision.fromPt, ds) } as typeof el;
+      const held = outcomes.get(el.id)?.finalPt ?? Infinity;
+      const toPt = Math.min(decision.toPt, held > 0 ? held : Infinity);
+      if (toPt >= decision.fromPt - 0.01) return el;
+      return { ...el, body: scaleBody(body, toPt / decision.fromPt, ds) } as typeof el;
     }),
   };
 }
@@ -237,14 +265,28 @@ function applyCoherence(
 /* ------------------------------------------------------------------ */
 
 export function convertDeck(sourceSlides: Slide[], opts: ConvertOptions): ConvertResult {
-  const { ds, slideSize } = opts;
+  const { slideSize } = opts;
   const measurer = opts.measurer ?? defaultMeasurer();
   const newId = opts.newId ?? sequentialIds();
+
+  /*
+   * ---- 0. Put the brand on THIS slide's scale ----
+   *
+   * Every size in a design system is a point value, and a point value only means
+   * something against a canvas. `scaleTypeForSlide` restates the brand for the
+   * slide it is being applied to, and `minLegiblePtFor` does the same for the
+   * legibility floor, so the engine's decisions depend on the deck's DESIGN and
+   * not on the EMU box someone happened to author it in. Both are the identity
+   * at the reference width — every deck this app makes — so a normal conversion
+   * is untouched; a 20in-wide upload is the case this exists for.
+   */
+  const ds = scaleTypeForSlide(opts.ds, slideSize);
+  const minPt = minLegiblePtFor(slideSize);
 
   // ---- 1. Survey, then build the three deck-wide tables ----
   const survey: DeckSurvey = surveyDeck(sourceSlides, slideSize, ds);
   const colors: ColorMap = buildColorMap(survey, ds);
-  const sizes: SizeMap = buildSizeMap(survey, ds);
+  const sizes: SizeMap = buildSizeMap(survey, ds, minPt);
   const roleMap = buildRoleMap(survey);
 
   // ---- 2. Per slide: classify → decouple → restyle ----
@@ -342,6 +384,7 @@ export function convertDeck(sourceSlides: Slide[], opts: ConvertOptions): Conver
     roles: allRoles,
     frozen,
     panelText,
+    minPt,
   };
 
   let refits = restyled.map((slide) => refitSlide(slide, refitCtx));
@@ -350,14 +393,14 @@ export function convertDeck(sourceSlides: Slide[], opts: ConvertOptions): Conver
   const allOutcomes = new Map<string, RefitOutcome>();
   for (const r of refits) for (const [id, o] of r.outcomes) allOutcomes.set(id, o);
 
-  const decisions = coherenceDecisions(allOutcomes, allTraces, allRoles);
+  const decisions = coherenceDecisions(allOutcomes, allTraces, allRoles, minPt);
   if (decisions.length) {
     // Applied to the RESTYLED slides and refit again from there, not layered on
     // top of the first refit's output: refit may already have grown boxes and
     // stepped ladders for these elements, and re-running over that would apply
     // both adjustments and undershoot.
     refits = restyled
-      .map((slide) => applyCoherence(slide, decisions, allRoles, allTraces, ds))
+      .map((slide) => applyCoherence(slide, decisions, allRoles, allTraces, allOutcomes, ds))
       .map((slide) => refitSlide(slide, refitCtx));
   }
 
@@ -378,6 +421,7 @@ export function convertDeck(sourceSlides: Slide[], opts: ConvertOptions): Conver
       measurer,
       slideSize,
       roles: allRoles,
+      minPt,
       preExistingOverlaps: refit.preExistingOverlaps,
       offLadder,
       sourceSizes: new Map([...allTraces].map(([id, t]) => [id, t.sourcePt])),

@@ -73,7 +73,14 @@ export const TEXT_SIZES = [12, 14, 18, 24, 32, 40, 54] as const;
 
 export const DEFAULT_TEXT_SIZE_PT = 18;
 
-export function makeText(style?: TextStyle, sizePt: number = DEFAULT_TEXT_SIZE_PT): TextElement {
+/** The colour a newly dropped text box is typed in, unless one is picked. */
+export const DEFAULT_TEXT_COLOR: ColorRef = token('ink.strong');
+
+export function makeText(
+  style?: TextStyle,
+  sizePt: number = DEFAULT_TEXT_SIZE_PT,
+  color: ColorRef = DEFAULT_TEXT_COLOR,
+): TextElement {
   const s = style ?? TEXT_STYLES[0];
   return {
     id: newId('text'),
@@ -97,7 +104,7 @@ export function makeText(style?: TextStyle, sizePt: number = DEFAULT_TEXT_SIZE_P
               weight: s.weight >= 700 ? undefined : s.weight,
               bold: s.weight >= 700 || undefined,
               italic: s.italic,
-              color: token('ink.strong'),
+              color,
             },
           ],
         },

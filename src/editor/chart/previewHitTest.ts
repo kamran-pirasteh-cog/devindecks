@@ -7,7 +7,14 @@
  * carry both a rect and a `chartRef`, so the honest answer is to test the point
  * against the rects — which also works in a test with no browser at all.
  */
-import type { ChartRef, SlideElement } from '@/model';
+import {
+  isPath,
+  legendSeriesKey,
+  pointsToEmu,
+  type ChartRef,
+  type PathElement,
+  type SlideElement,
+} from '@/model';
 import type { MarkRender } from './markCaps';
 
 /** Painted order, topmost last — the same array `SlideView` renders. */
@@ -100,6 +107,165 @@ export function visualRect(el: Pick<SlideElement, 'rect' | 'rotation'>): HitTarg
 const contains = (r: HitTarget['rect'], x: number, y: number, pad: number) =>
   x >= r.x - pad && x <= r.x + r.w + pad && y >= r.y - pad && y <= r.y + r.h + pad;
 
+/* ------------------------------------------------------------------ */
+/* Strokes                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A line series is a STROKE, not the box it spans.
+ *
+ * Its rect is the bounding box of the whole path — on a rising line that is a
+ * rectangle covering most of the plot, so testing a click against it hands the
+ * series every click in that region: the line eats the empty space around it,
+ * and the selection ring frames a block nobody drew. The path's own points are
+ * right there in the element, so the honest test is the distance to them.
+ *
+ * Only paths with nothing but an outline. A filled path — an area, a pie slice,
+ * a Sankey link — is a region, and its box is a fair enough stand-in for it.
+ */
+export function isStrokeOnly(el: SlideElement): el is PathElement {
+  return isPath(el) && (!el.fill || el.fill.kind === 'none') && !!el.outline;
+}
+
+/** How closely the curves are chased. Sixteen chords per segment is inside a
+ * hairline of a line chart's smoothing at any size a slide is read at. */
+const CURVE_STEPS = 16;
+
+const cubic = (a: number, b: number, c: number, d: number, t: number) => {
+  const u = 1 - t;
+  return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
+};
+
+/**
+ * A path's own geometry, flattened to polylines in the elements' EMU space.
+ *
+ * `PathOp` coordinates are fractions of the element's rect — the same mapping
+ * `pathData` draws with — so this follows exactly what is on screen. Rotation is
+ * NOT applied here: the query point is turned into the path's frame instead (see
+ * `localPoint`), which is exact at any angle and needs no second flattening.
+ */
+export function pathRuns(el: PathElement): { x: number; y: number }[][] {
+  const at = (fx: number, fy: number) => ({
+    x: el.rect.x + fx * el.rect.w,
+    y: el.rect.y + fy * el.rect.h,
+  });
+  const runs: { x: number; y: number }[][] = [];
+  let run: { x: number; y: number }[] = [];
+  const close = () => {
+    if (run.length > 1) runs.push(run);
+    run = [];
+  };
+  for (const op of el.d) {
+    switch (op.op) {
+      case 'M':
+        close();
+        run.push(at(op.x, op.y));
+        break;
+      case 'L':
+        run.push(at(op.x, op.y));
+        break;
+      case 'C': {
+        const from = run[run.length - 1] ?? at(op.x1, op.y1);
+        const c1 = at(op.x1, op.y1);
+        const c2 = at(op.x2, op.y2);
+        const to = at(op.x, op.y);
+        for (let i = 1; i <= CURVE_STEPS; i++) {
+          const t = i / CURVE_STEPS;
+          run.push({
+            x: cubic(from.x, c1.x, c2.x, to.x, t),
+            y: cubic(from.y, c1.y, c2.y, to.y, t),
+          });
+        }
+        break;
+      }
+      case 'Z':
+        if (run.length > 1 && run[0]) run.push({ ...run[0] });
+        close();
+        break;
+    }
+  }
+  close();
+  return runs;
+}
+
+/** The query point in the path's own unrotated frame. */
+function localPoint(el: SlideElement, x: number, y: number) {
+  const deg = (((el.rotation ?? 0) % 360) + 360) % 360;
+  if (!deg) return { x, y };
+  // The renderer turns the box by +deg about its centre, so the point comes
+  // back the other way.
+  const rad = (-deg * Math.PI) / 180;
+  const cx = el.rect.x + el.rect.w / 2;
+  const cy = el.rect.y + el.rect.h / 2;
+  const dx = x - cx;
+  const dy = y - cy;
+  return {
+    x: cx + dx * Math.cos(rad) - dy * Math.sin(rad),
+    y: cy + dx * Math.sin(rad) + dy * Math.cos(rad),
+  };
+}
+
+/** Distance from a point to a segment — the whole of the stroke test. */
+function segDistance(
+  px: number,
+  py: number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const len = vx * vx + vy * vy;
+  // A degenerate segment is a point, which is its own nearest thing.
+  const t = len === 0 ? 0 : Math.max(0, Math.min(1, ((px - a.x) * vx + (py - a.y) * vy) / len));
+  return Math.hypot(px - (a.x + t * vx), py - (a.y + t * vy));
+}
+
+export function distanceToPath(
+  runs: { x: number; y: number }[][],
+  x: number,
+  y: number,
+): number {
+  let best = Infinity;
+  for (const run of runs) {
+    for (let i = 1; i < run.length; i++) {
+      const a = run[i - 1];
+      const b = run[i];
+      if (!a || !b) continue;
+      best = Math.min(best, segDistance(x, y, a, b));
+      if (best === 0) return 0;
+    }
+  }
+  return best;
+}
+
+/**
+ * How far off a stroke still counts as on it.
+ *
+ * Half the stroke — anything inside the ink itself is plainly a hit — plus the
+ * caller's slop, floored at a couple of points so a hairline series is still
+ * grabbable in a small preview where `pad` works out to nearly nothing.
+ */
+const strokeTolerance = (el: PathElement, pad: number) =>
+  (el.outline?.widthEmu ?? 0) / 2 + Math.max(pad, pointsToEmu(2));
+
+/**
+ * How far the point is from a stroke-only part, and how far off still counts —
+ * null for every part whose box is a fair test of it.
+ */
+export function strokeProximity(
+  el: SlideElement,
+  x: number,
+  y: number,
+  pad: number,
+): { dist: number; tol: number } | null {
+  if (!isStrokeOnly(el)) return null;
+  const local = localPoint(el, x, y);
+  return {
+    dist: distanceToPath(pathRuns(el), local.x, local.y),
+    tol: strokeTolerance(el, pad),
+  };
+}
+
 /**
  * An axis is a BAND, not the handful of numbers printed along it.
  *
@@ -158,6 +324,56 @@ export function axisBandFor(
   return band?.rect ?? null;
 }
 
+/**
+ * The box the legend as a WHOLE occupies — the union of its entries.
+ *
+ * A legend is a population, exactly like an axis: a plain click takes every one
+ * of its entries (see `clickSelectParts`), so ringing the entries one by one
+ * draws four rings around four words when what is selected is ONE thing. The
+ * union of the entries rather than the `legend.box` rect, which is the gutter
+ * the layout reserved — full chart width for a legend on top, so a ring on it
+ * would run out well past both ends of the keys it holds.
+ *
+ * Null when the chart draws no legend, which leaves callers framing the part's
+ * own rect.
+ */
+export function legendBand(elements: SlideElement[]): HitTarget['rect'] | null {
+  return unionOf(
+    elements.filter((el) => el.chartRef?.part === 'legend.item').map(visualRect),
+  );
+}
+
+/**
+ * One legend ENTRY: the swatch and the name beside it.
+ *
+ * The two carry different series keys (see `legendSeriesKey`) and are the two
+ * halves of one word, so the narrowest thing a legend selection reaches is the
+ * pair — and it gets one ring, not two.
+ */
+export function legendEntryRect(
+  elements: SlideElement[],
+  series: string,
+): HitTarget['rect'] | null {
+  return unionOf(
+    elements
+      .filter(
+        (el) =>
+          el.chartRef?.part === 'legend.item' && legendSeriesKey(el.chartRef) === series,
+      )
+      .map(visualRect),
+  );
+}
+
+/** The smallest box holding all of them, or null for none. */
+function unionOf(rects: HitTarget['rect'][]): HitTarget['rect'] | null {
+  if (!rects.length) return null;
+  const x0 = Math.min(...rects.map((r) => r.x));
+  const y0 = Math.min(...rects.map((r) => r.y));
+  const x1 = Math.max(...rects.map((r) => r.x + r.w));
+  const y1 = Math.max(...rects.map((r) => r.y + r.h));
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 /** Of an axis's own parts, the one nearest the point — what the click means. */
 function nearestIn(refs: HitTarget[], x: number, y: number): ChartRef {
   const dist = (t: HitTarget) =>
@@ -179,6 +395,9 @@ function nearestIn(refs: HitTarget[], x: number, y: number): ChartRef {
  * Ties break SMALLEST FIRST: a data label sits inside its bar, and the label is
  * what someone clicking the number means. The backdrop parts are considered only
  * when nothing else matched at all.
+ *
+ * A stroke-only path — a line series — is taken on its ink rather than on its
+ * box; see `isStrokeOnly` for why a box is the wrong question to ask of a line.
  */
 export function hitTestChart(
   elements: SlideElement[],
@@ -186,7 +405,8 @@ export function hitTestChart(
   y: number,
   pad = 0,
 ): ChartRef | null {
-  let best: HitTarget | null = null;
+  /** The best candidate so far, with what it is being ranked on. */
+  let best: (HitTarget & { size: number; dist: number }) | null = null;
 
   for (const el of elements) {
     if (!el.chartRef) continue;
@@ -194,15 +414,30 @@ export function hitTestChart(
     // Slop only helps the small stuff. Padding the plot or a bar would let a
     // click outside the chart entirely land on it.
     const slop = rank(el.chartRef) <= 1 || el.chartRef.part === 'axis' ? pad : 0;
+    // The box is the cheap first pass; a stroke then narrows it to the ink.
     if (!contains(rect, x, y, slop)) continue;
+    let size = area(rect);
+    let dist = 0;
+    const stroke = strokeProximity(el, x, y, pad);
+    if (stroke) {
+      if (stroke.dist > stroke.tol) continue;
+      // A stroke is as SPECIFIC as a small target however far its box reaches: a
+      // line crossing an area or a band is the thing under the pointer, and
+      // ranking it by its box would hand the click to whatever it crosses.
+      size = Math.min(size, (stroke.tol * 2) ** 2);
+      dist = stroke.dist;
+    }
     if (
       !best ||
       rank(el.chartRef) < rank(best.ref) ||
       // Same class: the smaller thing is the more specific one — a data label
       // sits inside its bar, and the number is what a click on it means.
-      (rank(el.chartRef) === rank(best.ref) && area(rect) < area(best.rect))
+      (rank(el.chartRef) === rank(best.ref) &&
+        (size < best.size ||
+          // Two strokes crossing are the same size, so the nearer ink wins.
+          (size === best.size && dist < best.dist)))
     ) {
-      best = { ref: el.chartRef, rect };
+      best = { ref: el.chartRef, rect, size, dist };
     }
   }
 

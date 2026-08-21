@@ -30,6 +30,7 @@ import { DEFAULT_DESIGN_SYSTEM } from '../src/model/tokens';
 import { ingestSlides, summarize, type Diagnostic, type RawSlide } from '../src/model/ingest';
 import { metricMeasurer } from '../src/render/measureText';
 import { convertDeck } from '../src/brand/convert';
+import { fitSlide, placementFor } from '../src/import/fit';
 import type { Slide } from '../src/model/types';
 
 const CORPUS_DIR = join(process.cwd(), 'fixtures/brand-corpus');
@@ -67,6 +68,16 @@ function bundledCases(): Case[] {
  * `parsePptx` is browser-and-Node alike — `import/zip.ts` uses only WHATWG
  * `DecompressionStream`, which Node has had since 18 — so the corpus goes
  * through the exact code path an upload does.
+ *
+ * Including the FIT, which this script used to skip. A .pptx carries its own
+ * slide size and most real ones are not 13.33in: the case-study deck that sent
+ * me looking was authored 20in wide. Handing those coordinates to `convertDeck`
+ * with `slideSize: SLIDE_16x9` validates a slide that cannot occur — two thirds
+ * of the elements sit outside the slide, so every position-band lookup is wrong,
+ * roles are assigned off those bands, and the run reports a dozen
+ * `element-off-slide` warnings that say nothing about the deck. It also HIDES
+ * defects: the size-coupling bug that shipped two body sizes to one slide was
+ * invisible here and obvious the moment the fit was applied.
  */
 async function corpusCases(): Promise<Case[]> {
   if (!existsSync(CORPUS_DIR)) return [];
@@ -86,7 +97,9 @@ async function corpusCases(): Promise<Case[]> {
         bytes.byteOffset + bytes.byteLength,
       ) as ArrayBuffer;
       const deck = await parsePptx(buffer, DEFAULT_DESIGN_SYSTEM);
-      cases.push({ name: file, slides: deck.slides.map((s) => s.slide) });
+      // The same two lines every import path in the app runs.
+      const placement = placementFor(deck.slideSize, SLIDE_16x9);
+      cases.push({ name: file, slides: deck.slides.map((s) => fitSlide(s.slide, placement)) });
     } catch (err) {
       console.error(`\nFAIL  ${file} — could not be parsed: ${(err as Error).message}`);
       cases.push({ name: file, slides: [] });

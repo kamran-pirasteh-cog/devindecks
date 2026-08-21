@@ -23,6 +23,7 @@
 import type { DesignSystem } from '@/model/tokens';
 import { BUILT_IN_TYPE_ROLES, resolveTypeRole } from '@/model/tokens';
 import type { FontFamily } from '@/model/fonts';
+import { DEFAULT_MARGINS, SLIDE_16x9, type EMU, type SlideMargins } from '@/model';
 import type { DeckSurvey, SizeStat } from './survey';
 
 /**
@@ -34,8 +35,96 @@ import type { DeckSurvey, SizeStat } from './survey';
  */
 export const SIZE_EPSILON_PT = 1;
 
-/** No brand rung below this: it stops being readable on a projector. */
+/**
+ * No brand rung below this: it stops being readable on a projector.
+ *
+ * At the REFERENCE slide width. See `slideTypeScale`.
+ */
 export const MIN_LEGIBLE_PT = 9;
+
+/* ------------------------------------------------------------------ */
+/* Slide scale                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The slide width every absolute point size in this engine is quoted against.
+ *
+ * A point size is only meaningful relative to the canvas it sits on. A slide is
+ * projected at whatever size the room's screen is, so 11pt on a 13.33in slide
+ * and 16.5pt on a 20in slide are THE SAME TYPE — and the brand's "body is 11pt"
+ * means the first one.
+ */
+export const REFERENCE_SLIDE_W: EMU = SLIDE_16x9.w;
+
+/**
+ * How much bigger this slide is than the reference — the factor every absolute
+ * point size in the brand has to be multiplied by to mean the same thing on it.
+ *
+ * Without this the engine's output depends on a number the author never thought
+ * of as a design decision. A 20in-wide deck (a real one: the case study that
+ * started this) carries 13.5pt body copy, which is 9pt of reference type — but
+ * measured against an unscaled 9pt floor and an unscaled 11pt body rung it reads
+ * as text that must be ENLARGED, so the brand asks for 11pt, it doesn't fit, and
+ * refit spends the slide unwinding a decision that was never real. Convert the
+ * same deck at 13.33in and at 20in today and you get two different results from
+ * one design; scaling the rules makes them one.
+ *
+ * Bounded, because this multiplies type: a deck 8× the reference is a bug in
+ * whatever produced it, not a design intent worth honouring.
+ */
+export function slideTypeScale(slideSize: { w: EMU }): number {
+  if (!slideSize?.w || slideSize.w <= 0) return 1;
+  const raw = slideSize.w / REFERENCE_SLIDE_W;
+  return Math.min(4, Math.max(0.25, raw));
+}
+
+/** Half-point precision, as PowerPoint uses. */
+const halfPoint = (pt: number) => Math.round(pt * 2) / 2;
+
+/** The legibility floor on a slide of this size. */
+export const minLegiblePtFor = (slideSize: { w: EMU }): number =>
+  halfPoint(MIN_LEGIBLE_PT * slideTypeScale(slideSize));
+
+/**
+ * The brand's margins on a slide of this size.
+ *
+ * Same argument as the type: 0.45in of margin is a proportion of the reference
+ * slide, not a physical distance. Unscaled on a 20in canvas it is two thirds of
+ * the safe area the brand specifies, which moves the band boundaries every
+ * position-based decision in `classify` reads, shrinks the strip `chrome` places
+ * the logo and footer in, and changes where `refit` snaps a box to.
+ */
+export function marginsForSlide(slideSize: { w: EMU }): SlideMargins {
+  const factor = slideTypeScale(slideSize);
+  if (Math.abs(factor - 1) < 1e-6) return DEFAULT_MARGINS;
+  return {
+    left: Math.round(DEFAULT_MARGINS.left * factor),
+    right: Math.round(DEFAULT_MARGINS.right * factor),
+    top: Math.round(DEFAULT_MARGINS.top * factor),
+    bottom: Math.round(DEFAULT_MARGINS.bottom * factor),
+    contentTop: Math.round(DEFAULT_MARGINS.contentTop * factor),
+  };
+}
+
+/**
+ * The design system as it applies to a slide of this size: every type role's
+ * size scaled so the brand's proportions survive a non-reference canvas.
+ *
+ * Identity at the reference width, which is every deck the app makes today —
+ * so this cannot change what a normal conversion does, only what an unusual
+ * canvas does.
+ */
+export function scaleTypeForSlide(ds: DesignSystem, slideSize: { w: EMU }): DesignSystem {
+  const factor = slideTypeScale(slideSize);
+  if (Math.abs(factor - 1) < 1e-6) return ds;
+  const scaled = Object.fromEntries(
+    Object.entries(ds.type).map(([id, role]) => [
+      id,
+      { ...role, sizePt: halfPoint(role.sizePt * factor) },
+    ]),
+  ) as DesignSystem['type'];
+  return { ...ds, type: scaled };
+}
 
 export interface SizeLadder {
   /** Ascending, deduplicated brand sizes. */
@@ -54,11 +143,11 @@ export interface SizeLadder {
  * multiples of a role's own size rather than free values, so every rung is
  * still derived from the brand.
  */
-export function buildLadder(ds: DesignSystem): SizeLadder {
+export function buildLadder(ds: DesignSystem, minPt: number = MIN_LEGIBLE_PT): SizeLadder {
   const originOf = new Map<number, string>();
   const add = (pt: number, origin: string) => {
-    const rounded = Math.round(pt * 2) / 2; // half-point precision, as PowerPoint uses
-    if (rounded < MIN_LEGIBLE_PT) return;
+    const rounded = halfPoint(pt);
+    if (rounded < minPt) return;
     if (!originOf.has(rounded)) originOf.set(rounded, origin);
   };
 
@@ -132,8 +221,12 @@ export function distinctLevels(sizes: SizeStat[]): number[][] {
  * expressed, and compressing its bottom end is strictly better than either
  * inverting it or inventing off-brand sizes for it.
  */
-export function buildSizeMap(survey: DeckSurvey, ds: DesignSystem): SizeMap {
-  const ladder = buildLadder(ds);
+export function buildSizeMap(
+  survey: DeckSurvey,
+  ds: DesignSystem,
+  minPt: number = MIN_LEGIBLE_PT,
+): SizeMap {
+  const ladder = buildLadder(ds, minPt);
   const levels = distinctLevels(survey.sizes);
   const to = new Map<number, number>();
   const mappings: SizeMapping[] = [];

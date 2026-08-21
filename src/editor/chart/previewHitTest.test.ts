@@ -8,18 +8,29 @@ import {
   type ChartInstance,
   type SlideElement,
 } from '@/model';
-import { axisBandFor, describePart, hitTestChart, rectOfPart } from './previewHitTest';
+import {
+  axisBandFor,
+  describePart,
+  hitTestChart,
+  isStrokeOnly,
+  legendBand,
+  legendEntryRect,
+  pathRuns,
+  rectOfPart,
+} from './previewHitTest';
 
 const FRAME = { x: 0, y: 0, w: inchesToEmu(8), h: inchesToEmu(4) };
 
-const chart = (kind: 'column' | 'waterfall' = 'column'): ChartInstance => ({
+type Kind = 'column' | 'waterfall' | 'line';
+
+const chart = (kind: Kind = 'column'): ChartInstance => ({
   id: 'c1',
   groupId: 'g1',
   frame: FRAME,
   spec: defaultChartSpec(kind, 'stacked'),
 });
 
-const elements = (kind: 'column' | 'waterfall' = 'column'): SlideElement[] =>
+const elements = (kind: Kind = 'column'): SlideElement[] =>
   compileChart(chart(kind), DEFAULT_DESIGN_SYSTEM, metricMeasurer()).elements;
 
 /** Centre of an element, for aiming a click at it. */
@@ -164,6 +175,51 @@ describe('hitTestChart — on a turned chart', () => {
   });
 });
 
+/**
+ * A line series is a stroke, and its rect is the bounding box of the whole path
+ * — on a rising line, most of the plot. Testing a click against that box handed
+ * the series every click inside it: the empty space under the line selected the
+ * line, and the ring framed a block nobody drew.
+ */
+describe('hitTestChart on a line series', () => {
+  const lineChart = () => {
+    const els = elements('line');
+    const line = els.find(
+      (e) => e.chartRef?.part === 'mark' && e.chartRef.point === 'line',
+    )!;
+    if (!isStrokeOnly(line)) throw new Error('a line series is a stroke');
+    return { els, line, runs: pathRuns(line) };
+  };
+
+  it('draws its lines as bare strokes', () => {
+    const { runs } = lineChart();
+    // The geometry the hit test now reads: one run of real points, not a box.
+    expect(runs[0]!.length).toBeGreaterThan(1);
+  });
+
+  it('takes a click on the line itself', () => {
+    const { els, line, runs } = lineChart();
+    const run = runs[0]!;
+    // Halfway along the first segment, which is ink either way it slopes.
+    const a = run[0]!;
+    const b = run[1]!;
+    const hit = hitTestChart(els, (a.x + b.x) / 2, (a.y + b.y) / 2, inchesToEmu(0.02));
+    expect(hit).toEqual(line.chartRef);
+  });
+
+  it('leaves the empty space inside its box to the chart', () => {
+    const { els, line, runs } = lineChart();
+    const run = runs[0]!;
+    const first = run[0]!;
+    const last = run[run.length - 1]!;
+    // The corner of the box the line's own ends span: inside the rect, a long
+    // way off the diagonal between them.
+    const hit = hitTestChart(els, last.x, first.y, inchesToEmu(0.02));
+    expect(hit).not.toEqual(line.chartRef);
+    expect(hit?.part).toBe('plot');
+  });
+});
+
 describe('rectOfPart', () => {
   it('finds the rect for the exact ref, for drawing the ring', () => {
     const els = elements();
@@ -211,5 +267,48 @@ describe('describePart', () => {
     expect(describePart({ chartId: 'c1', part: 'mark', series: 's0', point: 'c0' }, 'SMB')).toBe(
       'SMB · bar',
     );
+  });
+});
+
+describe('legendBand', () => {
+  it('holds every entry, and nothing beyond the last one', () => {
+    const els = elements();
+    const keys = els.filter((e) => e.chartRef?.part === 'legend.item');
+    expect(keys.length).toBeGreaterThan(1);
+    const band = legendBand(els)!;
+    for (const k of keys) {
+      expect(k.rect.x).toBeGreaterThanOrEqual(band.x);
+      expect(k.rect.x + k.rect.w).toBeLessThanOrEqual(band.x + band.w);
+      expect(k.rect.y).toBeGreaterThanOrEqual(band.y);
+      expect(k.rect.y + k.rect.h).toBeLessThanOrEqual(band.y + band.h);
+    }
+    // Tight: the band's edges are the outermost keys', not the gutter the
+    // layout reserved (`legend.box`, which spans the chart).
+    const right = Math.max(...keys.map((k) => k.rect.x + k.rect.w));
+    expect(band.x + band.w).toBe(right);
+    const box = els.find((e) => e.chartRef?.part === 'legend.box')!;
+    expect(band.w).toBeLessThan(box.rect.w);
+  });
+
+  it('takes an entry as the swatch and its name together', () => {
+    const els = elements();
+    const swatch = els.find(
+      (e) => e.chartRef?.part === 'legend.item' && !e.chartRef.series.endsWith('.label'),
+    )!;
+    const series = (swatch.chartRef as { series: string }).series;
+    const name = els.find(
+      (e) => e.chartRef?.part === 'legend.item' && e.chartRef.series === `${series}.label`,
+    )!;
+    const entry = legendEntryRect(els, series)!;
+    expect(entry.x).toBe(Math.min(swatch.rect.x, name.rect.x));
+    expect(entry.x + entry.w).toBe(
+      Math.max(swatch.rect.x + swatch.rect.w, name.rect.x + name.rect.w),
+    );
+    // One entry, not the whole legend.
+    expect(entry.w).toBeLessThan(legendBand(els)!.w);
+  });
+
+  it('is null on a chart that draws no legend', () => {
+    expect(legendBand([])).toBeNull();
   });
 });

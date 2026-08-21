@@ -82,7 +82,7 @@ import { ganttItemFormLabel } from '@/model/chart/roles';
 import { markCapabilities, markRender } from './markCaps';
 import { DateFormatRow } from './DateFormatRow';
 import { NumberFormatRows } from './NumberFormatRows';
-import { FIELD, Row } from './panelChrome';
+import { Divider, FIELD, FIELD_NARROW, MiniButton, Row } from './panelChrome';
 import {
   CHART_FACES,
   CHART_TYPE_SIZES,
@@ -100,7 +100,7 @@ export interface Anchor {
   h: number;
 }
 
-const PANEL_W = 236;
+const PANEL_W = 248;
 const GAP = 10;
 /** Never squeeze the panel below this, even on a very short slide: at that
  *  point it scrolls, and a scrolling panel beats a clipped one. */
@@ -211,34 +211,6 @@ function AxisNumber({
   );
 }
 
-function MiniButton({
-  onClick,
-  active,
-  title,
-  children,
-}: {
-  onClick: () => void;
-  active?: boolean;
-  title?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-pressed={active}
-      className={`h-6 shrink-0 rounded px-1.5 text-[11px] leading-none ${
-        active
-          ? 'bg-indigo-600 text-white'
-          : 'border border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
 /**
  * The palette, inline rather than behind a swatch popup.
  *
@@ -252,7 +224,11 @@ function Swatches({
   current,
   onPick,
   onClear,
-  size = 'h-5 w-5',
+  // One size everywhere. The fill row used to be a size larger than the ink
+  // rows below it, which made two swatch grids in one panel look like two
+  // different controls — and at 20px a row of eight wrapped where a row of
+  // 16px ones does not.
+  size = 'h-4 w-4',
 }: {
   ds: DesignSystem;
   /** What's set now — a token, a hex, or nothing (following the brand). */
@@ -317,23 +293,38 @@ function TextRows({
   ds,
   font,
   onPatch,
-  label = 'Text',
 }: {
   ds: DesignSystem;
   font: LabelFont | undefined;
   onPatch: (patch: Partial<LabelFont>) => void;
-  label?: string;
 }) {
   return (
     <>
-      <Row label={label}>
+      {/* Face and size in one row, and the face as a DROPDOWN rather than three
+          buttons: "Sans / Serif / Mono" spelled out as chips was a row of its
+          own, and the panel already asks enough questions of anyone who clicked
+          a bar to change its colour. Blank means the brand's. */}
+      <Row label="Font">
+        <select
+          value={font?.font ?? ''}
+          onChange={(e) => onPatch({ font: (e.target.value || undefined) as LabelFont['font'] })}
+          aria-label="Typeface"
+          className={FIELD}
+        >
+          <option value="">Brand</option>
+          {CHART_FACES.map((f) => (
+            <option key={f.value} value={f.value}>
+              {f.label}
+            </option>
+          ))}
+        </select>
         <select
           value={font?.sizePt ?? ''}
           onChange={(e) =>
             onPatch({ sizePt: e.target.value === '' ? undefined : parseFloat(e.target.value) })
           }
           aria-label="Type size"
-          className={FIELD}
+          className={FIELD_NARROW}
         >
           <option value="">Auto</option>
           {SIZES.map((s) => (
@@ -342,6 +333,10 @@ function TextRows({
             </option>
           ))}
         </select>
+      </Row>
+      {/* Bold, italic and ink are the same decision — how do I mark THIS number
+          out from its neighbours — so they answer it on one line. */}
+      <Row label="Ink">
         <MiniButton
           active={font?.bold ?? false}
           onClick={() => onPatch({ bold: !font?.bold })}
@@ -349,9 +344,6 @@ function TextRows({
         >
           <span className="font-bold">B</span>
         </MiniButton>
-        {/* Italic sits beside bold rather than in its own row: on a data label
-            they are the same decision — how do I mark THIS number out from its
-            neighbours — and bold alone left one voice doing two jobs. */}
         <MiniButton
           active={font?.italic ?? false}
           onClick={() => onPatch({ italic: !font?.italic })}
@@ -359,23 +351,8 @@ function TextRows({
         >
           <span className="italic">I</span>
         </MiniButton>
-      </Row>
-      <Row label="Font">
-        {CHART_FACES.map((f) => (
-          <MiniButton
-            key={f.value}
-            active={font?.font === f.value}
-            title={f.value}
-            onClick={() => onPatch({ font: font?.font === f.value ? undefined : f.value })}
-          >
-            <span style={{ fontFamily: f.css }}>{f.label}</span>
-          </MiniButton>
-        ))}
-      </Row>
-      <Row label="Ink">
         <Swatches
           ds={ds}
-          size="h-4 w-4"
           current={font?.color}
           onPick={(color) => onPatch({ color })}
           onClear={() => onPatch({ color: undefined })}
@@ -451,7 +428,6 @@ function LineRows({
       <Row label="Ink">
         <Swatches
           ds={ds}
-          size="h-4 w-4"
           current={style?.color}
           onPick={(color) => onPatch((g) => (g.color = color))}
           onClear={() => onPatch((g) => (g.color = undefined))}
@@ -951,7 +927,7 @@ export function ChartPartPopover({
 
   return (
     <div
-      className="dd-format-bar absolute flex flex-col gap-2 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+      className="dd-format-bar absolute flex flex-col gap-2 overflow-y-auto overflow-x-hidden rounded-lg border border-zinc-200 bg-white p-2 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
       style={style}
       role="dialog"
       aria-label="Format chart part"
@@ -1083,7 +1059,7 @@ export function ChartPartPopover({
                   : setOutline({ widthEmu: pointsToEmu(parseFloat(e.target.value)) })
               }
               aria-label="Border weight"
-              className={FIELD}
+              className={FIELD_NARROW}
             >
               <option value="">None</option>
               {WEIGHTS.map((w) => (
@@ -1092,22 +1068,27 @@ export function ChartPartPopover({
                 </option>
               ))}
             </select>
-            {DASHES.map((d) => (
-              <MiniButton
-                key={d.value}
-                active={currentOutline?.dash === d.value}
-                title={d.label}
-                onClick={() => setOutline({ dash: d.value })}
-              >
-                {d.glyph}
-              </MiniButton>
-            ))}
+            {/* The dash as a dropdown and not three glyph chips: beside the
+                weight, three chips left the weight 60px wide and reading
+                "Nor…". One row, two dropdowns, nothing clipped. */}
+            <select
+              value={currentOutline?.dash ?? 'solid'}
+              disabled={!currentOutline}
+              onChange={(e) => setOutline({ dash: e.target.value as DashStyle })}
+              aria-label="Border dash"
+              className={`${FIELD} disabled:opacity-40`}
+            >
+              {DASHES.map((d) => (
+                <option key={d.value} value={d.value}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
           </Row>
           {currentOutline ? (
             <Row label="Edge ink">
               <Swatches
                 ds={ds}
-                size="h-4 w-4"
                 current={currentOutline.color}
                 onPick={(color) => setOutline({ color })}
                 onClear={() => setOutline(null)}
@@ -1119,8 +1100,11 @@ export function ChartPartPopover({
 
       {markRefs.length && seriesKey && !wholeSeries ? (
         <Row label="Scope">
-          <MiniButton onClick={() => store().selectExact(seriesMarkIds(seriesKey))}>
-            Select whole series
+          <MiniButton
+            onClick={() => store().selectExact(seriesMarkIds(seriesKey))}
+            title="Format every mark in this series at once"
+          >
+            Whole series
           </MiniButton>
         </Row>
       ) : null}
@@ -1130,6 +1114,7 @@ export function ChartPartPopover({
               and its three text rows out of the way. --- */}
       {labelHome && caps?.labels === 'point' && (markRefs.length || labelRefs.length) ? (
         <>
+          <Divider />
           <Row label="Label">
             <MiniButton
               active={label.show}
@@ -1184,12 +1169,10 @@ export function ChartPartPopover({
           {/* Type controls follow the text: with the label off there is nothing
               on screen for a size, a face or an ink to change. */}
           {label.show ? (
-            <TextRows
-              ds={ds}
-              label="Number"
-              font={partFont?.font}
-              onPatch={applyFont}
-            />
+            <>
+              <Divider />
+              <TextRows ds={ds} font={partFont?.font} onPatch={applyFont} />
+            </>
           ) : null}
         </>
       ) : null}
@@ -1214,7 +1197,6 @@ export function ChartPartPopover({
           {spec.kind === 'line' && spec.endLabels ? (
             <TextRows
               ds={ds}
-              label="Name"
               font={partFont?.font}
               onPatch={applyFont}
             />
@@ -1262,7 +1244,6 @@ export function ChartPartPopover({
           <Row label="Fill">
             <Swatches
               ds={ds}
-              size="h-4 w-4"
               current={gantt.banding?.color}
               onPick={(color) =>
                 patchGantt((g) => {
@@ -1374,7 +1355,6 @@ export function ChartPartPopover({
           <Row label="Fill">
             <Swatches
               ds={ds}
-              size="h-4 w-4"
               current={gantt.shading?.weekends?.color}
               onPick={(color) =>
                 patchGantt((g) => {

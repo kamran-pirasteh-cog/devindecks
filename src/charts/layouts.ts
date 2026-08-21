@@ -219,3 +219,28 @@ export const layoutById = (id: string): ChartLayout | undefined =>
  */
 export const layoutForKind = (kind: ChartKind): ChartLayout | undefined =>
   CHART_LAYOUTS.find((l) => l.kind === kind);
+
+/**
+ * The layout a chart that already EXISTS was made from, as best it can be told.
+ *
+ * The stored answers name their layout, and that is the answer whenever it still
+ * describes the chart — a waterfall that builds down has to keep asking a
+ * build-down's questions. When the kind has been changed out from under it (the
+ * datasheet's type select does exactly that), the stored layout is no longer
+ * about this chart, and the plain reading of the new kind and stacking is.
+ */
+export const layoutForChart = (
+  kind: ChartKind,
+  stack: StackMode | undefined,
+  storedId?: string,
+): ChartLayout | undefined => {
+  const stored = storedId ? layoutById(storedId) : undefined;
+  if (stored && stored.kind === kind && (stack === undefined || stored.stack === stack)) {
+    return stored;
+  }
+  return (
+    (stack === undefined
+      ? undefined
+      : CHART_LAYOUTS.find((l) => l.kind === kind && l.stack === stack)) ?? layoutForKind(kind)
+  );
+};

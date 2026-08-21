@@ -157,6 +157,24 @@ describe('clickSelectParts', () => {
     expect(click(keys[3], 3)).toEqual([keys[2], keys[3]]);
   });
 
+  it('stays on the entry once the user is INSIDE the legend', () => {
+    const keys = [
+      id(legend('s0')),
+      id(legend('s0.label')),
+      id(legend('s1')),
+      id(legend('s1.label')),
+    ];
+    // Drilled in: a plain click takes the entry clicked rather than stepping
+    // back out to the whole legend.
+    expect(clickSelectParts(keys[1], parts, 1, true)).toEqual([keys[0], keys[1]]);
+    // And nothing else about it changes — a tick is not a legend.
+    expect(clickSelectParts(ticks[0], parts, 1, true)).toEqual([
+      ticks[0],
+      ticks[1],
+      ticks[2],
+    ]);
+  });
+
   it('leaves a mark alone — a bar is one object', () => {
     expect(click(bars['s0.c0'], 1)).toBeNull();
   });

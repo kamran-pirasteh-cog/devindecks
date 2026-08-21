@@ -507,6 +507,92 @@ describe('refitSlide — coupling and rollback', () => {
     expect(new Set(heights).size).toBe(1);
   });
 
+  it('a THREE-COLUMN body block ends at one size, not one size per row', () => {
+    resetIds();
+    // The layout every case-study slide is built from: nine bullet boxes, three
+    // rows of three, all one tier of type. Row coupling made each row
+    // self-consistent and let the rows disagree — the one short bullet kept the
+    // brand size while its eight neighbours stepped down, and the slide shipped
+    // with two body sizes side by side.
+    const long =
+      'Fiserv scoped the WinForms-to-Angular modernization at roughly 215,000 hours of labor.';
+    const els = Array.from({ length: 9 }, (_, i) =>
+      text(
+        // The last ROW is short — which is why row coupling cannot see the
+        // problem: every row is internally consistent and the rows disagree.
+        i >= 6 ? 'Short one.' : long,
+        at(0.9 + (i % 3) * 4.3, 3 + Math.floor(i / 3) * 0.62, 4, 0.55),
+        { sizePt: 14, id: `b${i}` },
+      ),
+    );
+    const ctx = ctxFor(
+      els,
+      Object.fromEntries(els.map((e) => [e.id, 'body' as const])),
+      Object.fromEntries(els.map((e) => [e.id, { sourcePt: 12, brandPt: 14 }])),
+    );
+    const out = refitSlide({ ...slide(els) }, ctx);
+    const sizes = out.slide.elements.map(sizeOf);
+    // The long bullets could not hold 14pt, so the block does not.
+    expect(Math.max(...sizes)).toBeLessThan(14);
+    expect(new Set(sizes).size).toBe(1);
+  });
+
+  it('never couples a tier below the legibility floor', () => {
+    resetIds();
+    // One box in the tier was authored at 8pt and restored to it, because the
+    // brand's 11pt did not fit — a decision about that box. Following it takes
+    // the tier below the floor, and below the size the author chose for the text
+    // that would have to follow.
+    const els = [
+      text(
+        'A long line of small print, four lines of it in a box drawn for two, that only ever fit at the size its author chose for it and does not fit at the size the brand asked for.',
+        // Boxed in above `copy`, so it has no room to grow into: the only
+        // lever left is the type.
+        at(0.9, 3.56, 3, 0.4),
+        { sizePt: 11, id: 'fine' },
+      ),
+      text('Short.', at(0.9, 4, 6, 1), { sizePt: 11, id: 'copy' }),
+      text('Also short.', at(7.5, 4, 6, 1), { sizePt: 11, id: 'copy2' }),
+    ];
+    const ctx = ctxFor(
+      els,
+      { fine: 'body', copy: 'body', copy2: 'body' },
+      {
+        fine: { sourcePt: 8, brandPt: 11 },
+        copy: { sourcePt: 11, brandPt: 11 },
+        copy2: { sourcePt: 11, brandPt: 11 },
+      },
+    );
+    const out = refitSlide({ ...slide(els) }, ctx);
+    const byId = new Map(out.slide.elements.map((el) => [el.id, sizeOf(el)]));
+    expect(byId.get('fine')).toBeLessThan(MIN_LEGIBLE_PT);
+    expect(byId.get('copy')).toBe(MIN_LEGIBLE_PT);
+    expect(byId.get('copy2')).toBe(MIN_LEGIBLE_PT);
+  });
+
+  it('does not let a chip label drag the slide-wide body tier down to fit its pill', () => {
+    resetIds();
+    // A pill's label may shrink below any role's floor to avoid wrapping. That
+    // is a decision about a pill, not about the slide's body copy.
+    const els = [
+      text('SWE 1.7 benchmark', at(0.9, 3, 1.1, 0.3), { sizePt: 14, id: 'chip' }),
+      text('Body copy that fits its box.', at(0.9, 4, 6, 1.2), { sizePt: 14, id: 'copy' }),
+      text('More body copy, also fine.', at(7.5, 4, 6, 1.2), { sizePt: 14, id: 'copy2' }),
+    ];
+    const ctx = ctxFor(
+      els,
+      { chip: 'body', copy: 'body', copy2: 'body' },
+      Object.fromEntries(els.map((e) => [e.id, { sourcePt: 14, brandPt: 14 }])),
+      [],
+      ['chip'],
+    );
+    const out = refitSlide({ ...slide(els) }, ctx);
+    const byId = new Map(out.slide.elements.map((el) => [el.id, sizeOf(el)]));
+    expect(byId.get('chip')).toBeLessThan(14);
+    expect(byId.get('copy')).toBe(14);
+    expect(byId.get('copy2')).toBe(14);
+  });
+
   it('does not resize a numeral that sits ON a disc — the disc owns its size', () => {
     resetIds();
     const els = [

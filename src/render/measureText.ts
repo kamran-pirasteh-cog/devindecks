@@ -164,6 +164,21 @@ export function canvasMeasurer(): TextMeasurer {
   const cache = new Map<string, number>();
   const stacks = new Map<FontFamily, string>();
 
+  /*
+   * Whether the webfonts this canvas would measure against are actually here
+   * yet. A `measureText` call made before they load returns the FALLBACK face's
+   * advance widths — system-ui, several percent off Geist — and caching that
+   * pins the wrong number for the rest of the session, long after the real face
+   * arrived. So a pre-load measurement is still returned (a render must draw
+   * something) and simply not remembered.
+   *
+   * Anything that BAKES a measurement into the document — `brand/convert.ts`
+   * decides point sizes from these numbers and writes them into the deck — must
+   * wait for `document.fonts.ready` rather than rely on this; not caching keeps
+   * a live render self-correcting, it cannot un-write a converted deck.
+   */
+  const fontsLoaded = () => document.fonts === undefined || document.fonts.status === 'loaded';
+
   return {
     measure(text, style) {
       const shown = displayText(String(text ?? ''), style);
@@ -187,7 +202,7 @@ export function canvasMeasurer(): TextMeasurer {
         // that happened, the measurement would be meaningless.
         if (!ctx.font.includes(`${MEASURE_PX}px`)) return fallback.measure(text, style);
         widthAt100 = ctx.measureText(shown).width;
-        cache.set(key, widthAt100);
+        if (fontsLoaded()) cache.set(key, widthAt100);
       }
       if (!widthAt100) return fallback.measure(text, style);
       return {

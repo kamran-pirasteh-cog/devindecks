@@ -12,7 +12,9 @@ import type { ChartTheme } from '../theme';
 import type { Mark, MarkTextStyle } from '../mark';
 import { rectFromEdges } from '../mark';
 import { fitted, type FrameLayout } from '../layout/frame';
+import { categoryLabelStride } from '../layout/categoryTicks';
 import { lineHeightEmu, type TextMeasurer } from '@/render/measureText';
+import type { DateGrain } from '@/model';
 
 /**
  * Maps data coordinates onto the plot. Both axes go through here so a bar chart
@@ -97,6 +99,12 @@ export interface CartesianInput {
   showCategoryAxisLabels: boolean;
   /** Continuous x axis: labels centre on their tick rather than on a band. */
   continuousCategoryAxis?: boolean;
+  /**
+   * The grain the category labels denote, when they are dated. Only the stride
+   * reads it: a dated axis thins its labels in weeks or quarters rather than in
+   * whatever integer happens to fit. See `categoryLabelStride`.
+   */
+  categoryGrain?: DateGrain | null;
   /** The chart's frame. Nothing is allowed to escape it. */
   bounds: Rect;
   showValueAxisLine: boolean;
@@ -170,6 +178,7 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     valueTickMarks,
     categoryTickMarks,
     continuousCategoryAxis,
+    categoryGrain,
     bounds,
     gridlines,
     title,
@@ -206,6 +215,44 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
   const gap = theme.sizes.axisGapEmu;
   const valueAxisId = horizontal ? 'x' : 'y';
   const categoryAxisId = horizontal ? 'y' : 'x';
+
+  /**
+   * Every nth category label — and the same nth for the category tick marks,
+   * because a tick mark under nothing reads as a label that failed to render.
+   *
+   * Solved here rather than in `solveFrame` because it is a function of the
+   * PLOT, which the frame has already cut by the time this runs. The gutter the
+   * frame reserved is the widest label's either way, so thinning can only ever
+   * leave room over — never take a label outside its own gutter.
+   */
+  const catStyle = textStyle(theme.text.category, horizontal ? 'right' : 'center', 'middle');
+  const catLineH = lineHeightEmu(catStyle);
+  /**
+   * What label `i` costs along the category axis, with room to breathe.
+   *
+   * A BANDED label is measured by its longest word rather than by the whole
+   * string, because that label wraps: "Distribution centre" over two lines is
+   * the axis working as designed, and thinning it away would throw out a label
+   * that fits. A continuous label doesn't wrap — it is one line centred on its
+   * tick — so the whole string is what has to clear.
+   */
+  const catAlong = (i: number): EMU => {
+    const label = categoryLabels[i] ?? '';
+    const wraps = !horizontal && !continuousCategoryAxis;
+    const words = wraps ? label.split(/\s+/).filter(Boolean) : [label];
+    const widest = words.reduce((w, t) => Math.max(w, measurer.measure(t, catStyle).wEmu), 0);
+    const text = fitted(widest) + pointsToEmu(2);
+    return horizontal ? yExtent(text, catLineH) : xExtent(text, catLineH);
+  };
+  const categoryStride = showCategoryAxisLabels
+    ? categoryLabelStride({
+        centers: categoryCenters,
+        extentEmu: horizontal ? plot.h : plot.w,
+        sizeEmu: catAlong,
+        grain: categoryGrain,
+      })
+    : 1;
+  const writesCategory = (i: number): boolean => i % categoryStride === 0;
 
   /* --- gridlines, first so everything else draws over them --- */
   if (gridlines) {
@@ -278,9 +325,11 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     axis: 'x' | 'y',
     mode: AxisSpec['tickMarks'],
     positions: EMU[],
+    writes: (i: number) => boolean = () => true,
   ) => {
     if (!mode || mode === 'none') return;
     positions.forEach((at, i) => {
+      if (!writes(i)) return;
       marks.push({
         kind: 'line',
         ref: { chartId, part: 'axis', axis, sub: 'tickMark', i },
@@ -297,6 +346,7 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
     categoryAxisId,
     categoryTickMarks,
     categoryCenters.map((t) => proj.category(t)),
+    writesCategory,
   );
 
   /* --- value axis tick labels --- */
@@ -408,10 +458,11 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
 
   /* --- category labels --- */
   if (showCategoryAxisLabels) {
-    const style = textStyle(theme.text.category, horizontal ? 'right' : 'center', 'middle');
-    const h = lineHeightEmu(style);
+    const style = catStyle;
+    const h = catLineH;
     const slot = categoryCenters.length > 1 ? 1 / categoryCenters.length : 1;
     categoryLabels.forEach((label, i) => {
+      if (!writesCategory(i)) return;
       const centre = proj.category(categoryCenters[i] ?? 0);
       if (horizontal) {
         const widest = Math.max(
@@ -430,7 +481,10 @@ export function placeCartesianFurniture(input: CartesianInput): Mark[] {
         // rather than colliding. A continuous one is sized to its own text —
         // a band would be meaningless and would overlap its neighbours.
         const own = Math.round(fitted(measurer.measure(label, style).wEmu) + pointsToEmu(2));
-        const band = Math.round(plot.w * slot);
+        // A thinned axis hands each surviving label the bands of the ones it
+        // stands in for: the neighbour is `stride` bands away, so the box can
+        // grow to match without ever reaching it.
+        const band = Math.round(plot.w * slot * categoryStride);
         const widest = Math.max(
           fitted(Math.max(...categoryLabels.map((t) => measurer.measure(t, style).wEmu))),
           pointsToEmu(1),

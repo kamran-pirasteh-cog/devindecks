@@ -273,6 +273,30 @@ function restyleOutline(outline: Outline | undefined, colors: ColorMap): Outline
 }
 
 /**
+ * Shapes convert without borders.
+ *
+ * A source deck's outlines are its design language, not its content: the 1pt
+ * grey rule around every card, the hairline box around a callout, the stroke
+ * that made a pale fill read on a white master. Our decks separate things with
+ * space and ground, not with lines, so carrying the strokes across is the same
+ * defect as carrying the rounded corners — a deck that is correct in every
+ * colour and size and still looks like the deck it came from.
+ *
+ * A border stays only where it is the ONLY ink the shape has. An unfilled
+ * outlined box is a box because of its stroke; removing that stroke does not
+ * restyle the element, it deletes it, and deleting the author's content is not
+ * a branding decision. The same goes for a `line` element, which the model types
+ * separately and this never touches: its outline IS the line.
+ */
+function dropBorder(el: ShapeElement): ShapeElement {
+  if (!el.outline) return el;
+  const filled = el.fill !== undefined && el.fill.kind !== 'none';
+  if (!filled) return el;
+  const { outline: _dropped, ...rest } = el;
+  return rest;
+}
+
+/**
  * Square the corners of a rectangular shape.
  *
  * Rounding is a brand decision, not the author's content, and it is one of the
@@ -345,7 +369,10 @@ export function restyleSlide(slide: Slide, ctx: RestyleContext): RestyleResult {
 
     if ('fill' in next) next.fill = restyleFill(next.fill, colors);
     if ('outline' in next) next.outline = restyleOutline(next.outline, colors);
-    if (next.type === 'shape') next.preset = squareCorners(next.preset);
+    if (next.type === 'shape') {
+      next.preset = squareCorners(next.preset);
+      next = dropBorder(next);
+    }
 
     if (body && (body.paragraphs ?? []).length > 0) {
       const sourcePt = maxRunPt(body, ds);

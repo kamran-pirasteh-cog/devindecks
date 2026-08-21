@@ -101,10 +101,22 @@ export function UploadDeckPanel({ onReady }: { onReady: (outcome: UploadOutcome)
 
   const convert = (deck: ImportedDeck, name: string) => {
     setPhase({ state: 'converting', name });
-    // Yield a frame first: converting sixty slides is a second or two of
-    // synchronous measurement, and a button that goes dead with no explanation
-    // reads as a crash.
-    setTimeout(() => {
+    /*
+     * Wait for the webfonts before measuring anything.
+     *
+     * Conversion decides every point size on the deck by measuring text against
+     * the real faces, and those decisions are WRITTEN INTO the document. Measure
+     * before Geist has loaded and the canvas answers with system-ui's advance
+     * widths, so the same upload converts differently on a cold load than on a
+     * warm one — sizes that fit one way and shrank the other, with nothing on
+     * screen to explain it. `convert.ts` promises "the same upload converts to
+     * the same deck every time"; this is what makes that true in a browser.
+     *
+     * `fonts.ready` also yields the frame this used to get from `setTimeout`, so
+     * the "Converting…" state still paints before the synchronous work starts.
+     */
+    const ready = document.fonts?.ready ?? Promise.resolve();
+    void ready.then(() => {
       try {
         const ds = getActiveDesignSystem();
         const placement = placementFor(deck.slideSize, SLIDE_16x9);
@@ -120,7 +132,7 @@ export function UploadDeckPanel({ onReady }: { onReady: (outcome: UploadOutcome)
           message: `That deck couldn’t be converted (${(err as Error).message}). You can still import it as-is.`,
         });
       }
-    }, 0);
+    });
   };
 
   // Straight into the file chooser: this panel exists to pick a file.

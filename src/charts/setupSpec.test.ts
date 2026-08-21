@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_DESIGN_SYSTEM, sheetSeriesFor, sheetSchemaFor } from '@/model';
+import {
+  DEFAULT_DESIGN_SYSTEM,
+  sheetSeriesFor,
+  sheetSchemaFor,
+  type ChartSpec,
+} from '@/model';
 import { chartResultContract } from '@/devin/contract';
 import { buildDevinChartPrompt } from '@/devin/prompt';
 import { layoutById } from './layouts';
 import { carrySetup, defaultSetup, formFor, setupIssues, type ChartSetup } from './setupForm';
 import { cellLabel, rangeEndingAt, shiftCells } from './periodRange';
-import { briefFromSetup, scheduleWindow, setupSentence, setupPeriods, specFromSetup } from './setupSpec';
+import {
+  briefFromSetup,
+  respecFromSetup,
+  scheduleWindow,
+  setupSentence,
+  setupPeriods,
+  specFromSetup,
+} from './setupSpec';
 
 const ds = DEFAULT_DESIGN_SYSTEM;
 const AS_OF = '2026-08-21';
@@ -44,10 +56,7 @@ describe('setupPeriods', () => {
     expect(setupPeriods(L('line'), back)).toEqual(["Q3'25", "Q4'25", "Q1'26", "Q2'26"]);
   });
 
-  it('labels fiscal years as FY when that is what was chosen', () => {
-    expect(setupPeriods(L('line'), setupFor('line', { grain: 'year', count: 2, fiscal: true }))).toEqual(
-      ['FY25', 'FY26'],
-    );
+  it('labels years as calendar years', () => {
     expect(setupPeriods(L('line'), setupFor('line', { grain: 'year', count: 2 }))).toEqual([
       '2025',
       '2026',
@@ -212,10 +221,9 @@ describe('schedule', () => {
 });
 
 describe('units', () => {
-  it('gives a per-something measure a decimal and a "per" note', () => {
+  it('gives a per-something measure a decimal', () => {
     const spec = build('line', { measure: 'acus-per-merged-pr', count: 3 });
     expect(spec.numberFormat.decimals).toBe(1);
-    expect(spec.axes.y.unitNote).toBe('per merged PR');
     expect(spec.axes.y.unitDivisor).toBeUndefined();
   });
 
@@ -223,6 +231,15 @@ describe('units', () => {
     const spec = build('line', { measure: 'acus', count: 3 });
     expect(spec.axes.y.unitDivisor).toBe(1e3);
     expect(spec.axes.y.unitNote).toBeUndefined();
+  });
+
+  it('names the unit nowhere but the axis title', () => {
+    // "hours" over the ticks, under a "Productive engineering hours" title,
+    // says it twice; the title is the one that survives.
+    const hours = build('line', { measure: 'productive-hours', count: 3 });
+    expect(hours.axes.y.title).toContain('hours');
+    expect(hours.axes.y.unitNote).toBeUndefined();
+    expect(build('line', { measure: 'acus-per-merged-pr', count: 3 }).axes.y.unitNote).toBeUndefined();
   });
 
   it('makes a rate a percentage', () => {
@@ -543,5 +560,132 @@ describe('which ones of a cut, end to end', () => {
     expect(carrySetup(from, L('pie'), AS_OF).which).toBe('Platform, Payments');
     // A schedule has no cut to hang it on, so the answer goes with it.
     expect(carrySetup(from, L('gantt'), AS_OF).which).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Setting up a chart that already exists                             */
+/* ------------------------------------------------------------------ */
+
+describe('respecFromSetup', () => {
+  const opts = { orientation: 'vertical' as const, asOf: AS_OF };
+
+  /** A chart inserted from `id`, then re-set-up with `over` applied. */
+  const again = (id: string, first: Over, over: Over, edit?: (spec: ChartSpec) => ChartSpec) => {
+    const inserted = specFromSetup(L(id), setupFor(id, first), ds, opts);
+    const prev = edit ? edit(structuredClone(inserted)) : inserted;
+    return respecFromSetup(prev, L(id), setupFor(id, { ...first, ...over }), ds, opts);
+  };
+
+  it('keeps the answers on the chart, so the form can be reopened', () => {
+    const spec = specFromSetup(L('line'), setupFor('line', { measure: 'acus', count: 4 }), ds, opts);
+    expect(spec.setup?.layoutId).toBe('line');
+    expect(spec.setup?.answers.measure).toBe('acus');
+  });
+
+  it('relabels the axis when the range moves and keeps every figure typed into it', () => {
+    const next = again(
+      'line',
+      { measure: 'acus', segment: 'department', count: 4 },
+      { count: 6 },
+      (spec) => {
+        const g = (spec as { data: { series: { values: (number | null)[] }[] } }).data;
+        g.series[0]!.values = [11, 22, 33, 44];
+        return spec;
+      },
+    );
+    const data = grid(next);
+    expect(data.categories.map((c) => c.label)).toEqual([
+      "Q2'25",
+      "Q3'25",
+      "Q4'25",
+      "Q1'26",
+      "Q2'26",
+      "Q3'26",
+    ]);
+    // Carried by position: the four figures stay where they were, and the two
+    // new quarters arrive with placeholders rather than holes.
+    const values = (next as unknown as { data: { series: { values: (number | null)[] }[] } }).data
+      .series[0]!.values;
+    expect(values.slice(0, 4)).toEqual([11, 22, 33, 44]);
+    expect(values).toHaveLength(6);
+    expect(values[4]).not.toBeNull();
+  });
+
+  it('renames the chart when the measure changes, unless the author titled it', () => {
+    const bare = again('line', { measure: 'acus' }, { measure: 'arr' });
+    expect(bare.title).toContain('ARR');
+
+    const titled = again('line', { measure: 'acus' }, { measure: 'arr' }, (spec) => ({
+      ...spec,
+      title: 'Why usage is up',
+    }));
+    expect(titled.title).toBe('Why usage is up');
+  });
+
+  it('leaves a hand-set number format alone when only the range moves', () => {
+    const next = again('line', { measure: 'acus', count: 4 }, { count: 6 }, (spec) => ({
+      ...spec,
+      numberFormat: { style: 'currency', decimals: 2, thousands: true, negative: 'minus' },
+    }));
+    expect(next.numberFormat.style).toBe('currency');
+    expect(next.numberFormat.decimals).toBe(2);
+  });
+
+  it('takes the new measure\u2019s format when the measure itself changes', () => {
+    const next = again('line', { measure: 'acus', count: 4 }, { measure: 'gross-margin' });
+    expect(next.numberFormat.style).toBe('percent');
+  });
+
+  it('keeps an axis title somebody typed and moves one nobody did', () => {
+    const typed = again('line', { measure: 'acus' }, { measure: 'arr' }, (spec) => ({
+      ...spec,
+      axes: { ...spec.axes, y: { ...spec.axes.y, title: 'Compute, net of credits' } },
+    }));
+    expect(typed.axes.y.title).toBe('Compute, net of credits');
+
+    const untouched = again('line', { measure: 'acus' }, { measure: 'arr' });
+    expect(untouched.axes.y.title).toContain('ARR');
+  });
+
+  it('keeps a waterfall\u2019s figures and the kinds set in the sheet', () => {
+    const next = again('waterfall-up', { measure: 'arr', count: 3 }, { count: 4 }, (spec) => {
+      const items = (spec as { data: { items: { value: number | null; role: string }[] } }).data
+        .items;
+      items[1]!.value = -200;
+      items[1]!.role = 'subtotal';
+      return spec;
+    });
+    const items = (next as unknown as { data: { items: { value: number | null; role: string }[] } })
+      .data.items;
+    expect(items[1]!.value).toBe(-200);
+    expect(items[1]!.role).toBe('subtotal');
+  });
+
+  it('moves a schedule\u2019s window without replacing the plan', () => {
+    const inserted = specFromSetup(L('gantt'), setupFor('gantt', { count: 3 }), ds, opts);
+    const prev = structuredClone(inserted) as typeof inserted & {
+      items: { label?: string; name?: string }[];
+    };
+    const named = 'Pilot with the design partner';
+    const first = (prev as unknown as { items: Record<string, unknown>[] }).items[0]!;
+    first.label = named;
+    const next = respecFromSetup(prev, L('gantt'), setupFor('gantt', { count: 6 }), ds, opts) as
+      typeof inserted & { items: { label?: string }[]; timescale: { min: number; max: number } };
+    expect(next.items[0]!.label).toBe(named);
+    expect(next.timescale.max - next.timescale.min).toBeGreaterThan(
+      (inserted as unknown as { timescale: { min: number; max: number } }).timescale.max -
+        (inserted as unknown as { timescale: { min: number; max: number } }).timescale.min,
+    );
+  });
+
+  it('sets up a chart that was never asked, keeping the name it came with', () => {
+    const blank = specFromSetup(L('line'), setupFor('line', { measure: 'acus' }), ds, opts);
+    const legacy = { ...structuredClone(blank), title: 'Hand-made', setup: undefined };
+    delete (legacy as { setup?: unknown }).setup;
+    const next = respecFromSetup(legacy, L('line'), setupFor('line', { measure: 'arr' }), ds, opts);
+    expect(next.title).toBe('Hand-made');
+    expect(next.setup?.answers.measure).toBe('arr');
+    expect(next.axes.y.title).toContain('ARR');
   });
 });

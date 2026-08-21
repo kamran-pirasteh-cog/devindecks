@@ -25,6 +25,7 @@ import { OVERLAY_Z } from '../layers';
 import { useChartDraft } from './useChartDraft';
 import { ChartPartOptions } from './ChartPartOptions';
 import { ChartPreview } from './ChartPreview';
+import { ChartSetupBand } from './ChartSetupBand';
 import { DevinChartMenu } from './DevinChartMenu';
 
 const UI_KEY = 'devindesign.datasheet.ui.v6';
@@ -325,7 +326,13 @@ export function ChartDatasheetPanel({
             dragging the panel off the chart it's editing. An even split with the
             sheet: you're reading the chart as much as you're typing into the
             grid, and half a wide panel is still a dozen columns. */}
-        <div className="flex w-1/2 min-w-[20rem] shrink-0 flex-col gap-1 border-l border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="flex w-1/2 min-w-[20rem] shrink-0 flex-col gap-2 overflow-y-auto border-l border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
+          {/* The questions the picker asked, over the picture they decide —
+              same form, same module, on a chart that already exists. Scrollable
+              rather than squeezing the preview: expanded, the fields are taller
+              than the column. */}
+          <ChartSetupBand chart={chart} />
+
           <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
             Preview
           </div>

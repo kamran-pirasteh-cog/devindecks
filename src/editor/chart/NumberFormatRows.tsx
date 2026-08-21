@@ -23,7 +23,7 @@
 import { useState } from 'react';
 import { DEFAULT_NUMBER_FORMAT, type NumberFormat, type NumberScale } from '@/model';
 import { numberPatternOf, parseNumberPattern } from '@/chart/format/pattern';
-import { FIELD, Row } from './panelChrome';
+import { FIELD, FIELD_NARROW, MiniButton, Row } from './panelChrome';
 
 /** The units a chart is ever read in, in the words a reader uses for them. */
 const PLACES: { value: NumberScale; label: string }[] = [
@@ -133,6 +133,11 @@ export function NumberFormatRows({
   label?: string;
 }) {
   const f = value ?? DEFAULT_NUMBER_FORMAT;
+  // The pattern box is the escape hatch, so it stays FOLDED until asked for.
+  // Open, it is a third row of a block most people finish in two, and a
+  // monospaced `#,##0.##` beside three plain-English dropdowns reads like the
+  // panel has sprung a leak.
+  const [custom, setCustom] = useState(false);
 
   return (
     <>
@@ -159,7 +164,7 @@ export function NumberFormatRows({
           }
           aria-label="Decimal places"
           title="Decimal places. Auto gives the whole set the fewest that keep it exact."
-          className={`${FIELD} w-16 shrink-0`}
+          className={FIELD_NARROW}
         >
           {DECIMALS.map((d) => (
             <option key={d.value} value={d.value}>
@@ -182,10 +187,19 @@ export function NumberFormatRows({
             </option>
           ))}
         </select>
+        <MiniButton
+          active={custom}
+          onClick={() => setCustom(!custom)}
+          title="A custom Excel-style pattern"
+        >
+          ⋯
+        </MiniButton>
       </Row>
-      <Row label="Custom">
-        <NumberPatternInput value={f} onChange={onChange} />
-      </Row>
+      {custom ? (
+        <Row label="Custom">
+          <NumberPatternInput value={f} onChange={onChange} />
+        </Row>
+      ) : null}
     </>
   );
 }

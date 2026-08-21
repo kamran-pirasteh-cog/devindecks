@@ -23,16 +23,17 @@ import {
   type DesignSystem,
   type EpochDay,
   type GanttSpec,
+  type GridSeries,
   type SankeyData,
 } from '@/model';
-import { specFromBrief } from './briefedSpec';
+import { DEFAULT_CHART_TITLE, specFromBrief } from './briefedSpec';
 import {
   periodNoun,
   subjectFromContext,
   type BriefContext,
   type ChartBrief,
 } from './intent';
-import type { ChartLayout } from './layouts';
+import { layoutById, type ChartLayout } from './layouts';
 import { measureFormat, resolveMeasure } from './measures';
 import { segmentWith, type SegmentDef } from './segments';
 import { formFor, shapeOf, timeQuestionFor, type ChartSetup } from './setupForm';
@@ -63,8 +64,8 @@ import {
  */
 export function setupPeriods(layout: ChartLayout, setup: ChartSetup): string[] {
   const question = timeQuestionFor(formFor(layout), setup.axis);
-  const { grain, range, fiscal } = setup;
-  const label = (iso: string) => cellLabel(grain, iso, fiscal);
+  const { grain, range } = setup;
+  const label = (iso: string) => cellLabel(grain, iso);
 
   if (question === 'moment') return [label(range.to)];
   if (question === 'endpoints') return [label(range.from), label(range.to)];
@@ -73,7 +74,7 @@ export function setupPeriods(layout: ChartLayout, setup: ChartSetup): string[] {
       ? [label(range.from), label(midCell(grain, range)), label(range.to)]
       : [label(range.from), label(range.to)];
   }
-  return rangeLabels(grain, range, fiscal);
+  return rangeLabels(grain, range);
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,7 +147,7 @@ export function setupSentence(layout: ChartLayout, setup: ChartSetup, periods: s
   } else if (question === 'points' && periods.length >= 2) {
     parts.push(`comparing ${periods.join(' and ')}`);
   } else if (question === 'window') {
-    parts.push(`across ${span} ${noun}s, ${cellLabel(setup.grain, setup.range.from, setup.fiscal)} on`);
+    parts.push(`across ${span} ${noun}s, ${cellLabel(setup.grain, setup.range.from)} on`);
   } else if (periods.length) {
     parts.push(`for ${periods[0]}`);
   }
@@ -300,14 +301,15 @@ export function briefFromSetup(
     categoryNoun: noun,
     categories,
     // `stated` unconditionally: every one of these periods was chosen in the
-    // form, which is as much a statement as typing it. `fiscal` likewise — the
-    // form shows the choice, so whichever way it sits is the author's.
+    // form, which is as much a statement as typing it. `fiscal: false` likewise
+    // — the form lays the periods out as calendar ones, and the labels the
+    // author accepted say 2025 rather than FY25.
     period: periods.length
       ? {
           grain: setup.grain,
           labels: periods,
           stated: true,
-          fiscal: setup.fiscal,
+          fiscal: false,
           // Derived, not answered: with the ends stored, whether the newest one
           // is still running is a fact about the range — and it stays a fact
           // next month, when the same chart is no longer up to date.
@@ -316,7 +318,6 @@ export function briefFromSetup(
       : undefined,
     numberFormat: fmt?.numberFormat ?? { style: 'number', thousands: true, negative: 'minus' },
     unitDivisor: fmt?.unitDivisor,
-    unitNote: fmt?.unitNote,
     // The author picked the measure from a list that carries its units, so the
     // units were stated as surely as if they had been typed.
     unitStated: !!fmt,
@@ -350,14 +351,266 @@ export function specFromSetup(
     { asOf: opts.asOf },
   );
 
-  if (spec.kind === 'sankey') {
-    return { ...spec, data: flowData(setup, brief) };
+  const stamped: ChartSpec = {
+    ...spec,
+    // The answers ride along on the chart, so the datasheet can ask the same
+    // questions again rather than opening a blank form on a chart that knows.
+    setup: { v: 1, layoutId: layout.id, answers: setup },
+  };
+
+  if (stamped.kind === 'sankey') {
+    return { ...stamped, data: flowData(setup, brief) };
   }
-  if (spec.kind === 'gantt') {
-    return retimed(spec, setup, opts.asOf);
+  if (stamped.kind === 'gantt') {
+    return retimed(stamped, setup, opts.asOf);
   }
-  return spec;
+  return stamped;
 }
+
+/* ------------------------------------------------------------------ */
+/* Setting up a chart that already exists                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The same answers applied to a chart that is already on a slide.
+ *
+ * The setup step's questions are not asked once. An author who opens the
+ * datasheet three weeks later wants to move the range on, swap the measure, add
+ * the note they didn't have yet — and the only version of that which is safe to
+ * offer is one that CANNOT overwrite the two things they have since put into the
+ * chart by hand: the numbers, and the formatting.
+ *
+ * So this is a merge and not a rebuild. `specFromSetup` says what the answers
+ * mean — the title, the axis titles, the category and series labels, the number
+ * format, the placeholder shaping — and everything else on the chart is carried
+ * across from the spec that is already there. `carryValues` does the same job
+ * one level down: new cells get the placeholder, cells that existed keep
+ * whatever is in them.
+ *
+ * A title the author has typed over is theirs and stays. It is recognised by
+ * comparing against the title the PREVIOUS answers produced, which is the only
+ * way to tell "they wrote this" from "we wrote this and the answers moved".
+ */
+export function respecFromSetup(
+  prev: ChartSpec,
+  layout: ChartLayout,
+  setup: ChartSetup,
+  ds: DesignSystem,
+  opts: { orientation: ChartOrientation; asOf: string } & BriefContext,
+): ChartSpec {
+  const next = specFromSetup(layout, setup, ds, opts);
+
+  // The kind changed under the answers — the datasheet's type select does that.
+  // Nothing on the old chart is addressable in the new one's shape, so the
+  // rebuild stands on its own.
+  if (next.kind !== prev.kind) return next;
+
+  // A schedule has no measure, no series and no cells to carry: its answers are
+  // a window, and `retimed` moves the author's OWN tasks into it. Rebuilding
+  // would drop the plan and re-date the sample.
+  if (prev.kind === 'gantt' && next.kind === 'gantt') {
+    return { ...retimed(prev, setup, opts.asOf), authorBrief: next.authorBrief, setup: next.setup };
+  }
+
+  /**
+   * The chart the PREVIOUS answers would have produced — the yardstick for
+   * telling the author's work from ours.
+   *
+   * Every label and format below has two possible owners: the form put it there,
+   * or somebody typed it. Comparing against what the old answers produced is the
+   * only way to tell, and getting it wrong is expensive in one direction — a
+   * hand-set currency format or a renamed axis silently reverting every time the
+   * range moves on a quarter. Absent (a chart set up for the first time), the
+   * rebuild's labels are the best information there is.
+   */
+  const was = prev.setup
+    ? specFromSetup(layoutById(prev.setup.layoutId) ?? layout, prev.setup.answers, ds, opts)
+    : undefined;
+
+  /** Whichever of the two is the author's — see `was`. */
+  const kept = <T,>(mine: T, theirs: T | undefined, fresh: T): T =>
+    was === undefined || same(mine, theirs) ? fresh : mine;
+
+  return {
+    ...prev,
+    title: authoredTitle(prev, was) ?? next.title,
+    authorBrief: next.authorBrief,
+    setup: next.setup,
+    numberFormat: kept(prev.numberFormat, was?.numberFormat, next.numberFormat),
+    axes: {
+      ...prev.axes,
+      x: {
+        ...prev.axes.x,
+        title: kept(prev.axes.x.title, was?.axes.x.title, next.axes.x.title),
+      },
+      y: {
+        ...prev.axes.y,
+        title: kept(prev.axes.y.title, was?.axes.y.title, next.axes.y.title),
+        unitDivisor: kept(
+          prev.axes.y.unitDivisor,
+          was?.axes.y.unitDivisor,
+          next.axes.y.unitDivisor,
+        ),
+        unitNote: kept(prev.axes.y.unitNote, was?.axes.y.unitNote, next.axes.y.unitNote),
+      },
+      ...(next.axes.y2 ? { y2: { ...prev.axes.y2, ...next.axes.y2 } } : {}),
+    },
+    ...carryValues(prev, next),
+  } as ChartSpec;
+}
+
+/**
+ * Same value, for the purpose above. Structural rather than referential — a
+ * number format is a small record that is rebuilt on every pass, so `===` would
+ * report every chart's format as hand-edited.
+ */
+const same = (a: unknown, b: unknown): boolean =>
+  a === b || (a !== undefined && b !== undefined && JSON.stringify(a) === JSON.stringify(b));
+
+/**
+ * The chart's title, if the author wrote it — otherwise undefined, meaning the
+ * answers get to name the chart.
+ *
+ * Anything that isn't what the previous answers produced was typed by somebody,
+ * including a title on a chart that carries no answers at all: a hand-made
+ * chart being set up for the first time keeps the name it came with.
+ */
+function authoredTitle(prev: ChartSpec, was: ChartSpec | undefined): string | undefined {
+  const title = prev.title?.trim();
+  if (!title || title === DEFAULT_CHART_TITLE) return undefined;
+  if (!was) return title;
+  return title === was.title?.trim() ? undefined : title;
+}
+
+/**
+ * The author's figures, kept across a change of answers.
+ *
+ * Carried BY POSITION, which is the honest reading of what changed: two more
+ * quarters on the end of the range are two new columns and the ones before them
+ * are the same columns, whatever the labels now say. A cell with nothing behind
+ * it takes the placeholder the rebuild put there, so a wider range doesn't come
+ * back with holes in it.
+ *
+ * Per-series formatting comes along too — a colour somebody set is as much
+ * their work as a number they typed. Per-POINT overrides don't: they are keyed
+ * by category, and the categories are exactly what these answers just renamed.
+ *
+ * Anything not named here keeps the data it already had rather than the
+ * rebuild's, so a kind this doesn't understand loses its labels rather than its
+ * numbers. Nothing in the picker reaches that branch today; it is which way to
+ * fail that matters.
+ */
+function carryValues(prev: ChartSpec, next: ChartSpec): Partial<ChartSpec> {
+  // Switched on the KIND rather than on which fields the data happens to have:
+  // the two specs are the same kind by the time we get here, and naming each
+  // family is what makes a new one a compile error rather than a chart whose
+  // numbers quietly turn back into placeholders.
+  switch (prev.kind) {
+    case 'column':
+    case 'bar':
+    case 'line':
+    case 'area':
+    case 'combo':
+    case 'pie':
+    case 'donut':
+    case 'dotplot':
+    case 'mekko': {
+      const a = prev.data;
+      const b = (next as typeof prev).data;
+      return {
+        data: {
+          categories: b.categories,
+          series: b.series.map((s, i) => carrySeries(s, a.series[i])),
+        },
+      } as Partial<ChartSpec>;
+    }
+
+    case 'waterfall': {
+      const a = prev.data;
+      const b = (next as typeof prev).data;
+      return {
+        data: {
+          items: b.items.map((item, i) => {
+            const was = a.items[i];
+            // The role as well as the figure: "this one is a subtotal" is an
+            // answer given in the datasheet's Kind column, not a label.
+            return was
+              ? {
+                  ...item,
+                  value: was.value,
+                  role: was.role,
+                  ...(was.format ? { format: was.format } : {}),
+                }
+              : item;
+          }),
+        },
+      } as Partial<ChartSpec>;
+    }
+
+    case 'scatter':
+    case 'bubble': {
+      const a = prev.data;
+      const b = (next as typeof prev).data;
+      return {
+        data: {
+          series: b.series.map((s, i) => {
+            const was = a.series[i];
+            if (!was) return s;
+            return {
+              ...s,
+              points: s.points.map((pt, j) => {
+                const wasPt = was.points[j];
+                return wasPt
+                  ? {
+                      ...pt,
+                      x: wasPt.x,
+                      y: wasPt.y,
+                      ...(wasPt.size === undefined ? {} : { size: wasPt.size }),
+                    }
+                  : pt;
+              }),
+              ...(was.format ? { format: was.format } : {}),
+            };
+          }),
+        },
+      } as Partial<ChartSpec>;
+    }
+
+    case 'sankey': {
+      const a = prev.data;
+      const b = (next as typeof prev).data;
+      // Keyed rather than positional: a flow's links are named `l<i>-<j>` after
+      // the pair they join, so the same pairing keeps its figure even when the
+      // two ends gain or lose a node.
+      const by = new Map(a.links.map((l) => [l.key, l.value] as const));
+      return {
+        data: {
+          nodes: b.nodes,
+          links: b.links.map((l) => (by.has(l.key) ? { ...l, value: by.get(l.key)! } : l)),
+        },
+      } as Partial<ChartSpec>;
+    }
+
+    // A butterfly carries two sets of series and no `data`, and a schedule is
+    // handled before this is reached. Neither is reachable from the picker's
+    // layouts; both keep every figure they have rather than take the rebuild's.
+    case 'butterfly':
+    case 'gantt':
+      return {};
+  }
+}
+
+/** One series' figures and its own formatting, over the rebuild's. */
+const carrySeries = (s: GridSeries, was: GridSeries | undefined): GridSeries =>
+  was
+    ? {
+        ...s,
+        values: s.values.map((v, c) => (was.values[c] === undefined ? v : was.values[c]!)),
+        ...(was.format ? { format: was.format } : {}),
+        ...(was.labels ? { labels: was.labels } : {}),
+        ...(was.numberFormat ? { numberFormat: was.numberFormat } : {}),
+      }
+    : s;
 
 /* ------------------------------------------------------------------ */
 /* Flow                                                               */

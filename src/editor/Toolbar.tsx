@@ -19,7 +19,7 @@ import { RefreshPromptDialog } from './RefreshPromptDialog';
 import { ChartPopover } from './ChartPopover';
 import { ImportSlidesDialog } from './ImportSlidesDialog';
 import { OVERLAY_Z } from './layers';
-import { showsPageNumbers, type ShapePreset } from '@/model';
+import { type ShapePreset } from '@/model';
 import { buildDeckRefreshPrompt } from '@/devin/refresh';
 import { useToast } from '@/ui/Toast';
 
@@ -70,14 +70,11 @@ export function Toolbar() {
   const insertEyebrow = useEditor((s) => s.insertEyebrow);
   const showGuides = useEditor((s) => s.showGuides);
   const toggleGuides = useEditor((s) => s.toggleGuides);
-  const pageNumbers = useEditor((s) => showsPageNumbers(s.deck));
-  const togglePageNumbers = useEditor((s) => s.togglePageNumbers);
   const fitToMargins = useEditor((s) => s.fitToMargins);
   const slideIsEmpty = useEditor(
     (s) => !s.deck.slides.find((sl) => sl.id === s.currentSlideId)?.elements.length,
   );
   const selCount = useEditor((s) => s.selectedIds.length);
-  const insertSticky = useEditor((s) => s.insertSticky);
   const togglePanel = useComments((s) => s.togglePanel);
   const panelOpen = useComments((s) => s.panelOpen);
   const openThreads = useComments((s) => s.threads.filter((t) => !t.resolved).length);
@@ -222,12 +219,6 @@ export function Toolbar() {
       >
         <span className="text-xs font-medium">Enforce margins</span>
       </Btn>
-      <Btn
-        onClick={togglePageNumbers}
-        title={pageNumbers ? 'Remove page numbers' : 'Add page numbers to all slides'}
-      >
-        <span className={pageNumbers ? 'text-sky-500' : undefined}>#</span>
-      </Btn>
       <div className="flex-1" />
       <div className="relative">
         <button
@@ -249,14 +240,6 @@ export function Toolbar() {
           />
         ) : null}
       </div>
-      <Divider />
-      <button
-        onClick={insertSticky}
-        title="Add a sticky note (it grows as you type)"
-        className="flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-      >
-        Sticky note
-      </button>
       {FLAGS.comments ? (
         <>
           <Divider />

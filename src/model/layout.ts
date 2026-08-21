@@ -117,6 +117,21 @@ export function titleBand(
 }
 
 /**
+ * The top-right cell of the margin grid — the strip of page above the top guide
+ * and outside the right one.
+ *
+ * A corner the layout never uses: content stops at the safe area, and this box
+ * is the paper's own edge. That's what makes it the place the canvas offers a
+ * sticky note — an annotation belongs in the margin, not in the content.
+ */
+export function marginCornerTopRight(
+  slideSize: { w: EMU; h: EMU },
+  m: SlideMargins = DEFAULT_MARGINS,
+): Rect {
+  return { x: slideSize.w - m.right, y: 0, w: m.right, h: m.top };
+}
+
+/**
  * Roles that behave as the slide's title for layout purposes — the one line
  * that hangs off the top-left corner of the safe area. 'heading' counts: on a
  * content slide it IS the title, just a smaller type role.

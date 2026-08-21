@@ -598,6 +598,89 @@ export interface AuthorChartBrief {
 }
 
 /* ------------------------------------------------------------------ */
+/* The setup answers                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The answers the setup form holds, and the shape stored on the chart.
+ *
+ * Declared here rather than beside the form for one reason: the chart is what
+ * outlives the dialog. `src/charts/setupForm.ts` aliases this as `ChartSetup`
+ * and owns every rule ABOUT it — which slots a layout asks for, what a grain
+ * change does to the range, which combinations are a blocker — so there is one
+ * definition of the answers and one place that reasons about them.
+ */
+export interface ChartSetupAnswers {
+  /** Measure ids, or `free:<label>` for one the author typed. */
+  measure?: string;
+  secondaryMeasure?: string;
+  sizeMeasure?: string;
+  /** Segment ids, likewise. */
+  segment?: string;
+  segment2?: string;
+  /**
+   * The author's answer to "which departments?" for each cut, in their own
+   * words.
+   *
+   * A cut names a KIND of thing; it doesn't say which ones, and "by department"
+   * is three departments or eleven depending on facts only the author has. Read
+   * two ways, both of them wanted — see `namedMembers`: a comma-separated list
+   * becomes the chart's actual labels, and anything else ("only the ones over
+   * 100 ACUs") stays prose and rides into the Devin prompt as the scope of that
+   * cut. Either way the placeholder members stop being the last word.
+   */
+  which?: string;
+  which2?: string;
+  grain: GanttGrain;
+  /**
+   * The periods covered, as their two ends rather than as a count.
+   *
+   * "Last 8 quarters" is a question about today and quietly means something
+   * different next month; "Q3'24 to Q2'26" is what the axis actually shows. The
+   * presets still exist — they set this — but what is STORED is the answer, not
+   * the shortcut that produced it. See `src/charts/periodRange.ts`.
+   */
+  range: { from: string; to: string };
+  /**
+   * How many markers a `points` question puts on each row — two or three.
+   *
+   * Its own field rather than a length, because a dot plot's markers are not a
+   * span: "was and now" and "was, halfway and now" cover the same range and are
+   * two different charts. Ignored by every other question.
+   */
+  markers: 2 | 3;
+  /** Only meaningful when the form's axis is `either`. */
+  axis: 'time' | 'segment';
+  /**
+   * Anything else the research needs to know, in the author's own words. Never
+   * read by the form — it isn't a fact about the chart, it's an instruction
+   * about filling it, and it rides through to the Devin prompt verbatim.
+   */
+  notes?: string;
+}
+
+/**
+ * The answers as stored, with the layout they were answered ABOUT.
+ *
+ * The layout matters as much as the answers: the same fields mean different
+ * questions on different pictures — a range on a column chart, two endpoints on
+ * a bridge — so answers without the layout they belong to can't be read back.
+ * When the chart's kind has since been changed out from under them (the type
+ * select in the datasheet does exactly that), the stored layout no longer
+ * matches and the answers are carried onto the new one instead.
+ */
+export interface ChartSetupRecord {
+  /**
+   * The record's own schema marker, for the same reason `AuthorChartBrief` has
+   * one: these answers can change shape without a migration on every spec.
+   */
+  v: 1;
+  /** `ChartLayout.id` in `src/charts/layouts.ts`. */
+  layoutId: string;
+  answers: ChartSetupAnswers;
+}
+
+/* ------------------------------------------------------------------ */
 /* The spec union                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -620,6 +703,22 @@ export interface SpecBase {
    * it is never backfilled: it means "read the chart, nobody told us".
    */
   authorBrief?: AuthorChartBrief;
+  /**
+   * The setup step's ANSWERS, kept so the form can be reopened.
+   *
+   * Distinct from `authorBrief`, which is the sentence those answers amounted
+   * to and the record of who is responsible for each fact. This is the state of
+   * the controls — measure ids, the two ends of the range, which cut — and it
+   * exists because the questions are asked again every time a chart is edited.
+   * Without it the datasheet could only offer a form whose fields all opened
+   * blank, on a chart that plainly knows the answers.
+   *
+   * Absent on charts inserted blank and on every chart made before this
+   * existed. Absence means "nobody answered", not "the answers were defaults":
+   * the form opens on its defaults there, and nothing is applied to the chart
+   * until an answer is actually given.
+   */
+  setup?: ChartSetupRecord;
 }
 
 export interface ColumnBarSpec extends SpecBase {

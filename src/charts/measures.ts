@@ -197,12 +197,15 @@ export const isRate = (m: MeasureDef): boolean => m.unit === 'percent' || m.unit
 /* Numbers                                                           */
 /* ------------------------------------------------------------------ */
 
-/** How a measure's figures read, and the note that goes under the axis. */
+/**
+ * How a measure's figures read. No unit note: the axis title already names the
+ * measure — "Productive engineering hours" over a "hours" caption — and the
+ * note is left for the scale ("in millions"), which the author sets.
+ */
 export interface MeasureFormat {
   numberFormat: NumberFormat;
   /** Divide the stored figures by this to get the printed ones. */
   unitDivisor?: number;
-  unitNote?: string;
   /** Where the placeholder figures sit once the divisor is accounted for. */
   magnitude: number;
 }
@@ -226,7 +229,6 @@ export function measureFormat(m: MeasureDef, currency = 'USD'): MeasureFormat {
     // the point, and rounding "13.4 ACUs per PR" to 13 throws the argument away.
     return {
       numberFormat: { ...DEFAULT_NUMBER_FORMAT, decimals: 1 },
-      unitNote: m.per ? `per ${m.per}` : undefined,
       magnitude: m.magnitude,
     };
   }
@@ -244,7 +246,6 @@ export function measureFormat(m: MeasureDef, currency = 'USD'): MeasureFormat {
   return {
     numberFormat: { ...DEFAULT_NUMBER_FORMAT, decimals: 0 },
     unitDivisor: divisor,
-    unitNote: m.unit === 'hours' ? 'hours' : undefined,
     magnitude: m.magnitude,
   };
 }

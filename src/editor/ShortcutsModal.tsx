@@ -10,8 +10,9 @@
  * matching row here; a shortcut sheet that drifts from the code is worse than
  * none.
  */
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MODAL_Z } from './layers';
+import { filterShortcutGroups } from './shortcutSearch';
 import { FLAGS } from '@/flags';
 
 interface Shortcut {
@@ -184,20 +185,24 @@ function Key({ children }: { children: React.ReactNode }) {
 }
 
 export function ShortcutsModal({ onClose }: { onClose: () => void }) {
-  const groups = buildGroups(modKey());
+  const [query, setQuery] = useState('');
+  const groups = useMemo(() => buildGroups(modKey()), []);
+  const shown = useMemo(() => filterShortcutGroups(groups, query), [groups, query]);
 
-  // Esc closes. Capture phase, because the editor's own window-level Escape
-  // handler would otherwise clear the canvas selection behind the dialog.
+  // Esc clears the search first, then closes — the same two-step people expect
+  // of any search box. Capture phase, because the editor's own window-level
+  // Escape handler would otherwise clear the canvas selection behind the dialog.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       e.preventDefault();
       e.stopPropagation();
-      onClose();
+      if (query) setQuery('');
+      else onClose();
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [onClose]);
+  }, [onClose, query]);
 
   return (
     <div
@@ -225,32 +230,50 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div className="grid gap-x-8 gap-y-6 overflow-y-auto px-5 py-4 sm:grid-cols-2">
-          {groups.map((g) => (
-            <section key={g.title}>
-              <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-                {g.title}
-              </h3>
-              <ul className="space-y-1.5">
-                {g.items.map((s) => (
-                  <li key={`${g.title}-${s.label}-${s.keys.join()}`} className="flex items-baseline justify-between gap-3">
-                    <span className="text-[13px] text-zinc-700 dark:text-zinc-300">
-                      {s.label}
-                      {s.note ? (
-                        <span className="ml-1.5 text-[11px] text-zinc-400">({s.note})</span>
-                      ) : null}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      {s.keys.map((k, i) => (
-                        <Key key={i}>{k}</Key>
-                      ))}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
+        <div className="shrink-0 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
+          <input
+            type="search"
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search shortcuts — “cmd b”, “align”, “group”…"
+            aria-label="Search shortcuts"
+            className="w-full select-text rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-[13px] text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500"
+          />
         </div>
+
+        {shown.length === 0 ? (
+          <p className="px-5 py-10 text-center text-[13px] text-zinc-500 dark:text-zinc-400">
+            No shortcut matches “{query}”.
+          </p>
+        ) : (
+          <div className="grid gap-x-8 gap-y-6 overflow-y-auto px-5 py-4 sm:grid-cols-2">
+            {shown.map((g) => (
+              <section key={g.title}>
+                <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                  {g.title}
+                </h3>
+                <ul className="space-y-1.5">
+                  {g.items.map((s) => (
+                    <li key={`${g.title}-${s.label}-${s.keys.join()}`} className="flex items-baseline justify-between gap-3">
+                      <span className="text-[13px] text-zinc-700 dark:text-zinc-300">
+                        {s.label}
+                        {s.note ? (
+                          <span className="ml-1.5 text-[11px] text-zinc-400">({s.note})</span>
+                        ) : null}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        {s.keys.map((k, i) => (
+                          <Key key={i}>{k}</Key>
+                        ))}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

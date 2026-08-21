@@ -67,31 +67,26 @@ describe('measureFormat', () => {
     expect(measureFormat(resolveMeasure('active-developers')).unitDivisor).toBeUndefined();
   });
 
-  it('leaves a ratio unscaled, with a decimal and its denominator', () => {
+  it('leaves a ratio unscaled, with a decimal', () => {
     const f = measureFormat(resolveMeasure('acus-per-merged-pr'));
     expect(f.unitDivisor).toBeUndefined();
     expect(f.numberFormat.decimals).toBe(1);
-    expect(f.unitNote).toBe('per merged PR');
   });
 
   it('gives a percentage no scale and no currency to get wrong', () => {
     const f = measureFormat(resolveMeasure('merge-rate'));
     expect(f.numberFormat.style).toBe('percent');
     expect(f.unitDivisor).toBeUndefined();
-    expect(f.unitNote).toBeUndefined();
   });
 
   it('honours the currency it is asked for', () => {
     expect(measureFormat(resolveMeasure('arr'), 'GBP').numberFormat.currency).toBe('GBP');
   });
 
-  it('says hours are hours, since the number alone does not', () => {
-    expect(measureFormat(resolveMeasure('productive-hours')).unitNote).toBe('hours');
-  });
-
-  it('leaves the display scale off the note — the axis is not a subtitle', () => {
-    expect(measureFormat(resolveMeasure('arr')).unitNote).toBeUndefined();
-    expect(measureFormat(resolveMeasure('acus')).unitNote).toBeUndefined();
+  it('names no units — the axis title carries them', () => {
+    for (const id of ['productive-hours', 'arr', 'acus', 'acus-per-merged-pr']) {
+      expect(measureFormat(resolveMeasure(id))).not.toHaveProperty('unitNote');
+    }
   });
 });
 

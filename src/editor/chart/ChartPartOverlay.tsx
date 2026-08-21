@@ -22,9 +22,22 @@
  * the painted box disagree in the first place. An axis is the exception: it is
  * framed as the whole band, because that is what a click on it takes.
  */
-import type { ChartInstance, LegendPosition, Slide, SlideElement } from '@/model';
+import {
+  legendSeriesKey,
+  type ChartInstance,
+  type LegendPosition,
+  type PathElement,
+  type Slide,
+  type SlideElement,
+} from '@/model';
 import { MOVEABLE_Z } from '../layers';
-import { axisBandFor } from './previewHitTest';
+import {
+  axisBandFor,
+  isStrokeOnly,
+  legendBand,
+  legendEntryRect,
+  pathRuns,
+} from './previewHitTest';
 
 /** Every place a legend can be dropped — the four edges, plus the two corners
  * inside the chart body. */
@@ -107,13 +120,52 @@ export function nearestLegendSide(frame: Box, x: number, y: number): LegendSide 
  */
 const MIN_PX = 8;
 
-function boxOf(el: SlideElement, scale: number, parts: SlideElement[]) {
-  // An axis is framed as the strip a reader points at rather than as the one
-  // tick the pointer happened to be nearest — the same band `hitTestChart`
-  // takes the click in, so the mark shows what a click there would select. The
-  // band is already in painted space, so the rotation is not applied twice.
-  const band = el.chartRef ? axisBandFor(parts, el.chartRef) : null;
-  const rect = band ?? el.rect;
+/**
+ * How a part is FRAMED — and what the frame is a frame OF.
+ *
+ * Two of a chart's parts read as one object while being drawn as many, and both
+ * are framed as the whole rather than as the node the pointer happened to find:
+ *
+ * - an **axis** is the strip a reader points at, not the one tick nearest the
+ *   cursor — the same band `hitTestChart` takes the click in, so the mark shows
+ *   what a click there would select;
+ * - a **legend** is one thing. A plain click takes every entry (see
+ *   `clickSelectParts`), so a ring per entry is three rings around three words
+ *   for a single selection, and a hover tint on the one word under the pointer
+ *   promises a narrower click than the one that follows.
+ *
+ * `drilled` is the exception the user reaches by double-clicking INTO the
+ * legend: with one entry selected rather than all of them, the frame narrows to
+ * that entry — swatch and name together, which is the pair the click takes.
+ *
+ * The `key` is what makes frames comparable: every node of one axis, and all
+ * six of a legend, answer with the same key, so the ring is drawn once and a
+ * hover over what is already selected can be dropped.
+ */
+type Frame = { key: string; rect: Box; rotation?: number };
+
+function frameOf(el: SlideElement, parts: SlideElement[], drilled: boolean): Frame {
+  const ref = el.chartRef;
+  if (ref?.part === 'axis') {
+    // The band is already in painted space, so the rotation is not applied
+    // twice — hence a frame that carries no angle at all.
+    const band = axisBandFor(parts, ref);
+    if (band) return { key: `axis.${ref.axis}`, rect: band };
+  }
+  if (ref?.part === 'legend.item' && drilled) {
+    const series = legendSeriesKey(ref);
+    const entry = legendEntryRect(parts, series);
+    if (entry) return { key: `legend.entry.${series}`, rect: entry };
+  }
+  if (ref?.part === 'legend.item' || ref?.part === 'legend.box') {
+    const band = legendBand(parts);
+    if (band) return { key: 'legend', rect: band };
+  }
+  return { key: el.id, rect: el.rect, rotation: el.rotation };
+}
+
+function boxOf(frame: Frame, scale: number) {
+  const rect = frame.rect;
   const w = rect.w * scale;
   const h = rect.h * scale;
   const padX = Math.max(0, (MIN_PX - w) / 2);
@@ -124,10 +176,69 @@ function boxOf(el: SlideElement, scale: number, parts: SlideElement[]) {
     width: w + padX * 2,
     height: h + padY * 2,
     transform: `translate(${rect.x * scale - padX}px, ${rect.y * scale - padY}px)${
-      !band && el.rotation ? ` rotate(${el.rotation}deg)` : ''
+      frame.rotation ? ` rotate(${frame.rotation}deg)` : ''
     }`,
     transformOrigin: 'center center',
   } satisfies React.CSSProperties;
+}
+
+/**
+ * A stroke marked as a STROKE.
+ *
+ * A line series' box is the bounding box of its whole path — most of the plot on
+ * any line that climbs — so ringing that box says "this rectangle is selected"
+ * when what is selected is one line through it. The path's own points are what
+ * the hit test takes the click on (see `isStrokeOnly`), so they are what the
+ * mark is drawn on: the line lights up and nothing else does.
+ *
+ * Two passes, because the mark has to read over the plot and over whatever the
+ * line crosses: a soft white halo, then the indigo over it.
+ */
+function StrokeMark({
+  el,
+  scale,
+  selected,
+}: {
+  el: PathElement;
+  scale: number;
+  selected: boolean;
+}) {
+  const d = pathRuns(el)
+    .map((run) => run.map((p, i) => `${i ? 'L' : 'M'} ${p.x * scale} ${p.y * scale}`).join(' '))
+    .join(' ');
+  if (!d) return null;
+  // Never thinner than the ink it marks, and never so thin it is invisible on a
+  // hairline series.
+  const ink = Math.max(1.5, (el.outline?.widthEmu ?? 0) * scale);
+  const deg = el.rotation ?? 0;
+  const cx = (el.rect.x + el.rect.w / 2) * scale;
+  const cy = (el.rect.y + el.rect.h / 2) * scale;
+  return (
+    <svg className="absolute inset-0 h-full w-full overflow-visible">
+      {/* The points are in the element's own unrotated frame — `pathRuns` leaves
+          the angle to the renderer, and so does this. */}
+      <g transform={deg ? `rotate(${deg} ${cx} ${cy})` : undefined}>
+        <path
+          d={d}
+          fill="none"
+          stroke="white"
+          strokeOpacity={0.6}
+          strokeWidth={ink + (selected ? 7 : 5)}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d={d}
+          fill="none"
+          stroke="rgb(99 102 241)"
+          strokeOpacity={selected ? 1 : 0.55}
+          strokeWidth={ink + (selected ? 3 : 2)}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </g>
+    </svg>
+  );
 }
 
 export function ChartPartHighlights({
@@ -148,43 +259,74 @@ export function ChartPartHighlights({
 }) {
   const mine = slide.elements.filter((e) => e.chartRef?.chartId === chartId);
   const selected = showSelection ? mine.filter((e) => selectedIds.includes(e.id)) : [];
-  // Never both marks on one part: the hover tint under a selection ring just
-  // muddies the ring's colour.
+
+  // Drilled INTO the legend: some of its entries are selected but not all of
+  // them, which is the state a double-click reaches and the only one where a
+  // legend is framed entry by entry rather than as one object.
+  const legendItems = mine.filter((e) => e.chartRef?.part === 'legend.item');
+  const selectedLegend = selected.filter((e) => e.chartRef?.part === 'legend.item');
+  const drilled = selectedLegend.length > 0 && selectedLegend.length < legendItems.length;
+
+  // One ring per FRAME, not per part: the whole legend selected is six elements
+  // answering with one box, and drawing it six times deep-tints its own edges.
+  const rings: { frame: Frame; el: SlideElement }[] = [];
+  for (const el of selected) {
+    if (isStrokeOnly(el)) {
+      rings.push({ frame: { key: el.id, rect: el.rect }, el });
+      continue;
+    }
+    const frame = frameOf(el, mine, drilled);
+    if (!rings.some((r) => r.frame.key === frame.key)) rings.push({ frame, el });
+  }
+
+  const hoverEl = hoverId ? (mine.find((e) => e.id === hoverId) ?? null) : null;
+  const hoverFrame = hoverEl ? frameOf(hoverEl, mine, drilled) : null;
+  // Never both marks on one thing: the hover tint under a selection ring just
+  // muddies the ring's colour. Compared by FRAME, so hovering a second entry of
+  // an already-selected legend doesn't tint the box that is already ringed.
   const hovered =
-    hoverId && !selected.some((e) => e.id === hoverId)
-      ? (mine.find((e) => e.id === hoverId) ?? null)
+    hoverEl && hoverFrame && !rings.some((r) => r.frame.key === hoverFrame.key)
+      ? hoverEl
       : null;
 
-  if (!hovered && !selected.length) return null;
+  if (!hovered && !rings.length) return null;
 
   return (
     // Purely an indicator: it sits over the marks and must never take the next
     // click, which is nearly always on a neighbouring part.
     <div className="pointer-events-none absolute inset-0" style={{ zIndex: MOVEABLE_Z + 1 }}>
-      {hovered ? (
-        <div
-          className="absolute rounded-[2px] bg-indigo-500/10 ring-1 ring-indigo-400/70"
-          style={boxOf(hovered, scale, mine)}
-        />
+      {hovered && hoverFrame ? (
+        isStrokeOnly(hovered) ? (
+          <StrokeMark el={hovered} scale={scale} selected={false} />
+        ) : (
+          <div
+            className="absolute rounded-[2px] bg-indigo-500/10 ring-1 ring-indigo-400/70"
+            style={boxOf(hoverFrame, scale)}
+          />
+        )
       ) : null}
-      {selected.map((el) => (
-        <div
-          key={el.id}
-          className="absolute rounded-[2px] ring-2 ring-indigo-500"
-          style={boxOf(el, scale, mine)}
-        >
-          {/* Corner ticks, so a ring around a segment reads as a selection
-              rather than as a border somebody set on the bar. */}
-          {(['-top-[3px] -left-[3px]', '-top-[3px] -right-[3px]', '-bottom-[3px] -left-[3px]', '-bottom-[3px] -right-[3px]'] as const).map(
-            (pos) => (
-              <span
-                key={pos}
-                className={`absolute h-1.5 w-1.5 rounded-[1px] bg-white ring-1 ring-indigo-500 ${pos}`}
-              />
-            ),
-          )}
-        </div>
-      ))}
+      {rings.map(({ frame, el }) =>
+        isStrokeOnly(el) ? (
+          <StrokeMark key={el.id} el={el} scale={scale} selected />
+        ) : (
+          <div
+            key={frame.key}
+            className="absolute rounded-[2px] ring-2 ring-indigo-500"
+            style={boxOf(frame, scale)}
+          >
+            {/* Corner ticks, so a ring around a segment reads as a selection
+                rather than as a border somebody set on the bar. */}
+            {(['-top-[3px] -left-[3px]', '-top-[3px] -right-[3px]', '-bottom-[3px] -left-[3px]', '-bottom-[3px] -right-[3px]'] as const).map(
+              (pos) => (
+                <span
+                  key={pos}
+                  className={`absolute h-1.5 w-1.5 rounded-[1px] bg-white ring-1 ring-indigo-500 ${pos}`}
+                />
+              ),
+            )}
+          </div>
+        ),
+      )}
     </div>
   );
 }
