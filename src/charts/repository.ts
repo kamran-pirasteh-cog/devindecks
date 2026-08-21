@@ -133,7 +133,14 @@ export function updateChartTemplateMeta(
   write(map);
 }
 
-/** Save the archetype itself. Bumps `version`, which is what drift keys off. */
+/**
+ * Save the archetype itself. Bumps `version`, which is what drift keys off.
+ *
+ * The author's brief is stripped on the way in. One person's sentence — their
+ * client, their quarters — becoming an archetype that every future chart starts
+ * out claiming is exactly the kind of inherited assumption a research prompt
+ * must never be handed.
+ */
 export function saveChartTemplateSpec(
   id: string,
   spec: ChartSpec,
@@ -141,9 +148,11 @@ export function saveChartTemplateSpec(
 ): void {
   const map = read();
   if (!map[id]) return;
+  const archetype: ChartSpec = { ...spec };
+  delete archetype.authorBrief;
   map[id] = {
     ...map[id],
-    spec,
+    spec: archetype,
     styleOverrides,
     version: map[id].version + 1,
     updatedAt: now(),

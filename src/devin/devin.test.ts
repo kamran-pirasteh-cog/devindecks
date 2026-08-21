@@ -4,6 +4,7 @@ import {
   defaultChartSpec,
   sheetSchemaFor,
   sheetSeriesFor,
+  type AuthorChartBrief,
   type ColumnBarSpec,
   type WaterfallSpec,
 } from '@/model';
@@ -90,6 +91,110 @@ describe('inferChartMeta', () => {
     expect(inferChartMeta(column(), { deckTitle: 'D', slideTitle: 'S' }).subject).toBe('S');
     expect(inferChartMeta(column(), { deckTitle: 'D' }).subject).toBe('D');
     expect(inferChartMeta(column()).subject).toBeUndefined();
+  });
+
+  it('never reports a placeholder title as the measure', () => {
+    const spec = column();
+    spec.axes.y.title = undefined;
+    spec.data.series = [{ key: 's0', name: 'Series 1', values: [1] }];
+    for (const title of ['Chart Title', 'chart title', 'Untitled chart']) {
+      spec.title = title;
+      expect(inferChartMeta(spec).measure).toBeUndefined();
+    }
+    // A real title is still worth a guess — it just isn't a stated metric.
+    spec.title = 'Revenue bridge';
+    expect(inferChartMeta(spec)).toMatchObject({
+      measure: 'Revenue bridge',
+      measureConfidence: 'inferred',
+    });
+  });
+});
+
+describe('inferChartMeta, reading the author brief', () => {
+  /** A chart built from "Acme's ARR by segment, last 8 quarters, in $M". */
+  const briefed = (over: Partial<AuthorChartBrief> = {}): ColumnBarSpec => {
+    const spec = column();
+    spec.axes.y.title = undefined;
+    spec.axes.x.title = undefined;
+    spec.data.categories = [
+      { key: 'c0', label: "Q1'26" },
+      { key: 'c1', label: "Q2'26" },
+    ];
+    spec.authorBrief = {
+      v: 1,
+      description: "Acme's ARR by segment, last 8 quarters, in $M",
+      subject: 'Acme',
+      subjectFrom: 'described',
+      measure: 'ARR',
+      measureFrom: 'stated',
+      measures: ['ARR'],
+      dimension: 'segment',
+      dimensionFrom: 'stated',
+      period: { grain: 'quarter', from: "Q1'26", to: "Q2'26", count: 2 },
+      periodFrom: 'derived',
+      unitNote: 'in $M',
+      unitFrom: 'stated',
+      gaps: [],
+      ...over,
+    };
+    return spec;
+  };
+
+  it('takes the author over anything read off the deck', () => {
+    const meta = inferChartMeta(briefed(), { deckTags: ['Globex'], deckTitle: 'BVA Pitch (2)' });
+    expect(meta).toMatchObject({ subject: 'Acme', subjectSource: 'author' });
+  });
+
+  it('supplies the measure and breakdown the chart cannot show', () => {
+    const meta = inferChartMeta(briefed());
+    expect(meta).toMatchObject({
+      measure: 'ARR',
+      measureConfidence: 'stated',
+      dimension: 'segment',
+      dimensionConfidence: 'stated',
+    });
+  });
+
+  it('drops to inferred when the author has since retitled the axis', () => {
+    const spec = briefed();
+    spec.axes.y.title = 'Bookings';
+    const meta = inferChartMeta(spec);
+    // The chart wins on the value; the brief no longer vouches for it.
+    expect(meta).toMatchObject({ measure: 'Bookings', measureConfidence: 'inferred' });
+  });
+
+  it('drops to inferred when the axis no longer spans what was asked for', () => {
+    const spec = briefed();
+    spec.data.categories = [
+      { key: 'c0', label: "Q3'24" },
+      { key: 'c1', label: "Q4'24" },
+    ];
+    const meta = inferChartMeta(spec);
+    expect(meta.period).toMatchObject({ from: "Q3'24", to: "Q4'24" });
+    expect(meta.periodConfidence).toBe('inferred');
+  });
+
+  it('calls an invented span inferred even while the chart matches it', () => {
+    expect(inferChartMeta(briefed({ periodFrom: 'inferred' })).periodConfidence).toBe('inferred');
+  });
+
+  it('reads nothing off a brief the author declined to give', () => {
+    const spec = briefed({ askedAndSkipped: true });
+    const meta = inferChartMeta(spec, { deckTags: ['Globex'] });
+    expect(meta.askedAndSkipped).toBe(true);
+    expect(meta.description).toBeUndefined();
+    // The refusal doesn't promote the deck tag out of the way, either.
+    expect(meta).toMatchObject({ subject: 'Globex', subjectSource: 'tag' });
+    expect(meta.measureConfidence).toBe('inferred');
+  });
+
+  it('reports everything as inferred on a chart with no brief', () => {
+    expect(inferChartMeta(column())).toMatchObject({
+      measureConfidence: 'inferred',
+      dimensionConfidence: 'inferred',
+      periodConfidence: 'inferred',
+      unitConfidence: 'inferred',
+    });
   });
 });
 
@@ -237,6 +342,88 @@ describe('buildDevinChartPrompt', () => {
     const t = buildDevinChartPrompt(column(), { deckTags: ['Acme Corp'], deckTitle: 'Q3' }).text;
     expect(t).not.toContain('assumed — confirm below');
     expect(t).not.toContain('Is the subject');
+  });
+
+  it("prints the author's own sentence, unedited", () => {
+    const spec = column();
+    spec.authorBrief = {
+      v: 1,
+      description: "Acme's ARR by segment, last 8 quarters, in $M",
+      subject: 'Acme',
+      subjectFrom: 'described',
+      measure: 'ARR',
+      measureFrom: 'stated',
+      measures: ['ARR'],
+      dimension: 'segment',
+      dimensionFrom: 'stated',
+      periodFrom: 'inferred',
+      unitFrom: 'stated',
+      gaps: [],
+    };
+    const t = prompt(spec);
+    expect(t).toContain("> Acme's ARR by segment, last 8 quarters, in $M");
+    expect(t).toContain('Stated by the author');
+    // The author named the entity, so it is not re-asked as an assumption.
+    expect(t).not.toContain('assumed — confirm below');
+    expect(t).not.toContain('Is the subject');
+  });
+
+  it('prints a range nobody asked for as a question, never as an instruction', () => {
+    const spec = column();
+    spec.authorBrief = {
+      v: 1,
+      description: 'quarterly ARR',
+      subjectFrom: 'unknown',
+      measure: 'ARR',
+      measureFrom: 'stated',
+      measures: ['ARR'],
+      // The chart spans FY23–FY25 by default; the author never said so.
+      period: { grain: 'year', from: 'FY23', to: 'FY25', count: 3 },
+      periodFrom: 'inferred',
+      dimensionFrom: 'inferred',
+      unitFrom: 'inferred',
+      gaps: [],
+    };
+    const t = prompt(spec);
+    expect(t).toContain('Filled in by us, not asked for');
+    expect(t).toContain('Was FY23 to FY25 meant to be the range?');
+    // The stated-range question is the wrong one here and must not appear.
+    expect(t).not.toContain('Is FY23 to FY25 the fiscal or the calendar year?');
+  });
+
+  it('says plainly when the author was asked and declined', () => {
+    const spec = column();
+    spec.title = 'Chart Title';
+    spec.axes.y.title = undefined;
+    spec.authorBrief = {
+      v: 1,
+      description: '',
+      subjectFrom: 'unknown',
+      measureFrom: 'inferred',
+      measures: [],
+      dimensionFrom: 'inferred',
+      periodFrom: 'inferred',
+      unitFrom: 'inferred',
+      gaps: [],
+      askedAndSkipped: true,
+    };
+    const t = prompt(spec);
+    expect(t).toContain('chose not to say');
+    // And the placeholder title is not mined for a metric.
+    expect(t).not.toContain('showing **Chart Title**');
+    expect(t).toContain('What is being measured?');
+  });
+
+  it('appends house guidance after the sourcing floor, never inside it', () => {
+    const t = buildDevinChartPrompt(column(), {
+      research: {
+        guidance: 'Shares must total 100% per period; state the denominator.',
+        preferredSources: ['company IR decks'],
+      },
+    }).text;
+    expect(t).toContain('**For this kind of chart specifically:** Shares must total 100%');
+    expect(t).toContain('Start with **company IR decks**');
+    expect(t.indexOf('Do not interpolate')).toBeLessThan(t.indexOf('For this kind of chart'));
   });
 
   it('asks what the metric is rather than writing a placeholder', () => {

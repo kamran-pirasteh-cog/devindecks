@@ -101,6 +101,33 @@ describe('object clipboard', () => {
     ).toBe(true);
   });
 
+  it("carries the author's brief onto the copy", () => {
+    const spec = defaultChartSpec('column', 'stacked');
+    spec.authorBrief = {
+      v: 1,
+      description: 'ARR by segment, last 8 quarters',
+      subjectFrom: 'unknown',
+      measure: 'ARR',
+      measureFrom: 'stated',
+      measures: ['ARR'],
+      dimensionFrom: 'stated',
+      dimension: 'segment',
+      periodFrom: 'inferred',
+      unitFrom: 'inferred',
+      gaps: [],
+    };
+    s().insertChart(spec);
+    s().select(s().currentSlide().elements.filter((e) => e.chartRef).map((e) => e.id));
+    s().copySelection();
+    s().pasteClipboard();
+
+    // A pasted chart that lost its brief would silently fall back to guessing
+    // its own measure off the picture.
+    expect(s().currentSlide().charts![1]!.spec.authorBrief?.description).toBe(
+      'ARR by segment, last 8 quarters',
+    );
+  });
+
   it('undoes a paste in one step', () => {
     s().select(['e1']);
     s().copySelection();

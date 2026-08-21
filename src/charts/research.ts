@@ -1,3 +1,6 @@
+import type { ChartSpec } from '@/model';
+import { getChartTemplate } from './repository';
+
 /**
  * Research framing carried by a chart or its template.
  *
@@ -23,3 +26,23 @@ export interface ChartResearchHints {
 
 export const hasResearchHints = (h?: ChartResearchHints): boolean =>
   !!h && Object.values(h).some((v) => (Array.isArray(v) ? v.length > 0 : !!v));
+
+/**
+ * The house rules that apply to a chart, if any do.
+ *
+ * Resolved through the template store rather than copied onto the chart, so an
+ * admin who corrects a piece of guidance corrects it for every chart that
+ * already exists — the same reference-not-copy rule the brand variants follow.
+ *
+ * Returns nothing for a chart with no template origin, which today is most of
+ * them: the picker builds from LAYOUTS, which are shapes. A layout cannot imply
+ * a house rule — "use exit ARR, not average" is true of an ARR trend, not of
+ * every line chart — and inventing one here would be the same fabrication this
+ * whole prompt is written to avoid.
+ */
+export function researchHintsFor(spec: ChartSpec): ChartResearchHints | undefined {
+  const id = spec.provenance?.templateId;
+  if (!id) return undefined;
+  const hints = getChartTemplate(id)?.research;
+  return hasResearchHints(hints) ? hints : undefined;
+}

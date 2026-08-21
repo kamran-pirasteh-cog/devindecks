@@ -14,7 +14,7 @@
  * are written from, so a question can't describe a chart that has since
  * changed.
  */
-import type { ChartMeta } from './meta';
+import { isSubjectStated, type ChartMeta } from './meta';
 
 export interface Clarification {
   /** Short heading — "Subject", "Timeframe". Groups repeats across charts. */
@@ -34,6 +34,7 @@ export const ASK_FIRST_RULES = [
   '- The list above is what the deck could not tell us. It is not exhaustive — **ask anything else you need** to be certain you are returning the exact figure that was intended, including anything you only discover once you are into the sources.',
   '- **Never resolve an ambiguity by picking the most likely reading.** If two definitions of a metric, two fiscal calendars or two entity scopes would both fit, ask which. A plausible guess is indistinguishable from a correct answer once it is on the slide.',
   "- If an answer changes the shape of the request — a different segmentation, a period that isn't reported, a metric the company doesn't disclose — say so and agree the approach before continuing.",
+  '- **What is marked above as stated by the author is a fact; what is marked as filled in by us is not.** Confirm the second kind before using it, and do not treat a value as agreed merely because this brief printed it.',
 ] as const;
 
 /**
@@ -55,7 +56,7 @@ export function chartClarifications(meta: ChartMeta, scope?: string): Clarificat
       '**Which entity is this about?** Nothing in the deck names the company, market or organisation, so it has to be stated before anything can be looked up.',
       false,
     );
-  } else if (meta.subjectSource !== 'tag') {
+  } else if (!isSubjectStated(meta)) {
     // A title is a headline that happens to contain a name, not a statement of
     // scope — "Acme Q3 Review" could mean the group, a division or one region.
     ask(
@@ -73,9 +74,15 @@ export function chartClarifications(meta: ChartMeta, scope?: string): Clarificat
       "**What is being measured?** The value axis has no title and the series names don't share one, so the metric is unstated.",
     );
   } else {
+    // Asked even when the author named the metric: they gave a NAME, not an
+    // accounting basis, and "revenue" is several different numbers.
     ask(
       'Metric',
-      `**How is "${meta.measure}" defined?** Confirm the exact definition to research — gross or net, reported or adjusted, including or excluding the usual carve-outs — since companies publish several figures under one name.`,
+      `**How is "${meta.measure}" defined?** Confirm the exact definition to research — gross or net, reported or adjusted, including or excluding the usual carve-outs — since companies publish several figures under one name.${
+        meta.measureConfidence === 'stated'
+          ? ''
+          : ' Note the metric itself is read off the chart rather than stated, so confirm it is even the right one.'
+      }`,
     );
   }
 
@@ -88,10 +95,18 @@ export function chartClarifications(meta: ChartMeta, scope?: string): Clarificat
           : ''
       }, so state the as-of date or reporting period each figure should be taken from.`,
     );
-  } else {
+  } else if (meta.periodConfidence === 'stated') {
     ask(
       'Timeframe',
       `**Is ${meta.period.from} to ${meta.period.to} the fiscal or the calendar year?** Confirm the year-end, and whether the range should stay as-is or roll forward to the latest reported period.`,
+    );
+  } else {
+    // A range nobody asked for is a different and much worse problem than an
+    // ambiguous calendar: every row underneath it is the wrong row, and the
+    // chart looks entirely fine while being about the wrong years.
+    ask(
+      'Timeframe',
+      `**Was ${meta.period.from} to ${meta.period.to} meant to be the range?** It is not stated anywhere — the chart spans it because that is what got laid out, not because it was asked for. Agree the range first; if it is wrong, every figure below it is the wrong figure. Then confirm the year-end, and whether it should roll forward to the latest reported period.`,
     );
   }
 
